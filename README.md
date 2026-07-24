@@ -12,10 +12,14 @@ instalação, seu próprio PostgreSQL e seus próprios backups.
 - auditoria local;
 - outbox/inbox para sincronização tolerante a falhas;
 - validação offline da licença;
-- futura comunicação com o edge-agent.
+- contrato de comunicação idempotente com o `lume-edge-agent`.
 
 O projeto não possui master global, operadores da fornecedora ou cadastro de
 outros tenants. Uma instalação aceita exatamente um tenant.
+
+O `lume-edge-agent` é mantido em repositório separado e executado na mesma rede
+privada do cliente. O contrato de comandos, eventos e assinatura HMAC está em
+[`docs/edge-contract.md`](docs/edge-contract.md).
 
 ## Inicialização
 

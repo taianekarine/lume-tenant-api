@@ -1,42 +1,59 @@
-# Contrato futuro do edge-agent
+# Contrato do lume-edge-agent
 
-O edge-agent será um terceiro projeto. Ele não faz parte desta entrega.
+O `lume-edge-agent` é um terceiro projeto independente. Ele roda na rede
+privada do cliente e acessa APIs que não estão disponíveis publicamente, como a
+API Gestor da Milenium.
 
 ## Responsabilidade
 
-- chamar APIs acessíveis somente dentro da rede do cliente;
-- armazenar credenciais do Gestor, ERP ou outros sistemas locais;
-- receber comandos do tenant-api;
-- devolver resultados normalizados;
-- executar retries e idempotência;
+- receber comandos técnicos do tenant;
+- manter fila PostgreSQL local;
+- executar somente operações permitidas no adapter;
+- aplicar idempotência, timeout, retries e dead-letter;
+- devolver resultados normalizados como eventos;
 - continuar processando quando o control estiver indisponível.
 
-## Limites
+O edge não é fonte oficial de usuários, papéis, permissões, sessões ou
+auditoria de negócio. Esses dados pertencem ao `lume-tenant-api`.
 
-O edge não é fonte oficial de:
-
-- usuários;
-- papéis;
-- permissões;
-- sessões;
-- auditoria de negócio.
-
-Esses dados pertencem ao `lume-tenant-api`.
-
-## Comunicação proposta
+## Fluxo
 
 ```text
 lume-tenant-api
-    ↓ comando com commandId
-edge-agent
+    ↓ POST /api/v1/edge/commands
+lume-edge-agent
     ↓ rede interna
 API Gestor
     ↑ resultado
-edge-agent
-    ↑ evento com eventId
+lume-edge-agent
+    ↑ POST /api/v1/integrations/edge/events
 lume-tenant-api
 ```
 
-Comandos e eventos devem ser idempotentes. Nenhum adapter recebe acesso direto
-ao PostgreSQL; a comunicação ocorre por contrato HTTP ou fila local
-autenticada.
+## Identidade e assinatura
+
+Cada instalação recebe:
+
+- `tenantId`;
+- `installationId`;
+- segredo HMAC exclusivo.
+
+Comandos e eventos usam os headers:
+
+- `x-lume-installation-id`;
+- `x-lume-timestamp`;
+- `x-lume-signature`.
+
+A assinatura é o HMAC-SHA256 hexadecimal de
+`<timestamp>.<corpo HTTP bruto>`. `commandId` e `eventId` garantem
+idempotência.
+
+## Estado atual da integração
+
+O edge-agent já implementa recebimento, execução Gestor, fila e publicação de
+eventos. O tenant já possui as tabelas `outbox_events` e `inbox_receipts`.
+
+O transportador da outbox e o endpoint
+`POST /api/v1/integrations/edge/events` ainda devem ser adicionados ao tenant
+antes da ativação ponta a ponta. Essa implementação será um módulo do tenant e
+não dará ao edge acesso direto ao PostgreSQL.
