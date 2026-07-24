@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: lume-tenant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lume_tenant
+      POSTGRES_USER: lume
+      POSTGRES_PASSWORD: lume
+    ports:
+      - "5433:5432"
+    volumes:
+      - lume_tenant_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lume -d lume_tenant"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  lume_tenant_postgres_data:

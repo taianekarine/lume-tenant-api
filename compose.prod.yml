@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lume_tenant}
+      POSTGRES_USER: ${POSTGRES_USER:-lume}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+    volumes:
+      - lume_tenant_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-lume} -d ${POSTGRES_DB:-lume_tenant}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      target: build
+    command: ["npm", "run", "prisma:deploy"]
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?defina DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      target: production
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3333
+      DATABASE_URL: ${DATABASE_URL:?defina DATABASE_URL}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?defina JWT_ACCESS_SECRET}
+      JWT_ACCESS_TTL_SECONDS: ${JWT_ACCESS_TTL_SECONDS:-900}
+      JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-7}
+      JWT_REFRESH_REMEMBER_TTL_DAYS: ${JWT_REFRESH_REMEMBER_TTL_DAYS:-30}
+      INSTALLATION_ID: ${INSTALLATION_ID:?defina INSTALLATION_ID}
+      LICENSE_PUBLIC_KEY_BASE64: ${LICENSE_PUBLIC_KEY_BASE64:?defina LICENSE_PUBLIC_KEY_BASE64}
+      LICENSE_DOCUMENT: ${LICENSE_DOCUMENT:?defina LICENSE_DOCUMENT}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      CORS_ORIGINS: ${CORS_ORIGINS:?defina CORS_ORIGINS}
+      SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+      RATE_LIMIT_TTL_MS: ${RATE_LIMIT_TTL_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      TENANT_LEGAL_NAME: ${TENANT_LEGAL_NAME:-}
+      TENANT_TRADE_NAME: ${TENANT_TRADE_NAME:-}
+      TENANT_TAX_ID: ${TENANT_TAX_ID:-}
+      TENANT_ADMIN_NAME: ${TENANT_ADMIN_NAME:-}
+      TENANT_ADMIN_USERNAME: ${TENANT_ADMIN_USERNAME:-}
+      TENANT_ADMIN_EMAIL: ${TENANT_ADMIN_EMAIL:-}
+      TENANT_ADMIN_CPF: ${TENANT_ADMIN_CPF:-}
+      TENANT_ADMIN_PASSWORD: ${TENANT_ADMIN_PASSWORD:-}
+    ports:
+      - "${PORT:-3333}:3333"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://localhost:3333/api/v1/health/ready",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  lume_tenant_postgres_data:
