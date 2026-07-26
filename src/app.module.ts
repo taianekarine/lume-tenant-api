@@ -12,6 +12,7 @@ import { HealthModule } from './modules/health/health.module';
 import { LicenseModule } from './modules/license/license.module';
 import { TenantBootstrapModule } from './modules/tenant-bootstrap.module';
 import { UsersModule } from './modules/users/users.module';
+import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { AppErrorFilter } from './shared/http/filters/app-error.filter';
 
 @Module({
@@ -40,6 +41,7 @@ import { AppErrorFilter } from './shared/http/filters/app-error.filter';
     AccessModule,
     LicenseModule,
     HealthModule,
+    WhatsAppModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AppErrorFilter },

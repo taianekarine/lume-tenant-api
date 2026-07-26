@@ -30,9 +30,11 @@ empresa.
 O runtime não chama o control. A licença é validada com Ed25519 localmente.
 Depois do vencimento existe um período de tolerância definido no documento.
 
-`outbox_events` armazena eventos pendentes e `inbox_receipts` impede
-reprocessamento. A implementação do transportador será feita junto com o
-edge-agent; o banco já possui a base para retries e idempotência.
+Para WhatsApp, `integration_outbox` armazena eventos por tenant e possui
+dispatcher n8n com lock, correlação, retry e backoff. `integration_inbox`
+deduplica webhooks Evolution e comandos internos. `outbox_events` e
+`inbox_receipts` permanecem apenas para compatibilidade com o contrato legado
+do edge-agent.
 
 ## Camadas
 
@@ -44,3 +46,7 @@ src/infra         Prisma, JWT, bcrypt e licença offline
 src/modules       composição NestJS e HTTP
 src/shared        guards, filtros e utilitários
 ```
+
+O módulo WhatsApp mantém a matriz pura em `src/domain/whatsapp`, casos de uso e
+portas em `src/application`, transações Prisma e integrações em `src/infra` e
+controllers/DTOs em `src/modules/whatsapp`.

@@ -1,24 +1,35 @@
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import type { Express } from 'express';
 import helmet from 'helmet';
 
 import { AppModule } from './app.module';
 import { parseCorsOrigins } from './infra/config/environment';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+    bodyParser: false,
+  });
   const config = app.get(ConfigService);
   const swaggerEnabled = config.getOrThrow<boolean>('SWAGGER_ENABLED');
   const trustProxyHops = config.getOrThrow<number>('TRUST_PROXY_HOPS');
+  const maximumBodyBytes = config.getOrThrow<number>(
+    'WHATSAPP_MAX_WEBHOOK_BYTES',
+  );
 
+  app.useBodyParser('json', { limit: `${maximumBodyBytes}b` });
+  app.useBodyParser('urlencoded', {
+    limit: `${maximumBodyBytes}b`,
+    extended: true,
+  });
   app.use(
     helmet(swaggerEnabled ? { contentSecurityPolicy: false } : undefined),
   );
   if (trustProxyHops > 0) {
-    const express = app.getHttpAdapter().getInstance() as Express;
+    const express = app.getHttpAdapter().getInstance();
     express.set('trust proxy', trustProxyHops);
   }
   app.setGlobalPrefix('api/v1');
@@ -44,6 +55,16 @@ async function bootstrap() {
       )
       .setVersion('1.0')
       .addBearerAuth()
+      .addBearerAuth(
+        {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: '<keyId>.<secret>',
+          description:
+            'Identidade de serviço n8n com segredo armazenado por hash.',
+        },
+        'serviceBearer',
+      )
       .build();
     const document = SwaggerModule.createDocument(app, openApiConfig);
     SwaggerModule.setup('docs', app, document, {

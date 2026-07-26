@@ -1,7 +1,7 @@
 {
   "name": "@tks-lume/tenant-api",
   "version": "0.1.0",
-  "description": "Data plane autônomo por cliente da plataforma Lume",
+  "description": "Data plane autônomo por cliente da plataforma Lume, com backend oficial de WhatsApp",
   "private": true,
   "license": "UNLICENSED",
   "engines": {

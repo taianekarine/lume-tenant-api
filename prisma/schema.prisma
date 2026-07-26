@@ -22,6 +22,110 @@ enum OutboxStatus {
   FAILED
 }
 
+enum DepartmentCode {
+  HUMAN_RESOURCES         @map("human-resources")
+  PERSONNEL_DEPARTMENT    @map("personnel-department")
+  COMMERCIAL              @map("commercial")
+  PURCHASING              @map("purchasing")
+  MAINTENANCE             @map("maintenance")
+  MONITORING              @map("monitoring")
+  OPERATIONS              @map("operations")
+  CLEANING                @map("cleaning")
+  FINANCIAL               @map("financial")
+  INFORMATION_TECHNOLOGY  @map("information-technology")
+}
+
+enum ConversationState {
+  BOT_ACTIVE            @map("bot-active")
+  WAITING_FOR_CUSTOMER  @map("waiting-for-customer")
+  SENT_TO_HUMAN         @map("sent-to-human")
+  HUMAN_ACTIVE          @map("human-active")
+  CLOSED                @map("closed")
+}
+
+enum FlowStep {
+  MAIN_MENU                  @map("main-menu")
+  COMMERCIAL_MENU            @map("commercial-menu")
+  QUOTE_DATA_COLLECTION      @map("quote-data-collection")
+  QUOTE_SUMMARY_CONFIRMATION @map("quote-summary-confirmation")
+  QUOTE_SEND_PENDING         @map("quote-send-pending")
+  COMMERCIAL_FOLLOW_UP_MENU  @map("commercial-follow-up-menu")
+  HUMAN_SERVICE              @map("human-service")
+  CLOSED                     @map("closed")
+}
+
+enum RequestStatus {
+  NOT_STARTED            @map("not-started")
+  COLLECTING_INFORMATION @map("collecting-information")
+  WAITING_FOR_CUSTOMER   @map("waiting-for-customer")
+  UNDER_REVIEW           @map("under-review")
+  APPROVED               @map("approved")
+  REJECTED               @map("rejected")
+  CANCELLED              @map("cancelled")
+}
+
+enum MessageDirection {
+  INBOUND  @map("inbound")
+  OUTBOUND @map("outbound")
+}
+
+enum DeliveryStatus {
+  RECEIVED  @map("received")
+  PENDING   @map("pending")
+  SENT      @map("sent")
+  DELIVERED @map("delivered")
+  READ      @map("read")
+  FAILED    @map("failed")
+}
+
+enum MessageKind {
+  TEXT     @map("text")
+  IMAGE    @map("image")
+  DOCUMENT @map("document")
+  AUDIO    @map("audio")
+  VIDEO    @map("video")
+  STICKER  @map("sticker")
+  LOCATION @map("location")
+  CONTACT  @map("contact")
+  UNKNOWN  @map("unknown")
+}
+
+enum MessageAttemptStatus {
+  PENDING   @map("pending")
+  SUCCEEDED @map("succeeded")
+  FAILED    @map("failed")
+}
+
+enum EvolutionDispatchState {
+  READY     @map("ready")
+  LEASED    @map("leased")
+  UNKNOWN   @map("unknown")
+  SUCCEEDED @map("succeeded")
+  FAILED    @map("failed")
+}
+
+enum TransitionActorType {
+  USER    @map("user")
+  N8N     @map("n8n")
+  WEBHOOK @map("webhook")
+  SYSTEM  @map("system")
+}
+
+enum IntegrationOutboxStatus {
+  PENDING    @map("pending")
+  PROCESSING @map("processing")
+  DELIVERED  @map("delivered")
+  DEAD       @map("dead")
+}
+
+enum WhatsAppProviderType {
+  EVOLUTION @map("evolution")
+}
+
+enum ServiceIdentityType {
+  N8N @map("n8n")
+}
+
 model Company {
   id        String        @id @db.Uuid
   legalName String        @map("legal_name") @db.VarChar(160)
@@ -34,6 +138,18 @@ model Company {
   users     User[]
   roles     Role[]
   auditLogs TenantAuditLog[]
+  departments TenantDepartment[]
+  whatsappProviders WhatsAppProvider[]
+  whatsappChannels WhatsAppChannel[]
+  whatsappContacts WhatsAppContact[]
+  whatsappConversations WhatsAppConversation[]
+  whatsappMessages WhatsAppMessage[]
+  whatsappMessageAttempts WhatsAppMessageAttempt[]
+  whatsappTransitions WhatsAppConversationTransition[]
+  quoteRequests QuoteRequest[]
+  integrationInbox IntegrationInbox[]
+  integrationOutbox IntegrationOutbox[]
+  serviceIdentities ServiceIdentity[]
 
   @@map("companies")
 }
@@ -59,6 +175,8 @@ model User {
   roles         UserRole[]
   refreshTokens RefreshToken[]
   auditLogs     TenantAuditLog[]
+  assignedWhatsappConversations WhatsAppConversation[] @relation("ConversationAssignee")
+  whatsappTransitions WhatsAppConversationTransition[] @relation("TransitionActorUser")
 
   @@unique([id, companyId])
   @@index([companyId])
@@ -133,6 +251,334 @@ model TenantAuditLog {
   @@index([companyId, createdAt])
   @@index([actorUserId, createdAt])
   @@map("tenant_audit_logs")
+}
+
+model TenantDepartment {
+  id        String         @id @default(uuid()) @db.Uuid
+  companyId String         @map("company_id") @db.Uuid
+  code      DepartmentCode
+  name      String         @db.VarChar(80)
+  isDefault Boolean        @default(false) @map("is_default")
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, code])
+  @@unique([id, companyId])
+  @@index([companyId])
+  @@map("tenant_departments")
+}
+
+model WhatsAppProvider {
+  id         String                @id @default(uuid()) @db.Uuid
+  companyId  String                @map("company_id") @db.Uuid
+  name       String                @db.VarChar(80)
+  type       WhatsAppProviderType  @default(EVOLUTION)
+  baseUrl    String                @map("base_url") @db.VarChar(500)
+  apiKeyHash String                @map("api_key_hash") @db.Char(64)
+  enabled    Boolean               @default(true)
+  createdAt  DateTime              @default(now()) @map("created_at")
+  updatedAt  DateTime              @updatedAt @map("updated_at")
+
+  company  Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channels WhatsAppChannel[]
+
+  @@unique([companyId, name])
+  @@unique([id, companyId])
+  @@index([companyId, enabled])
+  @@map("whatsapp_providers")
+}
+
+model WhatsAppChannel {
+  id                String   @id @default(uuid()) @db.Uuid
+  companyId         String   @map("company_id") @db.Uuid
+  providerId        String   @map("provider_id") @db.Uuid
+  name              String   @db.VarChar(80)
+  phoneNumber       String   @map("phone_number") @db.VarChar(16)
+  instanceName      String   @map("instance_name") @db.VarChar(120)
+  webhookSecretHash String   @map("webhook_secret_hash") @db.Char(64)
+  ignoreGroups      Boolean  @default(true) @map("ignore_groups")
+  ignoreFromMe      Boolean  @default(true) @map("ignore_from_me")
+  enabled           Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  company       Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  provider      WhatsAppProvider                @relation(fields: [providerId, companyId], references: [id, companyId], onDelete: Restrict)
+  conversations WhatsAppConversation[]
+  messages      WhatsAppMessage[]
+  inboxEvents   IntegrationInbox[]
+
+  @@unique([companyId, phoneNumber])
+  @@unique([companyId, providerId, instanceName])
+  @@unique([id, companyId])
+  @@index([companyId, enabled])
+  @@map("whatsapp_channels")
+}
+
+model WhatsAppContact {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @map("company_id") @db.Uuid
+  phoneNormalized String   @map("phone_normalized") @db.VarChar(16)
+  displayName     String?  @map("display_name") @db.VarChar(160)
+  profilePictureUrl String? @map("profile_picture_url") @db.VarChar(1000)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  company       Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversations WhatsAppConversation[]
+  messages      WhatsAppMessage[]
+
+  @@unique([companyId, phoneNormalized])
+  @@unique([id, companyId])
+  @@index([companyId, displayName])
+  @@map("whatsapp_contacts")
+}
+
+model WhatsAppConversation {
+  id                 String            @id @default(uuid()) @db.Uuid
+  companyId          String            @map("company_id") @db.Uuid
+  channelId          String            @map("channel_id") @db.Uuid
+  contactId          String            @map("contact_id") @db.Uuid
+  department         DepartmentCode    @default(COMMERCIAL)
+  conversationState  ConversationState @default(BOT_ACTIVE) @map("conversation_state")
+  flowStep           FlowStep          @default(MAIN_MENU) @map("flow_step")
+  requestStatus      RequestStatus     @default(NOT_STARTED) @map("request_status")
+  resumeState        ConversationState? @map("resume_state")
+  resumeFlowStep     FlowStep?         @map("resume_flow_step")
+  assignedToUserId   String?           @map("assigned_to_user_id") @db.Uuid
+  unreadCount        Int               @default(0) @map("unread_count")
+  version            Int               @default(1)
+  mainMenuPresentedAt DateTime?         @map("main_menu_presented_at")
+  contextualFollowUpAt DateTime?        @map("contextual_follow_up_at")
+  lastInboundAt      DateTime?         @map("last_inbound_at")
+  lastOutboundAt     DateTime?         @map("last_outbound_at")
+  lastMessagePreview String?           @map("last_message_preview") @db.VarChar(240)
+  closedAt           DateTime?         @map("closed_at")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel      WhatsAppChannel @relation(fields: [channelId, companyId], references: [id, companyId], onDelete: Restrict)
+  contact      WhatsAppContact @relation(fields: [contactId, companyId], references: [id, companyId], onDelete: Restrict)
+  assignedTo   User?         @relation("ConversationAssignee", fields: [assignedToUserId, companyId], references: [id, companyId], onDelete: Restrict)
+  messages     WhatsAppMessage[]
+  transitions  WhatsAppConversationTransition[]
+  quoteRequests QuoteRequest[]
+
+  @@unique([id, companyId])
+  @@index([companyId, updatedAt])
+  @@index([companyId, conversationState, updatedAt])
+  @@index([companyId, channelId, contactId, closedAt])
+  @@index([companyId, id, version])
+  @@index([assignedToUserId, companyId])
+  @@map("whatsapp_conversations")
+}
+
+model WhatsAppMessage {
+  id                String            @id @default(uuid()) @db.Uuid
+  companyId         String            @map("company_id") @db.Uuid
+  conversationId    String            @map("conversation_id") @db.Uuid
+  channelId         String            @map("channel_id") @db.Uuid
+  contactId         String            @map("contact_id") @db.Uuid
+  providerMessageId String?           @map("provider_message_id") @db.VarChar(160)
+  direction         MessageDirection
+  deliveryStatus    DeliveryStatus    @map("delivery_status")
+  kind              MessageKind       @default(TEXT)
+  text              String?           @db.Text
+  media             Json?             @db.JsonB
+  automationPurpose String?           @map("automation_purpose") @db.VarChar(80)
+  correlationId     String            @map("correlation_id") @db.VarChar(120)
+  occurredAt        DateTime          @map("occurred_at")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation WhatsAppConversation @relation(fields: [conversationId, companyId], references: [id, companyId], onDelete: Cascade)
+  channel      WhatsAppChannel      @relation(fields: [channelId, companyId], references: [id, companyId], onDelete: Restrict)
+  contact      WhatsAppContact      @relation(fields: [contactId, companyId], references: [id, companyId], onDelete: Restrict)
+  attempts     WhatsAppMessageAttempt[]
+
+  @@unique([companyId, channelId, providerMessageId])
+  @@unique([companyId, correlationId])
+  @@unique([id, companyId])
+  @@index([companyId, conversationId, occurredAt, id])
+  @@index([companyId, deliveryStatus, createdAt])
+  @@map("whatsapp_messages")
+}
+
+model WhatsAppMessageAttempt {
+  id                String               @id @default(uuid()) @db.Uuid
+  companyId         String               @map("company_id") @db.Uuid
+  messageId         String               @map("message_id") @db.Uuid
+  attemptNumber     Int                  @map("attempt_number")
+  status            MessageAttemptStatus @default(PENDING)
+  providerMessageId String?              @map("provider_message_id") @db.VarChar(160)
+  errorCode         String?              @map("error_code") @db.VarChar(80)
+  errorMessage      String?              @map("error_message") @db.VarChar(500)
+  dispatchClaimId   String?              @map("dispatch_claim_id") @db.VarChar(120)
+  dispatchFingerprint String?            @map("dispatch_fingerprint") @db.Char(64)
+  dispatchClaimedAt DateTime?            @map("dispatch_claimed_at")
+  dispatchState     EvolutionDispatchState @default(READY) @map("dispatch_state")
+  dispatchOwnerId   String?              @map("dispatch_owner_id") @db.Uuid
+  dispatchLeaseUntil DateTime?            @map("dispatch_lease_until")
+  startedAt         DateTime             @default(now()) @map("started_at")
+  completedAt       DateTime?            @map("completed_at")
+  createdAt         DateTime             @default(now()) @map("created_at")
+
+  company Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  message WhatsAppMessage @relation(fields: [messageId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, messageId, attemptNumber])
+  @@unique([companyId, dispatchClaimId])
+  @@unique([id, companyId])
+  @@index([companyId, status, startedAt])
+  @@map("whatsapp_message_attempts")
+}
+
+model WhatsAppConversationTransition {
+  id                String              @id @default(uuid()) @db.Uuid
+  companyId         String              @map("company_id") @db.Uuid
+  conversationId    String              @map("conversation_id") @db.Uuid
+  commandId         String              @map("command_id") @db.VarChar(120)
+  commandFingerprint String             @map("command_fingerprint") @db.Char(64)
+  name              String              @db.VarChar(80)
+  expectedVersion   Int                 @map("expected_version")
+  resultingVersion  Int                 @map("resulting_version")
+  actorType         TransitionActorType @map("actor_type")
+  actorUserId       String?             @map("actor_user_id") @db.Uuid
+  fromDepartment    DepartmentCode      @map("from_department")
+  toDepartment      DepartmentCode      @map("to_department")
+  fromState         ConversationState   @map("from_state")
+  toState           ConversationState   @map("to_state")
+  fromFlowStep      FlowStep            @map("from_flow_step")
+  toFlowStep        FlowStep            @map("to_flow_step")
+  fromRequestStatus RequestStatus       @map("from_request_status")
+  toRequestStatus   RequestStatus       @map("to_request_status")
+  metadata          Json                @default("{}") @db.JsonB
+  resultSnapshot    Json                @map("result_snapshot") @db.JsonB
+  createdAt         DateTime            @default(now()) @map("created_at")
+
+  company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation WhatsAppConversation @relation(fields: [conversationId, companyId], references: [id, companyId], onDelete: Cascade)
+  actorUser    User?                @relation("TransitionActorUser", fields: [actorUserId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  @@unique([companyId, commandId])
+  @@index([companyId, conversationId, resultingVersion])
+  @@index([actorUserId, companyId, createdAt])
+  @@map("whatsapp_conversation_transitions")
+}
+
+model QuoteRequest {
+  id                    String        @id @default(uuid()) @db.Uuid
+  companyId             String        @map("company_id") @db.Uuid
+  conversationId        String        @map("conversation_id") @db.Uuid
+  sequence              Int
+  status                RequestStatus @default(COLLECTING_INFORMATION)
+  contactName           String?       @map("contact_name") @db.VarChar(160)
+  document              String?       @db.VarChar(20)
+  email                 String?       @db.VarChar(254)
+  serviceType           String?       @map("service_type") @db.VarChar(120)
+  origin                String?       @db.VarChar(300)
+  destination           String?       @db.VarChar(300)
+  departureAt           DateTime?     @map("departure_at")
+  returnAt              DateTime?     @map("return_at")
+  passengerCount        Int?          @map("passenger_count")
+  vehicleType           String?       @map("vehicle_type") @db.VarChar(120)
+  vehicleAtDisposal     Boolean?      @map("vehicle_at_disposal")
+  localTransfers        Boolean?      @map("local_transfers")
+  notes                 String?       @db.Text
+  structuredData        Json          @default("{}") @map("structured_data") @db.JsonB
+  confirmedAt           DateTime?     @map("confirmed_at")
+  confirmedSummary      Json?         @map("confirmed_summary") @db.JsonB
+  confirmedVersion      Int?          @map("confirmed_version")
+  version               Int           @default(1)
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+
+  company      Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  conversation WhatsAppConversation @relation(fields: [conversationId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, conversationId, sequence])
+  @@unique([id, companyId])
+  @@index([companyId, status, updatedAt])
+  @@index([companyId, id, version])
+  @@map("quote_requests")
+}
+
+model IntegrationInbox {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @map("company_id") @db.Uuid
+  channelId       String?  @map("channel_id") @db.Uuid
+  source          String   @db.VarChar(80)
+  externalEventId String   @map("external_event_id") @db.VarChar(160)
+  payloadHash     String   @map("payload_hash") @db.Char(64)
+  correlationId   String   @map("correlation_id") @db.VarChar(120)
+  resultSnapshot  Json?    @map("result_snapshot") @db.JsonB
+  receivedAt      DateTime @default(now()) @map("received_at")
+  processedAt     DateTime? @map("processed_at")
+
+  company Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel WhatsAppChannel? @relation(fields: [channelId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, source, externalEventId])
+  @@unique([companyId, correlationId])
+  @@index([companyId, receivedAt])
+  @@map("integration_inbox")
+}
+
+model IntegrationOutbox {
+  id            String                  @id @default(uuid()) @db.Uuid
+  companyId     String                  @map("company_id") @db.Uuid
+  topic         String                  @db.VarChar(100)
+  aggregateType String                  @map("aggregate_type") @db.VarChar(60)
+  aggregateId   String                  @map("aggregate_id") @db.VarChar(100)
+  aggregateSequence Int                 @map("aggregate_sequence")
+  correlationId String                  @map("correlation_id") @db.VarChar(120)
+  payload       Json                    @db.JsonB
+  status        IntegrationOutboxStatus @default(PENDING)
+  attempts      Int                     @default(0)
+  maxAttempts   Int                     @default(8) @map("max_attempts")
+  availableAt   DateTime                @default(now()) @map("available_at")
+  lockedAt      DateTime?               @map("locked_at")
+  lockId        String?                 @map("lock_id") @db.Uuid
+  executionId   String?                 @map("execution_id") @db.Uuid
+  acceptedAt    DateTime?               @map("accepted_at")
+  executionLeaseUntil DateTime?         @map("execution_lease_until")
+  deliveredAt   DateTime?               @map("delivered_at")
+  lastError     String?                 @map("last_error") @db.VarChar(500)
+  createdAt     DateTime                @default(now()) @map("created_at")
+  updatedAt     DateTime                @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, correlationId])
+  @@unique([companyId, aggregateType, aggregateId, aggregateSequence])
+  @@index([status, availableAt, lockedAt])
+  @@index([companyId, aggregateType, aggregateId, aggregateSequence, status])
+  @@index([companyId, createdAt])
+  @@map("integration_outbox")
+}
+
+model ServiceIdentity {
+  id         String              @id @default(uuid()) @db.Uuid
+  companyId  String              @map("company_id") @db.Uuid
+  type       ServiceIdentityType @default(N8N)
+  name       String              @db.VarChar(80)
+  keyId      String              @unique @map("key_id") @db.Uuid
+  secretHash String              @map("secret_hash") @db.Char(64)
+  enabled    Boolean             @default(true)
+  lastUsedAt DateTime?           @map("last_used_at")
+  createdAt  DateTime            @default(now()) @map("created_at")
+  updatedAt  DateTime            @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, type, name])
+  @@unique([id, companyId])
+  @@index([companyId, enabled])
+  @@map("service_identities")
 }
 
 model OutboxEvent {

@@ -6,9 +6,11 @@ import {
 } from '../application/contracts/cryptography';
 import { TenantBootstrapRepository } from '../application/contracts/repositories';
 import { BootstrapTenantUseCase } from '../application/use-cases/tenant/bootstrap-tenant.use-case';
+import { ProductionBootstrapService } from '../infra/bootstrap/production-bootstrap.service';
 
 @Module({
   providers: [
+    ProductionBootstrapService,
     {
       provide: BootstrapTenantUseCase,
       useFactory: (
@@ -23,6 +25,6 @@ import { BootstrapTenantUseCase } from '../application/use-cases/tenant/bootstra
       ],
     },
   ],
-  exports: [BootstrapTenantUseCase],
+  exports: [BootstrapTenantUseCase, ProductionBootstrapService],
 })
 export class TenantBootstrapModule {}

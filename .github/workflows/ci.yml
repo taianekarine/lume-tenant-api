@@ -8,6 +8,23 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: lume_tenant_test
+          POSTGRES_USER: lume
+          POSTGRES_PASSWORD: lume
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lume -d lume_tenant_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://lume:lume@localhost:5432/lume_tenant_test?schema=public
+      TEST_DATABASE_URL: postgresql://lume:lume@localhost:5432/lume_tenant_test?schema=public
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -15,8 +32,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run format:check
       - run: npm run prisma:validate
+      - run: npm run prisma:generate
+      - run: npm run format:check
       - run: npm run lint
       - run: npm run test:cov
       - run: npm run build
+      - run: npm run prisma:deploy
+      - run: npm run test:e2e
+      - run: docker build --target production -t lume-tenant-api:ci .

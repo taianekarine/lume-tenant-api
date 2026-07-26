@@ -81,4 +81,80 @@ describe('validateEnvironment', () => {
       TRUST_PROXY_HOPS: 1,
     });
   });
+
+  it('requires WhatsApp credentials only when the module is enabled', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        WHATSAPP_ENABLED: 'true',
+      }),
+    ).toThrow('EVOLUTION_WEBHOOK_SECRET');
+
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        WHATSAPP_ENABLED: 'true',
+        WHATSAPP_CHANNEL_ID: '00000000-0000-4000-8000-000000000221',
+        WHATSAPP_CHANNEL_NAME: 'WhatsApp principal',
+        WHATSAPP_PHONE_NUMBER: '5511999999999',
+        EVOLUTION_PROVIDER_NAME: 'Evolution API',
+        EVOLUTION_BASE_URL: 'https://evolution.example.test',
+        EVOLUTION_INSTANCE_NAME: 'lume',
+        EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
+        EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
+        N8N_SERVICE_KEY_ID: '00000000-0000-4000-8000-000000000222',
+        N8N_SERVICE_SECRET: 'n8n-service-secret-with-32-characters',
+        N8N_DISPATCH_ENABLED: 'false',
+      }),
+    ).toMatchObject({
+      WHATSAPP_ENABLED: true,
+      N8N_DISPATCH_ENABLED: false,
+      WHATSAPP_RETENTION_DAYS: 365,
+      INTEGRATION_RETENTION_DAYS: 90,
+    });
+  });
+
+  it('exige HTTPS do n8n em produção salvo opt-in para rede privada', () => {
+    const productionWhatsApp = {
+      ...validEnvironment,
+      NODE_ENV: 'production',
+      CORS_ORIGINS: 'https://app.example.com',
+      WHATSAPP_ENABLED: 'true',
+      WHATSAPP_CHANNEL_ID: '00000000-0000-4000-8000-000000000221',
+      WHATSAPP_CHANNEL_NAME: 'WhatsApp principal',
+      WHATSAPP_PHONE_NUMBER: '5511999999999',
+      EVOLUTION_PROVIDER_NAME: 'Evolution API',
+      EVOLUTION_BASE_URL: 'https://evolution.example.test',
+      EVOLUTION_INSTANCE_NAME: 'lume',
+      EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
+      EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
+      N8N_SERVICE_KEY_ID: '00000000-0000-4000-8000-000000000222',
+      N8N_SERVICE_SECRET: 'n8n-service-secret-with-32-characters',
+      N8N_DISPATCH_ENABLED: 'true',
+      N8N_OUTBOUND_SECRET: 'n8n-outbound-secret-with-32-characters',
+    };
+    expect(() =>
+      validateEnvironment({
+        ...productionWhatsApp,
+        N8N_WEBHOOK_URL: 'http://n8n:5678/webhook/lume',
+      }),
+    ).toThrow('HTTPS');
+    expect(
+      validateEnvironment({
+        ...productionWhatsApp,
+        N8N_WEBHOOK_URL: 'http://n8n:5678/webhook/lume',
+        N8N_ALLOW_INSECURE_PRIVATE_URL: 'true',
+      }),
+    ).toMatchObject({
+      N8N_ALLOW_INSECURE_PRIVATE_URL: true,
+      N8N_WEBHOOK_URL: 'http://n8n:5678/webhook/lume',
+    });
+    expect(() =>
+      validateEnvironment({
+        ...productionWhatsApp,
+        N8N_WEBHOOK_URL: 'http://public.example.com/webhook/lume',
+        N8N_ALLOW_INSECURE_PRIVATE_URL: 'true',
+      }),
+    ).toThrow('host privado');
+  });
 });
