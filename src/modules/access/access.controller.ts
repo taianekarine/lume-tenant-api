@@ -14,7 +14,12 @@ export class AccessController {
   constructor(private readonly listPermissions: ListPermissionsUseCase) {}
 
   @Get('permissions')
-  @RequireAnyPermission('users:view', 'users:manage')
+  @RequireAnyPermission(
+    'users:view',
+    'users:create',
+    'users:update',
+    'users:manage',
+  )
   @ApiOkResponse({
     description: 'Catálogo de permissões compatível com o front-end.',
   })

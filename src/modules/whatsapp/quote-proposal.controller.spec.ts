@@ -4,7 +4,10 @@ import type { AuthenticatedPrincipal } from '../../application/presenters/user.p
 import type { QuoteProposalUseCase } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
 import { REQUIRED_PERMISSIONS } from '../../shared/http/decorators/require-permissions.decorator';
 import { QuoteProposalListQueryDto } from './dto/whatsapp.dto';
-import { QuoteProposalController } from './quote-proposal.controller';
+import {
+  normalizeUploadedFileName,
+  QuoteProposalController,
+} from './quote-proposal.controller';
 
 function principal(
   overrides: Partial<AuthenticatedPrincipal> = {},
@@ -82,5 +85,19 @@ describe('QuoteProposalController permissions', () => {
         new QuoteProposalListQueryDto(),
       ),
     ).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }));
+  });
+});
+
+describe('normalizeUploadedFileName', () => {
+  it('recovers UTF-8 names decoded as latin1 by multipart middleware', () => {
+    expect(normalizeUploadedFileName('OrÃ§amento 1.pdf')).toBe(
+      'Orçamento 1.pdf',
+    );
+  });
+
+  it('preserves an already valid UTF-8 file name', () => {
+    expect(normalizeUploadedFileName('Orçamento final.pdf')).toBe(
+      'Orçamento final.pdf',
+    );
   });
 });

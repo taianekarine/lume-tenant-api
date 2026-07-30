@@ -31,6 +31,7 @@ import {
   validationError,
 } from '../../../core/errors/app-error';
 import type { Department } from '../../../domain/access/access.constants';
+import { buildConversationClosureMessage } from '../../../domain/whatsapp/conversation-closure-message';
 import {
   assertTransitionActor,
   resolveConversationTransition,
@@ -230,6 +231,10 @@ function quoteProposalFilterWhere(
   query: QuoteProposalListQuery,
 ): Prisma.QuoteRequestWhereInput {
   const filters: Prisma.QuoteRequestWhereInput[] = [];
+  if (query.conversationId) {
+    filters.push({ conversationId: query.conversationId });
+  }
+
   const search = query.search?.trim();
   if (search) {
     const phoneSearch = search.replace(/\D/g, '');
@@ -1309,6 +1314,40 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         const nextVersion = conversation.version + 1;
         const transitionId = randomUUID();
         const transitionedAt = new Date();
+        const closureMessageText = closing
+          ? buildConversationClosureMessage(transitionedAt)
+          : null;
+        const closureMessage = closureMessageText
+          ? await transaction.whatsAppMessage.create({
+              data: {
+                companyId: input.companyId,
+                conversationId: input.conversationId,
+                channelId: conversation.channelId,
+                contactId: conversation.contactId,
+                actorUserId: input.actorUserId,
+                direction: MessageDirection.OUTBOUND,
+                deliveryStatus: DeliveryStatus.PENDING,
+                kind: MessageKind.TEXT,
+                text: closureMessageText,
+                recipientPhone: conversation.contact.phoneNormalized,
+                correlationId: correlation(
+                  'conversation-closure-outbound',
+                  input.commandId,
+                ),
+                occurredAt: transitionedAt,
+              },
+            })
+          : null;
+        const closureAttempt = closureMessage
+          ? await transaction.whatsAppMessageAttempt.create({
+              data: {
+                companyId: input.companyId,
+                messageId: closureMessage.id,
+                attemptNumber: 1,
+                status: MessageAttemptStatus.PENDING,
+              },
+            })
+          : null;
 
         let quote = conversation.quoteRequests[0];
         let supersededQuote: {
@@ -1492,6 +1531,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
               input.name === 'mark-read' || closing
                 ? 0
                 : conversation.unreadCount,
+            ...(closureMessageText
+              ? { lastMessagePreview: closureMessageText.slice(0, 240) }
+              : {}),
             closedAt: closing ? transitionedAt : conversation.closedAt,
             version: { increment: 1 },
           },
@@ -1515,6 +1557,52 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           input.companyId,
           input.conversationId,
         );
+        if (closureMessage && closureAttempt && closureMessageText) {
+          await this.createOrderedOutbox(transaction, {
+            companyId: input.companyId,
+            topic: 'whatsapp.outbound.requested',
+            aggregateType: 'whatsapp-conversation',
+            aggregateId: input.conversationId,
+            correlationId: correlation(
+              'conversation-closure-request',
+              input.commandId,
+            ),
+            payload: {
+              eventId: closureMessage.id,
+              commandId: closureMessage.id,
+              messageId: closureMessage.id,
+              attemptId: closureAttempt.id,
+              conversationId: input.conversationId,
+              channelId: conversation.channelId,
+              companyId: input.companyId,
+              contact: {
+                id: conversation.contact.id,
+                phone: conversation.contact.phoneNormalized,
+                displayName: conversation.contact.displayName,
+              },
+              message: {
+                providerMessageId: null,
+                direction: 'outbound',
+                deliveryStatus: 'pending',
+                kind: 'text',
+                text: closureMessageText,
+                media: null,
+                occurredAt: closureMessage.occurredAt.toISOString(),
+              },
+              conversation: {
+                id: updated.id,
+                ...snapshot(updated),
+                version: updated.version,
+              },
+              automatic: false,
+              automationAllowed: false,
+              canGenerateReply: false,
+              canSendReply: true,
+              contextualTransition: false,
+              isFirstContact: false,
+            },
+          });
+        }
         const closure = closing
           ? {
               transitionId,
@@ -1525,6 +1613,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                 type: input.actorType,
                 user: actorUser,
               },
+              messageId: closureMessage?.id ?? null,
             }
           : null;
         const persistedResult = {

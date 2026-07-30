@@ -125,7 +125,7 @@ export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
 
 export const PERMISSION_ACTIONS_BY_RESOURCE = {
   dashboard: ['view'],
-  users: ['view', 'create', 'update', 'delete', 'manage'],
+  users: ['view', 'create', 'update', 'manage'],
   'human-resources': ['view', 'create', 'update', 'delete', 'manage'],
   'personnel-department': ['view', 'create', 'update', 'delete', 'manage'],
   commercial: ['view', 'create', 'update', 'delete', 'manage'],
@@ -181,7 +181,6 @@ export const MANAGEMENT_DEPARTMENT_PERMISSIONS = [
   'users:view',
   'users:create',
   'users:update',
-  'users:delete',
   'users:manage',
   'ai-agents:use',
   'manuals:view',

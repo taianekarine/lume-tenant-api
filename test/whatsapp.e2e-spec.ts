@@ -3907,6 +3907,38 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       name: 'close',
       metadata: { reason: null, quoteRequestId: null },
     });
+    const farewellMessage = await prisma.whatsAppMessage.findFirstOrThrow({
+      where: {
+        companyId: tenantId,
+        conversationId: generalConversationId,
+        direction: 'OUTBOUND',
+        actorUserId: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { attempts: true },
+    });
+    expect(farewellMessage).toMatchObject({
+      deliveryStatus: 'PENDING',
+      kind: 'TEXT',
+      text: expect.stringContaining('Foi um prazer te atender!'),
+      attempts: [expect.objectContaining({ status: 'PENDING' })],
+    });
+    expect(
+      await prisma.integrationOutbox.findFirstOrThrow({
+        where: {
+          companyId: tenantId,
+          aggregateId: generalConversationId,
+          topic: 'whatsapp.outbound.requested',
+        },
+        orderBy: { aggregateSequence: 'desc' },
+      }),
+    ).toMatchObject({
+      payload: expect.objectContaining({
+        messageId: farewellMessage.id,
+        automatic: false,
+        canSendReply: true,
+      }),
+    });
 
     const rejectedInbound = await signedWebhook(
       app,

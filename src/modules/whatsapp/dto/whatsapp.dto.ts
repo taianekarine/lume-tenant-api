@@ -466,6 +466,15 @@ export class QuoteProposalListQueryDto {
   @MaxLength(160)
   search?: string;
 
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Restringe a consulta aos orçamentos vinculados a uma conversa.',
+  })
+  @IsOptional()
+  @IsUUID()
+  conversationId?: string;
+
   @ApiPropertyOptional({ format: 'date-time' })
   @IsOptional()
   @IsISO8601({ strict: true })

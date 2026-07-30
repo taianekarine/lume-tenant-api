@@ -148,6 +148,7 @@ export interface QuoteProposalListQuery {
   pageSize: number;
   stage: 'pending' | 'sent' | 'approved' | 'cancelled';
   search?: string;
+  conversationId?: string;
   createdFrom?: string;
   createdTo?: string;
 }

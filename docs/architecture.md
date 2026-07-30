@@ -96,7 +96,7 @@ controllers/DTOs em `src/modules/whatsapp`.
 - `POST /auth/password/forgot` recebe usuário ou e-mail e devolve a mesma
   resposta genérica para qualquer identificador;
 - `POST /auth/password/change` consome o desafio e registra a nova senha;
-- `POST /users/:id/password-reset` é restrito a `users:manage`;
+- `POST /users/:id/password-reset` é restrito a `users:update`;
 - `POST /users` e `PATCH /users/:id` recebem departamentos e permissões
   individuais;
 - `GET /users` pagina e filtra por `search`, `department`, `permission` e
@@ -104,6 +104,8 @@ controllers/DTOs em `src/modules/whatsapp`.
   e ignora valores diretos armazenados fora do teto departamental;
 - `PATCH /users/:id/status` mantém `status` e o campo legado `isActive`
   consistentes, revoga sessões e registra prazo e motivo da suspensão;
+- `users:update` é a fronteira de edição de acesso e `users:manage` é a
+  fronteira exclusiva do estado da conta; `users:delete` não é publicado;
 - `GET /users/me/profile`, `PUT /users/me/profile-picture` e
   `PATCH /users/me/password` operam somente sobre o principal autenticado;
 - foto de perfil é validada pelo conteúdo real (assinatura/MIME e dimensões

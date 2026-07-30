@@ -68,7 +68,7 @@ export class UsersController {
   ) {}
 
   @Post()
-  @RequireAnyPermission('users:manage')
+  @RequireAnyPermission('users:create')
   @ApiCreatedResponse({
     description: 'Usuário interno criado na empresa autenticada.',
   })
@@ -85,7 +85,12 @@ export class UsersController {
   }
 
   @Get()
-  @RequireAnyPermission('users:view', 'users:manage')
+  @RequireAnyPermission(
+    'users:view',
+    'users:create',
+    'users:update',
+    'users:manage',
+  )
   @ApiOkResponse({
     description: 'Lista paginada de usuários da empresa autenticada.',
   })
@@ -140,7 +145,12 @@ export class UsersController {
   }
 
   @Get(':id')
-  @RequireAnyPermission('users:view', 'users:manage')
+  @RequireAnyPermission(
+    'users:view',
+    'users:create',
+    'users:update',
+    'users:manage',
+  )
   @ApiOkResponse({ description: 'Usuário da empresa autenticada.' })
   get(
     @CurrentUser() current: AuthenticatedPrincipal,
@@ -151,7 +161,7 @@ export class UsersController {
   }
 
   @Patch(':id')
-  @RequireAnyPermission('users:manage')
+  @RequireAnyPermission('users:update')
   @ApiOkResponse({ description: 'Usuário e vínculos atualizados.' })
   update(
     @CurrentUser() current: AuthenticatedPrincipal,
@@ -196,7 +206,7 @@ export class UsersController {
   }
 
   @Post(':id/password-reset')
-  @RequireAnyPermission('users:manage')
+  @RequireAnyPermission('users:update')
   @ApiOkResponse({ description: 'E-mail de criação de nova senha solicitado.' })
   resetPassword(
     @CurrentUser() current: AuthenticatedPrincipal,

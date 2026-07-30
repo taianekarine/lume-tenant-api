@@ -280,11 +280,15 @@ efetivo: o informado no comando ou o `decisionReason` já persistido.
 
 A transição limpa responsável, retomada contextual e contagem de não lidas,
 preserva o status comercial para auditoria e grava `closedAt`. A mesma transação
-registra `whatsapp.conversation.close` em `tenant_audit_logs`. O detalhe expõe
-o último encerramento e o log append-only preserva todos eles com data e hora,
-ator e motivo. Um inbound posterior do mesmo contato não reabre o agregado
-encerrado: cria uma nova conversa em `bot-active/main-menu/not-started`, apta a
-receber o menu inicial pelo n8n.
+persiste uma mensagem outbound `pending`, sua tentativa e
+`whatsapp.outbound.requested`, além de registrar
+`whatsapp.conversation.close` em `tenant_audit_logs`. A mensagem agradece o
+contato e escolhe “um ótimo dia”, “uma ótima tarde” ou “uma ótima noite” pelo
+horário de `America/Sao_Paulo`. Se qualquer escrita falhar, o encerramento
+inteiro é revertido. O detalhe expõe o último encerramento e o log append-only
+preserva todos eles com data e hora, ator e motivo. Um inbound posterior do
+mesmo contato não reabre o agregado encerrado: cria uma nova conversa em
+`bot-active/main-menu/not-started`, apta a receber o menu inicial pelo n8n.
 
 O endpoint de mensagens continua sendo a única fronteira de envio pelo
 atendente. Ele persiste a mensagem outbound e sua tentativa antes de publicar
@@ -462,7 +466,10 @@ entregue anteriormente não cria pendência fantasma.
 | `POST /whatsapp/quote-proposals/{quoteRequestId}/send`                          | JSON com `commandId`, `proposalDocumentId`, `batchId`, `batchDocumentIds` e `expectedVersion`               |
 | `GET /whatsapp/quote-proposals/{quoteRequestId}/documents/{documentId}/content` | download autenticado do PDF                                                                                 |
 
-As quatro listagens aceitam `search`, `createdFrom` e `createdTo`. A busca
+As quatro listagens aceitam `search`, `createdFrom`, `createdTo` e
+`conversationId`. Este último é um UUID e limita a resposta a uma única
+conversa, permitindo ao painel abrir a lista completa de seus orçamentos sem
+misturar ciclos do mesmo telefone. A busca
 abrange cliente, telefone, origem, destino e nome do arquivo. Cada resposta
 inclui `summary={pending,sent,approved,cancelled}` calculado com os mesmos
 filtros, além de `summary.cancellationReasons=[{reason,count}]` agregado sem
@@ -509,6 +516,11 @@ O servidor calcula o SHA-256; valores fornecidos pelo cliente não são
 confiáveis. `commandId` torna upload e envio idempotentes. Reutilizar a mesma
 chave com conteúdo diferente retorna `409`; versão obsoleta também retorna
 `409` com `details.currentVersion`.
+
+O nome original do multipart é normalizado antes da persistência para reparar
+o caso conhecido em que UTF-8 foi interpretado como Latin-1 (`OrÃ§amento` →
+`Orçamento`). Nomes já válidos não são regravados. O nome normalizado é o que
+segue para o documento e para o WhatsApp.
 
 Essas verificações validam o contrato e a estrutura mínima esperada pelo MVP;
 não substituem varredura antimalware. Se a política de produção exigir essa

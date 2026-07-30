@@ -96,6 +96,10 @@ não confundir administração global com o departamento Gerência.
   sessões e expiram automaticamente na data registrada;
 - `GET /api/v1/users` aceita paginação, pesquisa e filtros por departamento,
   permissão e status;
+- `users:update` altera dados, departamentos, permissões e solicita recuperação
+  de senha; `users:manage` fica restrito ao ciclo de estado da conta
+  (ativar novamente, desativar ou suspender);
+- `users:delete` não faz parte do catálogo nem existe endpoint de exclusão;
 - nomes de usuário possuem 3–40 caracteres permitidos e obrigatoriamente ao
   menos uma letra, evitando ambiguidade com documentos;
 - `PATCH /api/v1/users/:id/status` ativa, desativa ou suspende por data/dias,
@@ -137,6 +141,11 @@ solicitação atual. A API aplica concorrência otimista, limita a alteração a
 orçamento corrente de uma conversa aberta e registra autor, data e motivo na
 auditoria. Aprovação ou recusa continuam exigindo uma proposta efetivamente
 enviada; cancelamento e recusa exigem motivo.
+
+Ao encerrar um atendimento, a mesma transação persiste uma mensagem de
+despedida e sua outbox antes de fechar a conversa. A saudação usa manhã, tarde
+ou noite conforme `America/Sao_Paulo`; uma falha ao agendar o envio reverte
+também o encerramento.
 
 ### Importação, exportação e conversão
 

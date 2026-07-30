@@ -68,6 +68,14 @@ function contentDisposition(fileName: string): string {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
 
+export function normalizeUploadedFileName(fileName: string): string {
+  const normalized = fileName.trim();
+  if (!/[ÃÂ]/.test(normalized)) return normalized;
+
+  const decoded = Buffer.from(normalized, 'latin1').toString('utf8');
+  return decoded.includes('\uFFFD') ? normalized : decoded;
+}
+
 function assertCommercialDepartment(current: AuthenticatedPrincipal): void {
   if (!current.departments.includes('commercial')) {
     throw forbidden(
@@ -228,7 +236,7 @@ export class QuoteProposalController {
       commandId: body.commandId,
       expectedVersion: body.expectedVersion,
       file: {
-        originalName: file?.originalname ?? '',
+        originalName: normalizeUploadedFileName(file?.originalname ?? ''),
         mimeType: file?.mimetype ?? '',
         sizeBytes: file?.size ?? 0,
         content: file?.buffer ?? Buffer.alloc(0),

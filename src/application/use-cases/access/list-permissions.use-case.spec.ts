@@ -8,6 +8,7 @@ describe('ListPermissionsUseCase', () => {
 
     expect(catalog.permissions).toContain('dashboard:view');
     expect(catalog.permissions).toContain('users:manage');
+    expect(catalog.permissions).not.toContain('users:delete');
     expect(catalog.permissions).not.toContain('dashboard:delete');
     expect(catalog.actionsByResource.dashboard).toEqual(['view']);
     expect(catalog.departments).toHaveLength(9);
