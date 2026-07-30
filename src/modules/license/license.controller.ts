@@ -1,19 +1,32 @@
 import { Controller, Get } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiForbiddenResponse, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 
 import { OfflineLicenseVerifier } from '../../application/contracts/cryptography';
-import { Public } from '../../shared/http/decorators/public.decorator';
+import type { AuthenticatedPrincipal } from '../../application/presenters/user.presenter';
+import { forbidden } from '../../core/errors/app-error';
+import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
+import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 
 @ApiTags('Licença local')
+@ApiBearerAuth()
 @SkipThrottle()
 @Controller('license')
 export class LicenseController {
   constructor(private readonly license: OfflineLicenseVerifier) {}
 
-  @Public()
   @Get('status')
-  status() {
+  @RequireAnyPermission('license:view')
+  @ApiForbiddenResponse({
+    description: 'Disponível somente para Administrador, Diretoria e Gerência.',
+  })
+  status(@CurrentUser() current: AuthenticatedPrincipal) {
+    if (!current.departments.includes('management')) {
+      throw forbidden(
+        'A licença só pode ser consultada por usuários autorizados da Gerência.',
+      );
+    }
+
     const status = this.license.status();
     return {
       state: status.state,

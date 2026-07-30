@@ -8,6 +8,7 @@ import {
 import { Injectable } from '@nestjs/common';
 
 import {
+  PasswordChangeTokenService,
   RefreshTokenService,
   type IssuedRefreshToken,
   type ParsedRefreshToken,
@@ -51,5 +52,22 @@ export class OpaqueRefreshTokenService extends RefreshTokenService {
 
   private hash(value: string): string {
     return createHash('sha256').update(value).digest('hex');
+  }
+}
+
+@Injectable()
+export class OpaquePasswordChangeTokenService extends PasswordChangeTokenService {
+  private readonly delegate = new OpaqueRefreshTokenService();
+
+  issue(): IssuedRefreshToken {
+    return this.delegate.issue();
+  }
+
+  parse(token: string): ParsedRefreshToken | null {
+    return this.delegate.parse(token);
+  }
+
+  matches(firstHash: string, secondHash: string): boolean {
+    return this.delegate.matches(firstHash, secondHash);
   }
 }

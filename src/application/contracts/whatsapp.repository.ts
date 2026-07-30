@@ -1,7 +1,9 @@
 import type { Department } from '../../domain/access/access.constants';
 import type {
+  ConversationState,
   DeliveryStatus,
   MessageKind,
+  RequestStatus,
   TransitionName,
 } from '../../domain/whatsapp/whatsapp.constants';
 
@@ -50,7 +52,9 @@ export interface QuoteRequestPatch {
   serviceType?: string | null;
   origin?: string | null;
   destination?: string | null;
+  departureDate?: Date | null;
   departureAt?: Date | null;
+  returnDate?: Date | null;
   returnAt?: Date | null;
   passengerCount?: number | null;
   vehicleType?: string | null;
@@ -66,7 +70,13 @@ export interface CreateOutboundInput {
   commandId: string;
   expectedVersion: number;
   automatic: true;
-  purpose?: 'main-menu';
+  purpose?:
+    | 'main-menu'
+    | 'commercial-follow-up-menu'
+    | 'department-notification'
+    | 'unsupported-message-kind';
+  inReplyToMessageId?: string;
+  recipientPhone?: string;
   kind: MessageKind;
   text?: string;
   media?: Readonly<Record<string, unknown>>;
@@ -117,7 +127,9 @@ export interface CompleteOutboxExecutionInput {
 export interface ConversationListQuery {
   page: number;
   pageSize: number;
-  state?: string;
+  department?: Department;
+  state?: ConversationState;
+  requestStatus?: RequestStatus;
   search?: string;
 }
 
@@ -129,6 +141,98 @@ export interface MessageListQuery {
 export interface TransitionListQuery {
   page: number;
   pageSize: number;
+}
+
+export interface QuoteProposalListQuery {
+  page: number;
+  pageSize: number;
+  stage: 'pending' | 'sent' | 'approved' | 'cancelled';
+  search?: string;
+  createdFrom?: string;
+  createdTo?: string;
+}
+
+export interface QuoteProposalNotificationSummary {
+  notificationId: 'commercial.pending-quote-proposals';
+  pendingTotal: number;
+  unreadTotal: number;
+}
+
+export interface QuoteProposalPdf {
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  content: Buffer;
+}
+
+export interface UploadQuoteProposalDocumentInput {
+  companyId: string;
+  quoteRequestId: string;
+  actorUserId: string;
+  commandId: string;
+  expectedVersion: number;
+  file: QuoteProposalPdf;
+}
+
+export interface SendQuoteProposalInput {
+  companyId: string;
+  quoteRequestId: string;
+  proposalDocumentId: string;
+  batchId: string;
+  batchDocumentIds: string[];
+  actorUserId: string;
+  commandId: string;
+  expectedVersion: number;
+}
+
+export interface CreateQuoteProposalInput {
+  companyId: string;
+  conversationId: string;
+  actorUserId: string;
+  commandId: string;
+  expectedVersion: number;
+  contactName: string;
+  document?: string | null;
+  email?: string | null;
+  serviceType: string;
+  origin: string;
+  destination: string;
+  departureDate?: Date | null;
+  departureAt?: Date | null;
+  returnDate?: Date | null;
+  returnAt?: Date | null;
+  passengerCount: number;
+  vehicleType?: string | null;
+  vehicleAtDisposal: boolean;
+  localTransfers: boolean;
+  notes?: string | null;
+}
+
+export interface DecideQuoteProposalInput {
+  companyId: string;
+  quoteRequestId: string;
+  actorUserId: string;
+  commandId: string;
+  expectedVersion: number;
+  decision: 'approved' | 'rejected';
+  reason?: string | null;
+}
+
+export type ManuallyAssignableQuoteStatus =
+  | 'waiting-for-customer'
+  | 'under-review'
+  | 'approved'
+  | 'rejected'
+  | 'cancelled';
+
+export interface UpdateQuoteProposalStatusInput {
+  companyId: string;
+  quoteRequestId: string;
+  actorUserId: string;
+  commandId: string;
+  expectedVersion: number;
+  status: ManuallyAssignableQuoteStatus;
+  reason?: string | null;
 }
 
 export abstract class WhatsAppRepository {
@@ -174,5 +278,43 @@ export abstract class WhatsAppRepository {
   abstract getCurrentQuoteRequest(
     companyId: string,
     conversationId: string,
+  ): Promise<unknown>;
+  abstract listQuoteProposals(
+    companyId: string,
+    query: QuoteProposalListQuery,
+  ): Promise<unknown>;
+  abstract getQuoteProposalNotificationSummary(
+    companyId: string,
+    userId: string,
+  ): Promise<QuoteProposalNotificationSummary>;
+  abstract markQuoteProposalNotificationRead(
+    companyId: string,
+    userId: string,
+  ): Promise<
+    QuoteProposalNotificationSummary & {
+      readAt: string;
+      markedRead: number;
+    }
+  >;
+  abstract getQuoteProposal(
+    companyId: string,
+    quoteRequestId: string,
+  ): Promise<unknown>;
+  abstract createQuoteProposal(
+    input: CreateQuoteProposalInput,
+  ): Promise<unknown>;
+  abstract decideQuoteProposal(
+    input: DecideQuoteProposalInput,
+  ): Promise<unknown>;
+  abstract updateQuoteProposalStatus(
+    input: UpdateQuoteProposalStatusInput,
+  ): Promise<unknown>;
+  abstract uploadQuoteProposalDocument(
+    input: UploadQuoteProposalDocumentInput,
+  ): Promise<unknown>;
+  abstract sendQuoteProposal(input: SendQuoteProposalInput): Promise<unknown>;
+  abstract getQuoteProposalDocument(
+    companyId: string,
+    documentId: string,
   ): Promise<unknown>;
 }

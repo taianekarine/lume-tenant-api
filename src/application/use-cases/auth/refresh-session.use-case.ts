@@ -8,7 +8,7 @@ import {
   UsersRepository,
 } from '../../contracts/repositories';
 import { presentUser } from '../../presenters/user.presenter';
-import type { AuthenticationOutput } from './auth.types';
+import type { AuthenticatedSessionOutput } from './auth.types';
 
 export class RefreshSessionUseCase {
   constructor(
@@ -20,7 +20,7 @@ export class RefreshSessionUseCase {
     private readonly rememberRefreshTtlDays: number,
   ) {}
 
-  async execute(rawToken: string): Promise<AuthenticationOutput> {
+  async execute(rawToken: string): Promise<AuthenticatedSessionOutput> {
     const parsed = this.refreshTokenService.parse(rawToken);
     const stored = parsed ? await this.refreshTokens.findById(parsed.id) : null;
     const now = new Date();
@@ -40,7 +40,13 @@ export class RefreshSessionUseCase {
 
     const record = await this.users.findById(stored.companyId, stored.userId);
 
-    if (!record || !record.user.props.isActive || !record.companyIsActive) {
+    if (
+      !record ||
+      !record.user.props.isActive ||
+      record.user.props.status !== 'active' ||
+      record.user.props.mustChangePassword ||
+      !record.companyIsActive
+    ) {
       throw new AppError(
         'INVALID_REFRESH_TOKEN',
         'Sessão inválida ou expirada.',

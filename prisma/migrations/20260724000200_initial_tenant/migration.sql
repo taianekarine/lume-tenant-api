@@ -42,31 +42,6 @@ CREATE TABLE "users" (
 );
 
 -- CreateTable
-CREATE TABLE "roles" (
-    "id" UUID NOT NULL,
-    "company_id" UUID NOT NULL,
-    "code" VARCHAR(60) NOT NULL,
-    "name" VARCHAR(80) NOT NULL,
-    "description" VARCHAR(240),
-    "permission_codes" TEXT[] DEFAULT ARRAY[]::TEXT[],
-    "is_system" BOOLEAN NOT NULL DEFAULT false,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updated_at" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "roles_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "user_roles" (
-    "company_id" UUID NOT NULL,
-    "user_id" UUID NOT NULL,
-    "role_id" UUID NOT NULL,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "user_roles_pkey" PRIMARY KEY ("user_id","role_id")
-);
-
--- CreateTable
 CREATE TABLE "refresh_tokens" (
     "id" UUID NOT NULL,
     "company_id" UUID NOT NULL,
@@ -139,21 +114,6 @@ CREATE INDEX "users_company_id_idx" ON "users"("company_id");
 CREATE UNIQUE INDEX "users_id_company_id_key" ON "users"("id", "company_id");
 
 -- CreateIndex
-CREATE INDEX "roles_company_id_idx" ON "roles"("company_id");
-
--- CreateIndex
-CREATE UNIQUE INDEX "roles_company_id_code_key" ON "roles"("company_id", "code");
-
--- CreateIndex
-CREATE UNIQUE INDEX "roles_id_company_id_key" ON "roles"("id", "company_id");
-
--- CreateIndex
-CREATE INDEX "user_roles_company_id_idx" ON "user_roles"("company_id");
-
--- CreateIndex
-CREATE INDEX "user_roles_role_id_company_id_idx" ON "user_roles"("role_id", "company_id");
-
--- CreateIndex
 CREATE UNIQUE INDEX "refresh_tokens_token_hash_key" ON "refresh_tokens"("token_hash");
 
 -- CreateIndex
@@ -173,15 +133,6 @@ CREATE INDEX "outbox_events_status_available_at_idx" ON "outbox_events"("status"
 
 -- AddForeignKey
 ALTER TABLE "users" ADD CONSTRAINT "users_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "roles" ADD CONSTRAINT "roles_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES "companies"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "user_roles" ADD CONSTRAINT "user_roles_user_id_company_id_fkey" FOREIGN KEY ("user_id", "company_id") REFERENCES "users"("id", "company_id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "user_roles" ADD CONSTRAINT "user_roles_role_id_company_id_fkey" FOREIGN KEY ("role_id", "company_id") REFERENCES "roles"("id", "company_id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_user_id_company_id_fkey" FOREIGN KEY ("user_id", "company_id") REFERENCES "users"("id", "company_id") ON DELETE CASCADE ON UPDATE CASCADE;

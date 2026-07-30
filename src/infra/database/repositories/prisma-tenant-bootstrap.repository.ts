@@ -4,8 +4,27 @@ import {
   TenantBootstrapRepository,
   type BootstrapTenantPersistenceInput,
 } from '../../../application/contracts/repositories';
+import type { UserDepartment } from '../../../domain/access/access.constants';
+import { DepartmentCode, UserAccountStatus } from '../prisma/generated/client';
 import { rethrowKnownPrismaConflict } from '../prisma/prisma-errors';
 import { PrismaService } from '../prisma/prisma.service';
+
+const departmentPersistenceCodes: Readonly<
+  Record<UserDepartment, DepartmentCode>
+> = {
+  'human-resources': DepartmentCode.HUMAN_RESOURCES,
+  'personnel-department': DepartmentCode.PERSONNEL_DEPARTMENT,
+  commercial: DepartmentCode.COMMERCIAL,
+  purchasing: DepartmentCode.PURCHASING,
+  controlling: DepartmentCode.CONTROLLING,
+  maintenance: DepartmentCode.MAINTENANCE,
+  monitoring: DepartmentCode.MONITORING,
+  management: DepartmentCode.MANAGEMENT,
+  operations: DepartmentCode.OPERATIONS,
+  cleaning: DepartmentCode.CLEANING,
+  financial: DepartmentCode.FINANCIAL,
+  'information-technology': DepartmentCode.INFORMATION_TECHNOLOGY,
+};
 
 @Injectable()
 export class PrismaTenantBootstrapRepository implements TenantBootstrapRepository {
@@ -21,23 +40,20 @@ export class PrismaTenantBootstrapRepository implements TenantBootstrapRepositor
     try {
       await this.prisma.$transaction(async (transaction) => {
         await transaction.company.create({ data: input.company.props });
-        await transaction.role.createMany({
-          data: input.roles.map((role) => ({
-            ...role.props,
-            permissionCodes: [...role.props.permissionCodes],
+        await transaction.tenantDepartment.createMany({
+          data: input.departments.map((department) => ({
+            companyId: input.company.id,
+            code: departmentPersistenceCodes[department.code],
+            name: department.name,
+            isDefault: department.isDefault,
           })),
         });
         await transaction.user.create({
           data: {
             ...input.administrator.props,
             departments: [...input.administrator.props.departments],
-          },
-        });
-        await transaction.userRole.create({
-          data: {
-            companyId: input.company.id,
-            userId: input.administrator.id,
-            roleId: input.administratorRoleId,
+            permissionCodes: [...input.administrator.props.permissionCodes],
+            status: UserAccountStatus.ACTIVE,
           },
         });
         await transaction.tenantAuditLog.create({

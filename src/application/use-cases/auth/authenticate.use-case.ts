@@ -2,15 +2,18 @@ import { AppError } from '../../../core/errors/app-error';
 import { normalizeLoginIdentifier } from '../../../shared/utils/normalization';
 import {
   AccessTokenService,
+  PasswordChangeTokenService,
   PasswordHasher,
   RefreshTokenService,
 } from '../../contracts/cryptography';
 import {
+  PasswordChangeChallengesRepository,
   RefreshTokensRepository,
   UsersRepository,
 } from '../../contracts/repositories';
 import { presentUser } from '../../presenters/user.presenter';
 import type { AuthenticationOutput } from './auth.types';
+import { issuePasswordChangeChallenge } from './password-change.use-cases';
 
 const DUMMY_PASSWORD_HASH =
   '$2b$12$9Qn8FtK4RhsfBWD84a0b3e4VbYQj8MR0v2OBtNkibIaUbKZhxy2nK';
@@ -30,6 +33,9 @@ export class AuthenticateUseCase {
     private readonly refreshTokenService: RefreshTokenService,
     private readonly refreshTtlDays: number,
     private readonly rememberRefreshTtlDays: number,
+    private readonly passwordChangeChallenges: PasswordChangeChallengesRepository,
+    private readonly passwordChangeTokenService: PasswordChangeTokenService,
+    private readonly passwordChangeTtlMinutes: number,
   ) {}
 
   async execute(input: AuthenticateInput): Promise<AuthenticationOutput> {
@@ -40,13 +46,52 @@ export class AuthenticateUseCase {
       record?.user.props.passwordHash ?? DUMMY_PASSWORD_HASH,
     );
 
-    if (
-      !record ||
-      !passwordMatches ||
-      !record.user.props.isActive ||
-      !record.companyIsActive
-    ) {
+    if (!record || !passwordMatches || !record.companyIsActive) {
       throw new AppError('INVALID_CREDENTIALS', 'Usuário ou senha inválidos.');
+    }
+
+    if (
+      record.user.props.status === 'suspended' &&
+      record.user.props.suspendedUntil &&
+      record.user.props.suspendedUntil > new Date()
+    ) {
+      throw new AppError(
+        'ACCOUNT_SUSPENDED',
+        'Esta conta está suspensa. Contate o administrador.',
+        {
+          suspendedUntil: record.user.props.suspendedUntil.toISOString(),
+          suspensionReason: record.user.props.suspensionReason,
+        },
+      );
+    }
+
+    if (
+      record.user.props.status === 'inactive' ||
+      !record.user.props.isActive
+    ) {
+      throw new AppError(
+        'ACCOUNT_INACTIVE',
+        'Esta conta está desativada. Contate o administrador.',
+      );
+    }
+
+    if (record.user.props.mustChangePassword) {
+      const challenge = await issuePasswordChangeChallenge({
+        user: record,
+        reason: 'first-access',
+        challenges: this.passwordChangeChallenges,
+        tokenService: this.passwordChangeTokenService,
+        ttlMinutes: this.passwordChangeTtlMinutes,
+      });
+      throw new AppError(
+        'ACCOUNT_PASSWORD_SETUP_REQUIRED',
+        'Crie uma nova senha para concluir o primeiro acesso.',
+        {
+          challengeToken: challenge.challengeToken,
+          expiresAt: challenge.expiresAt,
+          reason: challenge.reason,
+        },
+      );
     }
 
     const now = new Date();

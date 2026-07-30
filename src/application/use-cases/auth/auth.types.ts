@@ -1,6 +1,6 @@
 import type { UserOutput } from '../../presenters/user.presenter';
 
-export interface AuthenticationOutput {
+export interface AuthenticatedSessionOutput {
   accessToken: string;
   refreshToken: string;
   tokenType: 'Bearer';
@@ -14,3 +14,5 @@ export interface AuthenticationOutput {
     rememberDevice: boolean;
   };
 }
+
+export type AuthenticationOutput = AuthenticatedSessionOutput;

@@ -1,10 +1,47 @@
+export const ASSIGNABLE_DEPARTMENTS = [
+  'commercial',
+  'purchasing',
+  'controllership',
+  'personnel-department',
+  'financial',
+  'management',
+  'maintenance',
+  'monitoring',
+  'operations',
+] as const;
+
+export type AssignableDepartment = (typeof ASSIGNABLE_DEPARTMENTS)[number];
+
+export const ASSIGNABLE_DEPARTMENT_LABELS: Readonly<
+  Record<AssignableDepartment, string>
+> = {
+  commercial: 'Comercial',
+  purchasing: 'Compras',
+  controllership: 'Controladoria',
+  'personnel-department': 'Departamento Pessoal',
+  financial: 'Financeiro',
+  management: 'Gerência',
+  maintenance: 'Manutenção',
+  monitoring: 'Monitoramento',
+  operations: 'Operacional',
+};
+
+export const LEGACY_DEPARTMENTS = [
+  'human-resources',
+  'controlling',
+  'cleaning',
+  'information-technology',
+] as const;
+
 export const DEPARTMENTS = [
   'human-resources',
   'personnel-department',
   'commercial',
   'purchasing',
+  'controlling',
   'maintenance',
   'monitoring',
+  'management',
   'operations',
   'cleaning',
   'financial',
@@ -12,6 +49,35 @@ export const DEPARTMENTS = [
 ] as const;
 
 export type Department = (typeof DEPARTMENTS)[number];
+
+export const SUPPORTED_USER_DEPARTMENTS = [
+  ...ASSIGNABLE_DEPARTMENTS,
+  ...LEGACY_DEPARTMENTS,
+] as const;
+
+export type SupportedUserDepartment =
+  (typeof SUPPORTED_USER_DEPARTMENTS)[number];
+export type UserDepartment = Department;
+export type PresentedUserDepartment =
+  Exclude<UserDepartment, 'controlling'> | 'controllership';
+
+export function normalizeUserDepartment(
+  department: SupportedUserDepartment,
+): UserDepartment {
+  return department === 'controllership' ? 'controlling' : department;
+}
+
+export function normalizeUserDepartments(
+  departments: readonly SupportedUserDepartment[],
+): UserDepartment[] {
+  return Array.from(new Set(departments.map(normalizeUserDepartment)));
+}
+
+export function presentUserDepartment(
+  department: UserDepartment,
+): PresentedUserDepartment {
+  return department === 'controlling' ? 'controllership' : department;
+}
 
 export const PERMISSION_RESOURCES = [
   'dashboard',
@@ -32,6 +98,7 @@ export const PERMISSION_RESOURCES = [
   'manuals',
   'reports',
   'settings',
+  'license',
   'profile',
   'contracts',
   'quotes',
@@ -83,6 +150,7 @@ export const PERMISSION_ACTIONS_BY_RESOURCE = {
   manuals: ['view', 'create', 'update', 'delete', 'manage'],
   reports: ['view', 'create', 'update', 'delete', 'manage', 'export'],
   settings: ['view', 'update', 'manage'],
+  license: ['view'],
   profile: ['view', 'update'],
   contracts: ['view', 'create', 'update', 'delete', 'manage'],
   quotes: ['view', 'create', 'update', 'delete', 'manage', 'approve'],
@@ -99,6 +167,40 @@ export type PermissionCode = {
   ]: `${Resource}:${(typeof PERMISSION_ACTIONS_BY_RESOURCE)[Resource][number]}`;
 }[PermissionResource];
 
+export const EMPLOYEE_SELF_SERVICE_PERMISSIONS = [
+  'dashboard:view',
+  'ai-agents:use',
+  'profile:view',
+  'profile:update',
+  'support:view',
+  'support:create',
+] as const satisfies readonly PermissionCode[];
+
+export const MANAGEMENT_DEPARTMENT_PERMISSIONS = [
+  'dashboard:view',
+  'users:view',
+  'users:create',
+  'users:update',
+  'users:delete',
+  'users:manage',
+  'ai-agents:use',
+  'manuals:view',
+  'manuals:create',
+  'manuals:update',
+  'manuals:delete',
+  'manuals:manage',
+  'reports:view',
+  'reports:export',
+  'settings:view',
+  'settings:update',
+  'settings:manage',
+  'license:view',
+  'profile:view',
+  'profile:update',
+  'support:view',
+  'support:create',
+] as const satisfies readonly PermissionCode[];
+
 export const ALL_PERMISSION_CODES: readonly PermissionCode[] =
   PERMISSION_RESOURCES.flatMap((resource) =>
     PERMISSION_ACTIONS_BY_RESOURCE[resource].map(
@@ -113,7 +215,7 @@ export function isPermissionCode(value: string): value is PermissionCode {
 }
 
 export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
-  Record<Department, readonly PermissionCode[]>
+  Record<SupportedUserDepartment, readonly PermissionCode[]>
 > = {
   'human-resources': [
     'dashboard:view',
@@ -121,7 +223,6 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'human-resources:create',
     'human-resources:update',
     'human-resources:manage',
-    'users:view',
     'manuals:view',
     'ai-agents:use',
     'reports:view',
@@ -132,7 +233,6 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'personnel-department:create',
     'personnel-department:update',
     'personnel-department:manage',
-    'users:view',
     'manuals:view',
     'reports:view',
     'reports:export',
@@ -162,6 +262,34 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'reports:view',
     'reports:export',
   ],
+  controlling: [
+    'dashboard:view',
+    'financial:view',
+    'financial:create',
+    'financial:update',
+    'financial:manage',
+    'financial:approve',
+    'financial:export',
+    'commercial:view',
+    'clients:view',
+    'manuals:view',
+    'reports:view',
+    'reports:export',
+  ],
+  controllership: [
+    'dashboard:view',
+    'financial:view',
+    'financial:create',
+    'financial:update',
+    'financial:manage',
+    'financial:approve',
+    'financial:export',
+    'commercial:view',
+    'clients:view',
+    'manuals:view',
+    'reports:view',
+    'reports:export',
+  ],
   maintenance: [
     'dashboard:view',
     'maintenance:view',
@@ -185,6 +313,7 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'reports:view',
     'reports:export',
   ],
+  management: MANAGEMENT_DEPARTMENT_PERMISSIONS,
   operations: [
     'dashboard:view',
     'operations:view',
@@ -224,11 +353,6 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
   ],
   'information-technology': [
     'dashboard:view',
-    'users:view',
-    'users:create',
-    'users:update',
-    'users:delete',
-    'users:manage',
     'ai-agents:view',
     'ai-agents:create',
     'ai-agents:update',
@@ -242,58 +366,39 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'manuals:manage',
     'reports:view',
     'reports:export',
-    'settings:view',
-    'settings:update',
-    'settings:manage',
   ],
 };
 
-export const DEFAULT_ROLE_PERMISSIONS: Readonly<
-  Record<string, readonly PermissionCode[]>
-> = {
-  administrator: ALL_PERMISSION_CODES,
-  director: [
-    'dashboard:view',
-    'users:view',
-    'users:manage',
-    'human-resources:view',
-    'human-resources:manage',
-    'personnel-department:view',
-    'personnel-department:manage',
-    'commercial:view',
-    'commercial:manage',
-    'purchasing:view',
-    'purchasing:manage',
-    'maintenance:view',
-    'maintenance:manage',
-    'monitoring:view',
-    'monitoring:manage',
-    'operations:view',
-    'operations:manage',
-    'cleaning:view',
-    'cleaning:manage',
-    'drivers:view',
-    'drivers:manage',
-    'financial:view',
-    'financial:manage',
-    'financial:approve',
-    'clients:view',
-    'clients:manage',
-    'whatsapp-conversations:manage',
-    'ai-agents:view',
-    'ai-agents:use',
-    'manuals:view',
-    'reports:view',
-    'reports:export',
-    'settings:view',
-  ],
-  manager: [
-    'dashboard:view',
-    'whatsapp-conversations:manage',
-    'ai-agents:use',
-    'manuals:view',
-    'reports:view',
-    'reports:export',
-  ],
-  driver: ['dashboard:view', 'drivers:view', 'operations:view', 'manuals:view'],
-};
+export function allowedPermissionsForDepartments(
+  departments: readonly SupportedUserDepartment[],
+): PermissionCode[] {
+  const allowed = new Set<PermissionCode>(EMPLOYEE_SELF_SERVICE_PERMISSIONS);
+
+  for (const department of departments) {
+    for (const permission of DEFAULT_DEPARTMENT_PERMISSIONS[department]) {
+      allowed.add(permission);
+    }
+  }
+
+  return Array.from(allowed).sort();
+}
+
+const implicitPermissionCodeSet = new Set<PermissionCode>(
+  EMPLOYEE_SELF_SERVICE_PERMISSIONS,
+);
+
+export function isImplicitPermissionCode(permission: PermissionCode): boolean {
+  return implicitPermissionCodeSet.has(permission);
+}
+
+export function departmentsAllowingPermission(
+  permission: PermissionCode,
+): UserDepartment[] {
+  if (isImplicitPermissionCode(permission)) {
+    return [...DEPARTMENTS];
+  }
+
+  return DEPARTMENTS.filter((department) =>
+    DEFAULT_DEPARTMENT_PERMISSIONS[department].includes(permission),
+  );
+}

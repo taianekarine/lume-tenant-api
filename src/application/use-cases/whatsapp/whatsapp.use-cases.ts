@@ -3,14 +3,20 @@ import type {
   ClaimEvolutionDispatchInput,
   CompleteOutboxExecutionInput,
   ConversationListQuery,
+  CreateQuoteProposalInput,
   CreateHumanOutboundInput,
   CreateOutboundInput,
   EvolutionResultInput,
+  DecideQuoteProposalInput,
   MessageListQuery,
   PersistInboundInput,
+  QuoteProposalListQuery,
   QuoteRequestPatch,
+  SendQuoteProposalInput,
   TransitionCommand,
   TransitionListQuery,
+  UpdateQuoteProposalStatusInput,
+  UploadQuoteProposalDocumentInput,
 } from '../../contracts/whatsapp.repository';
 
 export class PersistInboundWhatsAppUseCase {
@@ -66,6 +72,65 @@ export class CompleteOutboxExecutionUseCase {
   constructor(private readonly repository: WhatsAppRepository) {}
   execute(input: CompleteOutboxExecutionInput) {
     return this.repository.completeOutboxExecution(input);
+  }
+}
+
+export class QuoteProposalUseCase {
+  constructor(private readonly repository: WhatsAppRepository) {}
+
+  list(companyId: string, query: QuoteProposalListQuery) {
+    return this.repository.listQuoteProposals(companyId, query);
+  }
+
+  notificationSummary(companyId: string, userId: string) {
+    return this.repository.getQuoteProposalNotificationSummary(
+      companyId,
+      userId,
+    );
+  }
+
+  markNotificationRead(companyId: string, userId: string) {
+    return this.repository.markQuoteProposalNotificationRead(companyId, userId);
+  }
+
+  get(companyId: string, quoteRequestId: string) {
+    return this.repository.getQuoteProposal(companyId, quoteRequestId);
+  }
+
+  create(input: CreateQuoteProposalInput) {
+    return this.repository.createQuoteProposal(input);
+  }
+
+  decide(input: DecideQuoteProposalInput) {
+    return this.repository.decideQuoteProposal(input);
+  }
+
+  updateStatus(input: UpdateQuoteProposalStatusInput) {
+    if (input.status === 'approved' || input.status === 'rejected') {
+      return this.repository.decideQuoteProposal({
+        companyId: input.companyId,
+        quoteRequestId: input.quoteRequestId,
+        actorUserId: input.actorUserId,
+        commandId: input.commandId,
+        expectedVersion: input.expectedVersion,
+        decision: input.status,
+        reason: input.reason,
+      });
+    }
+
+    return this.repository.updateQuoteProposalStatus(input);
+  }
+
+  upload(input: UploadQuoteProposalDocumentInput) {
+    return this.repository.uploadQuoteProposalDocument(input);
+  }
+
+  send(input: SendQuoteProposalInput) {
+    return this.repository.sendQuoteProposal(input);
+  }
+
+  getDocument(companyId: string, documentId: string) {
+    return this.repository.getQuoteProposalDocument(companyId, documentId);
   }
 }
 

@@ -1,10 +1,19 @@
 export type AppErrorCode =
+  | 'ACCOUNT_INACTIVE'
+  | 'ACCOUNT_PASSWORD_SETUP_REQUIRED'
+  | 'ACCOUNT_SUSPENDED'
   | 'CONFLICT'
+  | 'CONVERSION_NOT_SUPPORTED'
+  | 'EMAIL_DELIVERY_UNAVAILABLE'
   | 'FORBIDDEN'
   | 'INVALID_CREDENTIALS'
+  | 'INVALID_PASSWORD_CHANGE_TOKEN'
   | 'INVALID_REFRESH_TOKEN'
   | 'LICENSE_UNAVAILABLE'
   | 'NOT_FOUND'
+  | 'QUOTE_CONVERSATION_CLOSED'
+  | 'SUPPORT_EMAIL_DELIVERY_FAILED'
+  | 'UNSUPPORTED_FILE_FORMAT'
   | 'VALIDATION_ERROR';
 
 export class AppError extends Error {
@@ -34,6 +43,20 @@ export function notFound(resource: string): AppError {
 
 export function validationError(message: string): AppError {
   return new AppError('VALIDATION_ERROR', message);
+}
+
+export function unsupportedFileFormat(
+  message: string,
+  details?: Readonly<Record<string, unknown>>,
+): AppError {
+  return new AppError('UNSUPPORTED_FILE_FORMAT', message, details);
+}
+
+export function conversionNotSupported(
+  message: string,
+  details?: Readonly<Record<string, unknown>>,
+): AppError {
+  return new AppError('CONVERSION_NOT_SUPPORTED', message, details);
 }
 
 export function licenseUnavailable(message: string): AppError {

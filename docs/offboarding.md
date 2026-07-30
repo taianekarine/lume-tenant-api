@@ -7,7 +7,7 @@ Procedimento recomendado:
 1. interromper novas integrações;
 2. concluir ou registrar eventos pendentes da outbox;
 3. gerar backup consistente e criptografado;
-4. exportar usuários, papéis, auditoria e dados de negócio;
+4. exportar usuários, departamentos, permissões diretas, auditoria e dados de negócio;
 5. não transferir refresh tokens ou sessões ativas;
 6. revogar credenciais do edge;
 7. entregar documentação de schema e versão da aplicação;

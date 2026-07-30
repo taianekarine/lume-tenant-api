@@ -1,6 +1,16 @@
-import { conflict, validationError } from '../../../core/errors/app-error';
-import { type Department } from '../../../domain/access/access.constants';
-import { User } from '../../../domain/entities/user';
+import {
+  conflict,
+  forbidden,
+  validationError,
+} from '../../../core/errors/app-error';
+import {
+  allowedPermissionsForDepartments,
+  isPermissionCode,
+  normalizeUserDepartments,
+  type PermissionCode,
+  type SupportedUserDepartment,
+} from '../../../domain/access/access.constants';
+import { isValidUsername, User } from '../../../domain/entities/user';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
 import {
   normalizeCpf,
@@ -9,7 +19,6 @@ import {
 } from '../../../shared/utils/normalization';
 import { PasswordHasher } from '../../contracts/cryptography';
 import {
-  RolesRepository,
   TenantAuditLogsRepository,
   UsersRepository,
 } from '../../contracts/repositories';
@@ -23,29 +32,61 @@ export interface CreateUserInput {
   email: string;
   cpf?: string;
   password: string;
-  departments: Department[];
-  roleIds: string[];
+  isAdministrator?: boolean;
+  departments: SupportedUserDepartment[];
+  permissionCodes: PermissionCode[];
 }
 
 export class CreateUserUseCase {
   constructor(
     private readonly users: UsersRepository,
-    private readonly roles: RolesRepository,
     private readonly passwordHasher: PasswordHasher,
     private readonly auditLogs?: TenantAuditLogsRepository,
   ) {}
 
   async execute(input: CreateUserInput) {
-    const roleIds = Array.from(new Set(input.roleIds));
-    const departments = Array.from(new Set(input.departments));
+    const isAdministrator = input.isAdministrator === true;
+    if (isAdministrator) {
+      const actor = input.actorUserId
+        ? await this.users.findById(input.companyId, input.actorUserId)
+        : null;
+      if (!actor?.user.props.isAdministrator) {
+        throw forbidden(
+          'Somente outro administrador pode criar uma conta administradora.',
+        );
+      }
+    }
+    const departments = isAdministrator
+      ? []
+      : normalizeUserDepartments(input.departments);
 
-    if (roleIds.length === 0 && departments.length === 0) {
+    if (!isAdministrator && departments.length === 0) {
+      throw validationError('Informe ao menos um departamento para o usuário.');
+    }
+    const permissionCodes = isAdministrator
+      ? []
+      : Array.from(new Set(input.permissionCodes)).sort();
+    const allowedPermissions = new Set(
+      allowedPermissionsForDepartments(input.departments),
+    );
+    if (
+      !isAdministrator &&
+      permissionCodes.some(
+        (permission) =>
+          !isPermissionCode(permission) || !allowedPermissions.has(permission),
+      )
+    ) {
       throw validationError(
-        'Informe ao menos um departamento ou papel para o usuário.',
+        'Uma ou mais permissões não são permitidas para os departamentos selecionados.',
       );
     }
 
     const usernameNormalized = normalizeUsername(input.username);
+    if (!isValidUsername(usernameNormalized)) {
+      throw validationError(
+        'O usuário deve possuir entre 3 e 40 caracteres permitidos e ao menos uma letra.',
+      );
+    }
     const emailNormalized = normalizeEmail(input.email);
     const cpfNormalized = normalizeCpf(input.cpf);
 
@@ -53,25 +94,16 @@ export class CreateUserUseCase {
       throw validationError('Informe um CPF válido.');
     }
 
-    const [identifierConflict, selectedRoles] = await Promise.all([
-      this.users.loginIdentifierExists({
-        usernameNormalized,
-        emailNormalized,
-        cpfNormalized,
-      }),
-      this.roles.findByIds(input.companyId, roleIds),
-    ]);
+    const identifierConflict = await this.users.loginIdentifierExists({
+      usernameNormalized,
+      emailNormalized,
+      cpfNormalized,
+    });
 
     if (identifierConflict) {
       throw conflict(
         `Já existe um usuário cadastrado com este ${identifierConflict}.`,
         identifierConflict,
-      );
-    }
-
-    if (selectedRoles.length !== roleIds.length) {
-      throw validationError(
-        'Um ou mais papéis não pertencem à empresa autenticada.',
       );
     }
 
@@ -84,10 +116,13 @@ export class CreateUserUseCase {
       emailNormalized,
       cpfNormalized,
       passwordHash: await this.passwordHasher.hash(input.password),
+      mustChangePassword: true,
+      isAdministrator,
       departments,
+      permissionCodes,
     });
 
-    const created = await this.users.create(user, roleIds);
+    const created = await this.users.create(user);
     if (this.auditLogs) {
       await this.auditLogs.create({
         companyId: input.companyId,
@@ -95,7 +130,7 @@ export class CreateUserUseCase {
         action: 'USER_CREATED',
         targetType: 'user',
         targetId: user.id,
-        metadata: { roleIds, departments },
+        metadata: { isAdministrator, departments, permissionCodes },
       });
     }
     return presentUser(created);

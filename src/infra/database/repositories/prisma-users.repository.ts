@@ -3,20 +3,119 @@ import { Injectable } from '@nestjs/common';
 import {
   UsersRepository,
   type UpdateUserPersistenceInput,
+  type UpdateUserStatusPersistenceInput,
   type UserListQuery,
   type UserListResult,
-  type UserWithRoles,
+  type UserProfileRecord,
+  type UserRecord,
 } from '../../../application/contracts/repositories';
 import type { User } from '../../../domain/entities/user';
-import type { Prisma } from '../prisma/generated/client';
+import {
+  departmentsAllowingPermission,
+  isImplicitPermissionCode,
+} from '../../../domain/access/access.constants';
+import {
+  UserAccountStatus as PrismaUserAccountStatus,
+  type Prisma,
+} from '../prisma/generated/client';
 import { rethrowKnownPrismaConflict } from '../prisma/prisma-errors';
-import { mapUserWithRoles, userWithRelations } from '../prisma/prisma.mappers';
+import { mapUserRecord, userRecordSelect } from '../prisma/prisma.mappers';
 import { PrismaService } from '../prisma/prisma.service';
+
+const userProfileSelect = {
+  id: true,
+  name: true,
+  username: true,
+  email: true,
+  profilePicture: true,
+  profilePictureMime: true,
+} as const satisfies Prisma.UserSelect;
+
+function mapUserProfile(
+  row: Prisma.UserGetPayload<{ select: typeof userProfileSelect }>,
+): UserProfileRecord {
+  return {
+    ...row,
+    profilePicture: row.profilePicture
+      ? new Uint8Array(row.profilePicture)
+      : null,
+  };
+}
+
+function userUpdateData(
+  input: UpdateUserPersistenceInput,
+): Prisma.UserUncheckedUpdateInput {
+  return {
+    ...(input.name === undefined ? {} : { name: input.name }),
+    ...(input.email === undefined ? {} : { email: input.email }),
+    ...(input.emailNormalized === undefined
+      ? {}
+      : { emailNormalized: input.emailNormalized }),
+    ...(input.cpfNormalized === undefined
+      ? {}
+      : { cpfNormalized: input.cpfNormalized }),
+    ...(input.isAdministrator === undefined
+      ? {}
+      : { isAdministrator: input.isAdministrator }),
+    ...(input.departments === undefined
+      ? {}
+      : { departments: [...input.departments] }),
+    ...(input.permissionCodes === undefined
+      ? {}
+      : { permissionCodes: [...input.permissionCodes] }),
+  };
+}
+
+function isSerializationConflict(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  if ('code' in error && error.code === 'P2034') return true;
+  if (!('cause' in error)) return false;
+  const cause = error.cause;
+  return (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'kind' in cause &&
+    cause.kind === 'TransactionWriteConflict'
+  );
+}
 
 @Injectable()
 export class PrismaUsersRepository extends UsersRepository {
   constructor(private readonly prisma: PrismaService) {
     super();
+  }
+
+  private async retrySerializable<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (!isSerializationConflict(error) || attempt >= 2) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  private async reactivateExpiredSuspensions(
+    companyId?: string,
+    userId?: string,
+  ): Promise<void> {
+    await this.prisma.user.updateMany({
+      where: {
+        ...(companyId ? { companyId } : {}),
+        ...(userId ? { id: userId } : {}),
+        status: PrismaUserAccountStatus.SUSPENDED,
+        suspendedUntil: { lte: new Date() },
+      },
+      data: {
+        status: PrismaUserAccountStatus.ACTIVE,
+        isActive: true,
+        suspendedUntil: null,
+        suspensionReason: null,
+        tokenVersion: { increment: 1 },
+      },
+    });
   }
 
   async loginIdentifierExists(input: {
@@ -64,61 +163,76 @@ export class PrismaUsersRepository extends UsersRepository {
     return 'cpf';
   }
 
-  async findByLoginIdentifier(
-    identifier: string,
-  ): Promise<UserWithRoles | null> {
-    const row = await this.prisma.user.findFirst({
+  async findByLoginIdentifier(identifier: string): Promise<UserRecord | null> {
+    let row = await this.prisma.user.findFirst({
       where: {
         OR: [
           { usernameNormalized: identifier },
           { emailNormalized: identifier },
-          { cpfNormalized: identifier },
         ],
       },
-      include: userWithRelations,
+      select: userRecordSelect,
     });
+    if (
+      row?.status === PrismaUserAccountStatus.SUSPENDED &&
+      row.suspendedUntil &&
+      row.suspendedUntil <= new Date()
+    ) {
+      await this.reactivateExpiredSuspensions(row.companyId, row.id);
+      row = await this.prisma.user.findUnique({
+        where: { id_companyId: { id: row.id, companyId: row.companyId } },
+        select: userRecordSelect,
+      });
+    }
 
-    return row ? mapUserWithRoles(row) : null;
+    return row ? mapUserRecord(row) : null;
   }
 
   async findById(
     companyId: string,
     userId: string,
-  ): Promise<UserWithRoles | null> {
+  ): Promise<UserRecord | null> {
+    await this.reactivateExpiredSuspensions(companyId, userId);
     const row = await this.prisma.user.findUnique({
       where: { id_companyId: { id: userId, companyId } },
-      include: userWithRelations,
+      select: userRecordSelect,
     });
 
-    return row ? mapUserWithRoles(row) : null;
+    return row ? mapUserRecord(row) : null;
   }
 
-  async create(user: User, roleIds: readonly string[]): Promise<UserWithRoles> {
+  async findProfileById(
+    companyId: string,
+    userId: string,
+  ): Promise<UserProfileRecord | null> {
+    const row = await this.prisma.user.findUnique({
+      where: { id_companyId: { id: userId, companyId } },
+      select: userProfileSelect,
+    });
+
+    return row ? mapUserProfile(row) : null;
+  }
+
+  async create(user: User): Promise<UserRecord> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
         await transaction.user.create({
           data: {
             ...user.props,
             departments: [...user.props.departments],
+            permissionCodes: [...user.props.permissionCodes],
+            status: PrismaUserAccountStatus.ACTIVE,
+            suspendedUntil: null,
+            suspensionReason: null,
           },
         });
 
-        if (roleIds.length > 0) {
-          await transaction.userRole.createMany({
-            data: roleIds.map((roleId) => ({
-              companyId: user.companyId,
-              userId: user.id,
-              roleId,
-            })),
-          });
-        }
-
         const row = await transaction.user.findUniqueOrThrow({
           where: { id_companyId: { id: user.id, companyId: user.companyId } },
-          include: userWithRelations,
+          select: userRecordSelect,
         });
 
-        return mapUserWithRoles(row);
+        return mapUserRecord(row);
       });
     } catch (error) {
       rethrowKnownPrismaConflict(error);
@@ -126,10 +240,47 @@ export class PrismaUsersRepository extends UsersRepository {
   }
 
   async list(companyId: string, query: UserListQuery): Promise<UserListResult> {
+    await this.reactivateExpiredSuspensions(companyId);
     const search = query.search?.trim();
+    const accessFilters: Prisma.UserWhereInput[] = [];
+    if (query.department) {
+      accessFilters.push({
+        OR: [
+          { isAdministrator: true },
+          { departments: { has: query.department } },
+        ],
+      });
+    }
+    if (query.permission && !isImplicitPermissionCode(query.permission)) {
+      accessFilters.push({
+        OR: [
+          { isAdministrator: true },
+          {
+            AND: [
+              { permissionCodes: { has: query.permission } },
+              {
+                departments: {
+                  hasSome: departmentsAllowingPermission(query.permission),
+                },
+              },
+            ],
+          },
+        ],
+      });
+    }
     const where: Prisma.UserWhereInput = {
       companyId,
-      ...(query.isActive === undefined ? {} : { isActive: query.isActive }),
+      ...(accessFilters.length > 0 ? { AND: accessFilters } : {}),
+      ...(query.status
+        ? {
+            status:
+              query.status === 'active'
+                ? PrismaUserAccountStatus.ACTIVE
+                : query.status === 'inactive'
+                  ? PrismaUserAccountStatus.INACTIVE
+                  : PrismaUserAccountStatus.SUSPENDED,
+          }
+        : {}),
       ...(search
         ? {
             OR: [
@@ -144,7 +295,7 @@ export class PrismaUsersRepository extends UsersRepository {
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.user.findMany({
         where,
-        include: userWithRelations,
+        select: userRecordSelect,
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
@@ -152,28 +303,15 @@ export class PrismaUsersRepository extends UsersRepository {
       this.prisma.user.count({ where }),
     ]);
 
-    return { items: rows.map(mapUserWithRoles), total };
+    return { items: rows.map(mapUserRecord), total };
   }
 
   async update(
     companyId: string,
     userId: string,
     input: UpdateUserPersistenceInput,
-  ): Promise<UserWithRoles> {
-    const data: Prisma.UserUncheckedUpdateInput = {
-      ...(input.name === undefined ? {} : { name: input.name }),
-      ...(input.email === undefined ? {} : { email: input.email }),
-      ...(input.emailNormalized === undefined
-        ? {}
-        : { emailNormalized: input.emailNormalized }),
-      ...(input.cpfNormalized === undefined
-        ? {}
-        : { cpfNormalized: input.cpfNormalized }),
-      ...(input.departments === undefined
-        ? {}
-        : { departments: [...input.departments] }),
-      ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
-    };
+  ): Promise<UserRecord> {
+    const data = userUpdateData(input);
 
     try {
       return await this.prisma.$transaction(async (transaction) => {
@@ -182,30 +320,154 @@ export class PrismaUsersRepository extends UsersRepository {
           data,
         });
 
-        if (input.roleIds) {
-          await transaction.userRole.deleteMany({
-            where: { companyId, userId },
-          });
-          if (input.roleIds.length > 0) {
-            await transaction.userRole.createMany({
-              data: input.roleIds.map((roleId) => ({
-                companyId,
-                userId,
-                roleId,
-              })),
-            });
-          }
-        }
-
         const row = await transaction.user.findUniqueOrThrow({
           where: { id_companyId: { id: userId, companyId } },
-          include: userWithRelations,
+          select: userRecordSelect,
         });
-        return mapUserWithRoles(row);
+        return mapUserRecord(row);
       });
     } catch (error) {
       rethrowKnownPrismaConflict(error);
     }
+  }
+
+  async updateWithAdministratorInvariant(
+    companyId: string,
+    userId: string,
+    input: UpdateUserPersistenceInput,
+  ): Promise<UserRecord | null> {
+    const data = userUpdateData(input);
+    try {
+      return await this.retrySerializable(() =>
+        this.prisma.$transaction(
+          async (transaction) => {
+            const activeAdministrators = await transaction.user.count({
+              where: {
+                companyId,
+                isAdministrator: true,
+                isActive: true,
+                status: PrismaUserAccountStatus.ACTIVE,
+              },
+            });
+            if (activeAdministrators <= 1) return null;
+
+            const changed = await transaction.user.updateMany({
+              where: {
+                id: userId,
+                companyId,
+                isAdministrator: true,
+                isActive: true,
+                status: PrismaUserAccountStatus.ACTIVE,
+              },
+              data,
+            });
+            if (changed.count !== 1) return null;
+
+            const row = await transaction.user.findUniqueOrThrow({
+              where: { id_companyId: { id: userId, companyId } },
+              select: userRecordSelect,
+            });
+            return mapUserRecord(row);
+          },
+          { isolationLevel: 'Serializable' },
+        ),
+      );
+    } catch (error) {
+      rethrowKnownPrismaConflict(error);
+    }
+  }
+
+  async updateStatus(
+    companyId: string,
+    userId: string,
+    input: UpdateUserStatusPersistenceInput,
+  ): Promise<UserRecord> {
+    const status =
+      input.status === 'active'
+        ? PrismaUserAccountStatus.ACTIVE
+        : input.status === 'inactive'
+          ? PrismaUserAccountStatus.INACTIVE
+          : PrismaUserAccountStatus.SUSPENDED;
+
+    return this.prisma.$transaction(async (transaction) => {
+      await transaction.user.update({
+        where: { id_companyId: { id: userId, companyId } },
+        data: {
+          status,
+          isActive: input.status === 'active',
+          suspendedUntil: input.suspendedUntil,
+          suspensionReason: input.suspensionReason,
+          tokenVersion: { increment: 1 },
+        },
+      });
+      await transaction.refreshToken.updateMany({
+        where: { companyId, userId, revokedAt: null },
+        data: { revokedAt: input.changedAt },
+      });
+      const row = await transaction.user.findUniqueOrThrow({
+        where: { id_companyId: { id: userId, companyId } },
+        select: userRecordSelect,
+      });
+      return mapUserRecord(row);
+    });
+  }
+
+  async updateStatusWithAdministratorInvariant(
+    companyId: string,
+    userId: string,
+    input: UpdateUserStatusPersistenceInput,
+  ): Promise<UserRecord | null> {
+    const status =
+      input.status === 'active'
+        ? PrismaUserAccountStatus.ACTIVE
+        : input.status === 'inactive'
+          ? PrismaUserAccountStatus.INACTIVE
+          : PrismaUserAccountStatus.SUSPENDED;
+
+    return this.retrySerializable(() =>
+      this.prisma.$transaction(
+        async (transaction) => {
+          const activeAdministrators = await transaction.user.count({
+            where: {
+              companyId,
+              isAdministrator: true,
+              isActive: true,
+              status: PrismaUserAccountStatus.ACTIVE,
+            },
+          });
+          if (activeAdministrators <= 1) return null;
+
+          const changed = await transaction.user.updateMany({
+            where: {
+              id: userId,
+              companyId,
+              isAdministrator: true,
+              isActive: true,
+              status: PrismaUserAccountStatus.ACTIVE,
+            },
+            data: {
+              status,
+              isActive: input.status === 'active',
+              suspendedUntil: input.suspendedUntil,
+              suspensionReason: input.suspensionReason,
+              tokenVersion: { increment: 1 },
+            },
+          });
+          if (changed.count !== 1) return null;
+
+          await transaction.refreshToken.updateMany({
+            where: { companyId, userId, revokedAt: null },
+            data: { revokedAt: input.changedAt },
+          });
+          const row = await transaction.user.findUniqueOrThrow({
+            where: { id_companyId: { id: userId, companyId } },
+            select: userRecordSelect,
+          });
+          return mapUserRecord(row);
+        },
+        { isolationLevel: 'Serializable' },
+      ),
+    );
   }
 
   async markLastLogin(
@@ -219,13 +481,109 @@ export class PrismaUsersRepository extends UsersRepository {
     });
   }
 
-  countActiveByRole(companyId: string, roleId: string): Promise<number> {
+  countActiveAdministrators(companyId: string): Promise<number> {
     return this.prisma.user.count({
       where: {
         companyId,
         isActive: true,
-        roles: { some: { companyId, roleId } },
+        status: PrismaUserAccountStatus.ACTIVE,
+        isAdministrator: true,
       },
     });
+  }
+
+  async listPasswordHashes(
+    companyId: string,
+    userId: string,
+    limit: number,
+  ): Promise<string[]> {
+    const [current, history] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id_companyId: { id: userId, companyId } },
+        select: { passwordHash: true },
+      }),
+      this.prisma.userPasswordHistory.findMany({
+        where: { companyId, userId },
+        orderBy: { createdAt: 'desc' },
+        take: Math.max(0, limit - 1),
+        select: { passwordHash: true },
+      }),
+    ]);
+
+    return current
+      ? [current.passwordHash, ...history.map((entry) => entry.passwordHash)]
+      : [];
+  }
+
+  async changePassword(
+    companyId: string,
+    userId: string,
+    passwordHash: string,
+    changedAt: Date,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (transaction) => {
+      const current = await transaction.user.findUniqueOrThrow({
+        where: { id_companyId: { id: userId, companyId } },
+        select: { passwordHash: true },
+      });
+
+      await transaction.userPasswordHistory.create({
+        data: {
+          companyId,
+          userId,
+          passwordHash: current.passwordHash,
+          createdAt: changedAt,
+        },
+      });
+      await transaction.user.update({
+        where: { id_companyId: { id: userId, companyId } },
+        data: {
+          passwordHash,
+          mustChangePassword: false,
+          tokenVersion: { increment: 1 },
+        },
+      });
+      await transaction.refreshToken.updateMany({
+        where: { companyId, userId, revokedAt: null },
+        data: { revokedAt: changedAt },
+      });
+    });
+  }
+
+  async requirePasswordChange(
+    companyId: string,
+    userId: string,
+  ): Promise<void> {
+    const now = new Date();
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id_companyId: { id: userId, companyId } },
+        data: {
+          mustChangePassword: true,
+          tokenVersion: { increment: 1 },
+        },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { companyId, userId, revokedAt: null },
+        data: { revokedAt: now },
+      }),
+    ]);
+  }
+
+  async updateProfilePicture(
+    companyId: string,
+    userId: string,
+    picture: Uint8Array<ArrayBuffer> | null,
+    mimeType: string | null,
+  ): Promise<UserProfileRecord> {
+    const row = await this.prisma.user.update({
+      where: { id_companyId: { id: userId, companyId } },
+      data: {
+        profilePicture: picture,
+        profilePictureMime: mimeType,
+      },
+      select: userProfileSelect,
+    });
+    return mapUserProfile(row);
   }
 }

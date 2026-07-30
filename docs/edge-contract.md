@@ -13,7 +13,7 @@ API Gestor da Milenium.
 - devolver resultados normalizados como eventos;
 - continuar processando quando o control estiver indisponível.
 
-O edge não é fonte oficial de usuários, papéis, permissões, sessões ou
+O edge não é fonte oficial de usuários, departamentos, permissões, sessões ou
 auditoria de negócio. Esses dados pertencem ao `lume-tenant-api`.
 
 ## Fluxo

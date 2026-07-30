@@ -7,6 +7,7 @@ import {
   CreateHumanOutboundWhatsAppUseCase,
   CreateOutboundWhatsAppUseCase,
   PatchQuoteRequestUseCase,
+  QuoteProposalUseCase,
   QueryWhatsAppUseCase,
   RecordEvolutionResultUseCase,
   TransitionWhatsAppConversationUseCase,
@@ -17,6 +18,8 @@ import { WhatsAppRetentionService } from '../../infra/retention/whatsapp-retenti
 import { ServiceIdentityGuard } from '../../shared/http/guards/service-identity.guard';
 import { EvolutionWebhookController } from './evolution-webhook.controller';
 import { InternalWhatsAppController } from './internal-whatsapp.controller';
+import { NotificationsController } from './notifications.controller';
+import { QuoteProposalController } from './quote-proposal.controller';
 import { WhatsAppPanelController } from './whatsapp-panel.controller';
 
 @Module({
@@ -24,6 +27,8 @@ import { WhatsAppPanelController } from './whatsapp-panel.controller';
     EvolutionWebhookController,
     InternalWhatsAppController,
     WhatsAppPanelController,
+    QuoteProposalController,
+    NotificationsController,
   ],
   providers: [
     EvolutionWebhookService,
@@ -76,6 +81,12 @@ import { WhatsAppPanelController } from './whatsapp-panel.controller';
       provide: QueryWhatsAppUseCase,
       useFactory: (repository: WhatsAppRepository) =>
         new QueryWhatsAppUseCase(repository),
+      inject: [WhatsAppRepository],
+    },
+    {
+      provide: QuoteProposalUseCase,
+      useFactory: (repository: WhatsAppRepository) =>
+        new QuoteProposalUseCase(repository),
       inject: [WhatsAppRepository],
     },
   ],

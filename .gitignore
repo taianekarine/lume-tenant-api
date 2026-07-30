@@ -46,6 +46,8 @@ lerna-debug.log*
 # Prisma local development database files
 prisma/*.db
 prisma/*.db-journal
+*.dump
+backups/
 
 # temp directory
 .temp
@@ -56,6 +58,7 @@ pids
 *.pid
 *.seed
 *.pid.lock
+/var/imports/whatsapp/
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

@@ -63,7 +63,7 @@ export class IntegrationOutboxDispatcher
     this.enabled = config.get<boolean>('N8N_DISPATCH_ENABLED') ?? false;
     this.webhookUrl = config.get<string>('N8N_WEBHOOK_URL') ?? '';
     this.bearerSecret = config.get<string>('N8N_OUTBOUND_SECRET') ?? '';
-    this.intervalMs = config.get<number>('N8N_DISPATCH_INTERVAL_MS') ?? 1_000;
+    this.intervalMs = config.get<number>('N8N_DISPATCH_INTERVAL_MS') ?? 500;
     this.requestTimeoutMs =
       config.get<number>('N8N_REQUEST_TIMEOUT_MS') ?? 10_000;
     this.baseBackoffMs = config.get<number>('N8N_RETRY_BASE_DELAY_MS') ?? 1_000;

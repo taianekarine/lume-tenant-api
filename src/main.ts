@@ -7,6 +7,7 @@ import helmet from 'helmet';
 
 import { AppModule } from './app.module';
 import { parseCorsOrigins } from './infra/config/environment';
+import { configureBodyParsers } from './shared/http/configure-body-parsers';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -17,14 +18,10 @@ async function bootstrap() {
   const swaggerEnabled = config.getOrThrow<boolean>('SWAGGER_ENABLED');
   const trustProxyHops = config.getOrThrow<number>('TRUST_PROXY_HOPS');
   const maximumBodyBytes = config.getOrThrow<number>(
-    'WHATSAPP_MAX_WEBHOOK_BYTES',
+    'HTTP_MAX_JSON_BODY_BYTES',
   );
 
-  app.useBodyParser('json', { limit: `${maximumBodyBytes}b` });
-  app.useBodyParser('urlencoded', {
-    limit: `${maximumBodyBytes}b`,
-    extended: true,
-  });
+  configureBodyParsers(app, maximumBodyBytes);
   app.use(
     helmet(swaggerEnabled ? { contentSecurityPolicy: false } : undefined),
   );
@@ -51,7 +48,7 @@ async function bootstrap() {
     const openApiConfig = new DocumentBuilder()
       .setTitle('Lume Tenant API')
       .setDescription(
-        'Data plane autônomo de um único tenant, com autenticação, usuários, papéis e permissões.',
+        'Data plane autônomo de um único tenant, com autenticação, usuários, departamentos e permissões diretas.',
       )
       .setVersion('1.0')
       .addBearerAuth()

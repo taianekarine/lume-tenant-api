@@ -9,6 +9,15 @@ export interface ResolveTransitionInput {
   current: ConversationSnapshot;
   name: TransitionName;
   targetDepartment?: Department;
+  departmentOption?: string;
+  policy?: {
+    /**
+     * Política preservada para uma futura retomada. No MVP atual o valor
+     * padrão é false, portanto uma proposta aprovada não bloqueia o
+     * encerramento por si só.
+     */
+    preventCloseWithApprovedQuote?: boolean;
+  };
 }
 
 export type TransitionActor = 'user' | 'n8n' | 'webhook' | 'system';
@@ -18,16 +27,21 @@ const actorsByTransition: Readonly<
 > = {
   'present-main-menu': ['n8n'],
   'select-commercial': ['n8n'],
+  'start-department-contact': ['n8n'],
   'start-quote': ['n8n'],
   'new-quote-request': ['n8n'],
   'present-quote-summary': ['n8n'],
   'correct-quote': ['n8n'],
   'confirm-quote': ['n8n'],
+  'proposal-delivery-confirmed': ['n8n', 'system'],
+  'proposal-response-received': ['webhook', 'system'],
   'return-to-main-menu': ['n8n'],
   'take-over': ['user'],
   'return-to-bot': ['user'],
   forward: ['user', 'n8n'],
   'mark-read': ['user'],
+  close: ['user'],
+  'close-after-rejection': ['user'],
   'resume-awaited-reply': ['webhook', 'system'],
   'resume-contextual-contact': ['webhook', 'system'],
 };
@@ -56,6 +70,36 @@ function assertState(
     throw validationError(
       `A transição ${name} não é permitida a partir de ${current.conversationState}.`,
     );
+  }
+}
+
+const followUpRequestStatuses: readonly ConversationSnapshot['requestStatus'][] =
+  ['waiting-for-customer', 'under-review', 'approved', 'rejected'];
+
+function resolveBotFlowStep(
+  current: ConversationSnapshot,
+): ConversationSnapshot['flowStep'] {
+  if (followUpRequestStatuses.includes(current.requestStatus)) {
+    return 'commercial-follow-up-menu';
+  }
+
+  const candidate = current.resumeFlowStep ?? current.flowStep;
+  if (!['quote-send-pending', 'human-service', 'closed'].includes(candidate)) {
+    return candidate;
+  }
+
+  switch (current.requestStatus) {
+    case 'collecting-information':
+      return 'quote-data-collection';
+    case 'waiting-for-customer':
+      return 'quote-summary-confirmation';
+    case 'not-started':
+    case 'cancelled':
+      return 'main-menu';
+    case 'under-review':
+    case 'approved':
+    case 'rejected':
+      return 'commercial-follow-up-menu';
   }
 }
 
@@ -91,6 +135,32 @@ export function resolveConversationTransition(
         resumeFlowStep: null,
       };
 
+    case 'start-department-contact':
+      assertState(current, ['bot-active'], name);
+      if (current.flowStep !== 'main-menu') {
+        throw validationError(
+          'A seleção de departamento só é permitida no menu principal.',
+        );
+      }
+      if (!input.targetDepartment) {
+        throw validationError(
+          'Informe o departamento de destino antes de coletar os dados.',
+        );
+      }
+      if (!input.departmentOption || !/^[2-9]$/.test(input.departmentOption)) {
+        throw validationError(
+          'A opção de departamento deve estar entre 2 e 9.',
+        );
+      }
+      return {
+        ...current,
+        department: input.targetDepartment,
+        conversationState: 'bot-active',
+        flowStep: 'main-menu',
+        resumeState: null,
+        resumeFlowStep: null,
+      };
+
     case 'start-quote':
       assertState(current, ['bot-active'], name);
       if (
@@ -114,9 +184,12 @@ export function resolveConversationTransition(
       assertState(current, ['bot-active'], name);
       if (
         current.flowStep !== 'commercial-follow-up-menu' ||
-        !['under-review', 'approved', 'rejected'].includes(
-          current.requestStatus,
-        )
+        ![
+          'waiting-for-customer',
+          'under-review',
+          'approved',
+          'rejected',
+        ].includes(current.requestStatus)
       ) {
         throw validationError(
           'Uma nova solicitação exige o menu comercial de acompanhamento de um orçamento confirmado.',
@@ -181,11 +254,55 @@ export function resolveConversationTransition(
       }
       return {
         ...current,
-        conversationState: 'sent-to-human',
-        flowStep: 'quote-send-pending',
+        conversationState: 'bot-active',
+        flowStep: 'commercial-follow-up-menu',
         requestStatus: 'under-review',
         resumeState: null,
         resumeFlowStep: null,
+      };
+
+    case 'proposal-delivery-confirmed':
+      assertState(
+        current,
+        ['bot-active', 'sent-to-human', 'human-active'],
+        name,
+      );
+      if (
+        current.department !== 'commercial' ||
+        current.flowStep !== 'quote-send-pending' ||
+        current.requestStatus !== 'under-review'
+      ) {
+        throw validationError(
+          'A confirmação de entrega exige uma proposta comercial em envio.',
+        );
+      }
+      return {
+        ...current,
+        conversationState: 'waiting-for-customer',
+        flowStep: 'quote-send-pending',
+        requestStatus: 'waiting-for-customer',
+        resumeState: null,
+        resumeFlowStep: null,
+      };
+
+    case 'proposal-response-received':
+      assertState(current, ['waiting-for-customer'], name);
+      if (
+        current.department !== 'commercial' ||
+        current.flowStep !== 'quote-send-pending' ||
+        current.requestStatus !== 'waiting-for-customer'
+      ) {
+        throw validationError(
+          'A resposta exige uma proposta entregue e aguardando o cliente.',
+        );
+      }
+      return {
+        ...current,
+        conversationState: 'sent-to-human',
+        flowStep: 'human-service',
+        requestStatus: 'waiting-for-customer',
+        resumeState: null,
+        resumeFlowStep: 'commercial-follow-up-menu',
       };
 
     case 'return-to-main-menu':
@@ -205,19 +322,27 @@ export function resolveConversationTransition(
         conversationState: 'human-active',
         flowStep: 'human-service',
         resumeState: null,
-        resumeFlowStep: current.flowStep,
+        resumeFlowStep: resolveBotFlowStep(current),
       };
 
     case 'return-to-bot':
-      assertState(current, ['human-active', 'sent-to-human'], name);
+      assertState(
+        current,
+        ['human-active', 'sent-to-human', 'waiting-for-customer'],
+        name,
+      );
+      if (
+        current.conversationState === 'waiting-for-customer' &&
+        current.requestStatus !== 'approved'
+      ) {
+        throw validationError(
+          'Somente uma proposta aprovada sem atendente pode sair da espera diretamente para o bot.',
+        );
+      }
       return {
         ...current,
         conversationState: 'bot-active',
-        flowStep:
-          current.resumeFlowStep ??
-          (current.requestStatus === 'not-started'
-            ? 'main-menu'
-            : 'commercial-follow-up-menu'),
+        flowStep: resolveBotFlowStep(current),
         resumeState: null,
         resumeFlowStep: null,
       };
@@ -235,12 +360,45 @@ export function resolveConversationTransition(
         conversationState: 'sent-to-human',
         flowStep: 'human-service',
         resumeState: null,
-        resumeFlowStep: current.flowStep,
+        resumeFlowStep: resolveBotFlowStep(current),
       };
 
     case 'mark-read':
       assertOpen(current);
       return { ...current };
+
+    case 'close':
+      assertOpen(current);
+      if (
+        input.policy?.preventCloseWithApprovedQuote === true &&
+        current.requestStatus === 'approved'
+      ) {
+        throw validationError(
+          'Um atendimento com proposta aprovada não pode ser encerrado.',
+        );
+      }
+      return {
+        ...current,
+        conversationState: 'closed',
+        flowStep: 'closed',
+        resumeState: null,
+        resumeFlowStep: null,
+      };
+
+    case 'close-after-rejection':
+      assertOpen(current);
+      if (current.requestStatus !== 'rejected') {
+        throw validationError(
+          'O atendimento só pode ser encerrado depois que a proposta for recusada.',
+        );
+      }
+      return {
+        ...current,
+        conversationState: 'closed',
+        flowStep: 'closed',
+        resumeState: null,
+        resumeFlowStep: null,
+      };
 
     case 'resume-awaited-reply':
       assertState(current, ['waiting-for-customer'], name);
@@ -261,10 +419,17 @@ export function resolveConversationTransition(
       };
 
     case 'resume-contextual-contact':
-      assertState(current, ['sent-to-human'], name);
+      assertState(current, ['sent-to-human', 'bot-active'], name);
       if (
-        current.flowStep !== 'quote-send-pending' ||
-        !['under-review', 'approved'].includes(current.requestStatus)
+        !(
+          (current.conversationState === 'sent-to-human' &&
+            current.flowStep === 'quote-send-pending') ||
+          (current.conversationState === 'bot-active' &&
+            ['quote-send-pending', 'commercial-follow-up-menu'].includes(
+              current.flowStep,
+            ))
+        ) ||
+        !followUpRequestStatuses.includes(current.requestStatus)
       ) {
         throw validationError(
           'Não existe orçamento confirmado em acompanhamento para retomar.',

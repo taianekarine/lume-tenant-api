@@ -49,6 +49,8 @@ export abstract class RefreshTokenService {
   abstract matches(firstHash: string, secondHash: string): boolean;
 }
 
+export abstract class PasswordChangeTokenService extends RefreshTokenService {}
+
 export abstract class OfflineLicenseVerifier {
   abstract status(at?: Date): OfflineLicenseStatus;
 }

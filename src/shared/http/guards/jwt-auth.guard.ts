@@ -52,6 +52,8 @@ export class JwtAuthGuard implements CanActivate {
       if (
         !record ||
         !record.user.props.isActive ||
+        record.user.props.status !== 'active' ||
+        record.user.props.mustChangePassword ||
         !record.companyIsActive ||
         record.user.props.tokenVersion !== payload.tokenVersion
       ) {

@@ -1,10 +1,10 @@
 import { conflict, validationError } from '../../../core/errors/app-error';
 import {
-  ALL_PERMISSION_CODES,
-  DEFAULT_ROLE_PERMISSIONS,
+  ASSIGNABLE_DEPARTMENTS,
+  ASSIGNABLE_DEPARTMENT_LABELS,
+  normalizeUserDepartment,
 } from '../../../domain/access/access.constants';
 import { Company } from '../../../domain/entities/company';
-import { Role } from '../../../domain/entities/role';
 import { User } from '../../../domain/entities/user';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
 import {
@@ -64,44 +64,19 @@ export class BootstrapTenantUseCase {
       passwordHash: await this.passwordHasher.hash(
         input.administrator.password,
       ),
+      mustChangePassword: true,
+      isAdministrator: true,
       departments: [],
+      permissionCodes: [],
     });
-    const roles = [
-      Role.create({
-        companyId: company.id,
-        code: 'administrator',
-        name: 'Administrador',
-        description: 'Acesso completo à instalação.',
-        permissionCodes: ALL_PERMISSION_CODES,
-        isSystem: true,
-      }),
-      Role.create({
-        companyId: company.id,
-        code: 'director',
-        name: 'Diretoria',
-        permissionCodes: DEFAULT_ROLE_PERMISSIONS.director,
-        isSystem: true,
-      }),
-      Role.create({
-        companyId: company.id,
-        code: 'manager',
-        name: 'Gerência',
-        permissionCodes: DEFAULT_ROLE_PERMISSIONS.manager,
-        isSystem: true,
-      }),
-      Role.create({
-        companyId: company.id,
-        code: 'driver',
-        name: 'Motorista',
-        permissionCodes: DEFAULT_ROLE_PERMISSIONS.driver,
-        isSystem: true,
-      }),
-    ];
     await this.tenants.createWithAdministrator({
       company,
       administrator,
-      roles,
-      administratorRoleId: roles[0].id,
+      departments: ASSIGNABLE_DEPARTMENTS.map((department) => ({
+        code: normalizeUserDepartment(department),
+        name: ASSIGNABLE_DEPARTMENT_LABELS[department],
+        isDefault: department === 'commercial',
+      })),
     });
     return {
       tenant: {

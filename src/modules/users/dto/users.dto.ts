@@ -1,26 +1,29 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform, Type } from 'class-transformer';
+import { Type } from 'class-transformer';
 import {
   ArrayUnique,
   IsArray,
   IsBoolean,
+  IsDateString,
   IsEmail,
   IsIn,
   IsInt,
   IsOptional,
   IsString,
-  IsUUID,
   Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
-  ValidateIf,
 } from 'class-validator';
 
-import { DEPARTMENTS } from '../../../domain/access/access.constants';
-import { onlyDigits } from '../../../shared/utils/normalization';
-
+import {
+  ASSIGNABLE_DEPARTMENTS,
+  ALL_PERMISSION_CODES,
+  type AssignableDepartment,
+  type PermissionCode,
+} from '../../../domain/access/access.constants';
+import { USERNAME_PATTERN } from '../../../domain/entities/user';
 export class CreateUserDto {
   @ApiProperty({ example: 'Carlos Oliveira' })
   @IsString()
@@ -29,21 +32,16 @@ export class CreateUserDto {
   name!: string;
 
   @ApiProperty({ example: 'carlos.oliveira' })
-  @Matches(/^[a-zA-Z0-9._-]{3,40}$/)
+  @Matches(USERNAME_PATTERN, {
+    message:
+      'O usuário deve possuir entre 3 e 40 caracteres permitidos e ao menos uma letra.',
+  })
   username!: string;
 
   @ApiProperty({ example: 'carlos@empresa.com.br' })
   @IsEmail()
   @MaxLength(254)
   email!: string;
-
-  @ApiPropertyOptional({ example: '52998224725' })
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? onlyDigits(value) : value,
-  )
-  @Matches(/^\d{11}$/)
-  cpf?: string;
 
   @ApiProperty({ example: 'SenhaForte@2026', minLength: 12 })
   @IsString()
@@ -52,17 +50,26 @@ export class CreateUserDto {
   @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/)
   password!: string;
 
-  @ApiProperty({ enum: DEPARTMENTS, isArray: true, default: [] })
+  @ApiProperty({ enum: ASSIGNABLE_DEPARTMENTS, isArray: true, default: [] })
   @IsArray()
   @ArrayUnique()
-  @IsIn(DEPARTMENTS, { each: true })
-  departments!: (typeof DEPARTMENTS)[number][];
+  @IsIn(ASSIGNABLE_DEPARTMENTS, { each: true })
+  departments!: AssignableDepartment[];
 
-  @ApiProperty({ type: String, format: 'uuid', isArray: true, default: [] })
+  @ApiProperty({ enum: ALL_PERMISSION_CODES, isArray: true, default: [] })
   @IsArray()
   @ArrayUnique()
-  @IsUUID('4', { each: true })
-  roleIds!: string[];
+  @IsIn(ALL_PERMISSION_CODES, { each: true })
+  permissionCodes!: PermissionCode[];
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Administrador global com todos os departamentos e permissões atuais e futuras.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  isAdministrator = false;
 }
 
 export class UpdateUserDto {
@@ -79,34 +86,27 @@ export class UpdateUserDto {
   @MaxLength(254)
   email?: string;
 
-  @ApiPropertyOptional({ example: '52998224725', nullable: true })
-  @ValidateIf(
-    (_object, value: unknown) => value !== null && value !== undefined,
-  )
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? onlyDigits(value) : value,
-  )
-  @Matches(/^\d{11}$/)
-  cpf?: string | null;
-
-  @ApiPropertyOptional({ enum: DEPARTMENTS, isArray: true })
+  @ApiPropertyOptional({ enum: ASSIGNABLE_DEPARTMENTS, isArray: true })
   @IsOptional()
   @IsArray()
   @ArrayUnique()
-  @IsIn(DEPARTMENTS, { each: true })
-  departments?: (typeof DEPARTMENTS)[number][];
+  @IsIn(ASSIGNABLE_DEPARTMENTS, { each: true })
+  departments?: AssignableDepartment[];
 
-  @ApiPropertyOptional({ type: String, format: 'uuid', isArray: true })
+  @ApiPropertyOptional({ enum: ALL_PERMISSION_CODES, isArray: true })
   @IsOptional()
   @IsArray()
   @ArrayUnique()
-  @IsUUID('4', { each: true })
-  roleIds?: string[];
+  @IsIn(ALL_PERMISSION_CODES, { each: true })
+  permissionCodes?: PermissionCode[];
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description:
+      'Promoção ou rebaixamento permitido somente a outro administrador.',
+  })
   @IsOptional()
   @IsBoolean()
-  isActive?: boolean;
+  isAdministrator?: boolean;
 }
 
 export class ListUsersQueryDto {
@@ -131,13 +131,80 @@ export class ListUsersQueryDto {
   @MaxLength(120)
   search?: string;
 
-  @ApiPropertyOptional({ type: Boolean })
+  @ApiPropertyOptional({ enum: ASSIGNABLE_DEPARTMENTS })
   @IsOptional()
-  @Transform(({ value }: { value: unknown }) => {
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return value;
+  @IsIn(ASSIGNABLE_DEPARTMENTS)
+  department?: AssignableDepartment;
+
+  @ApiPropertyOptional({ enum: ALL_PERMISSION_CODES })
+  @IsOptional()
+  @IsIn(ALL_PERMISSION_CODES)
+  permission?: PermissionCode;
+
+  @ApiPropertyOptional({ enum: ['active', 'inactive', 'suspended'] })
+  @IsOptional()
+  @IsIn(['active', 'inactive', 'suspended'])
+  status?: 'active' | 'inactive' | 'suspended';
+}
+
+export class UpdateUserStatusDto {
+  @ApiProperty({ enum: ['active', 'inactive', 'suspended'] })
+  @IsIn(['active', 'inactive', 'suspended'])
+  status!: 'active' | 'inactive' | 'suspended';
+
+  @ApiPropertyOptional({
+    description: 'Data ISO futura obrigatória para status suspended.',
   })
-  @IsBoolean()
-  isActive?: boolean;
+  @IsOptional()
+  @IsDateString()
+  suspendedUntil?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Alternativa a suspendedUntil: quantidade de dias de suspensão.',
+    minimum: 1,
+    maximum: 3650,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  suspensionDays?: number;
+
+  @ApiPropertyOptional({
+    description: 'Motivo obrigatório para status suspended.',
+  })
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  suspensionReason?: string;
+}
+
+export class ChangeOwnPasswordDto {
+  @ApiProperty({ description: 'Senha atual da conta.' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(72)
+  currentPassword!: string;
+
+  @ApiProperty({ example: 'NovaSenhaForte@2026', minLength: 12 })
+  @IsString()
+  @MinLength(12)
+  @MaxLength(72)
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).+$/)
+  newPassword!: string;
+}
+
+export class UpdateProfilePictureDto {
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Data URL JPEG, PNG ou WebP de até 512 KB e dimensões entre 128 e 2048 px; null remove a foto.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(700_000)
+  dataUrl!: string | null;
 }

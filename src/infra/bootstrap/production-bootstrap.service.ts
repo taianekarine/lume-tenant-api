@@ -9,11 +9,11 @@ import {
 } from '../../application/contracts/cryptography';
 import { conflict, validationError } from '../../core/errors/app-error';
 import {
-  ALL_PERMISSION_CODES,
-  DEFAULT_ROLE_PERMISSIONS,
+  ASSIGNABLE_DEPARTMENTS,
+  ASSIGNABLE_DEPARTMENT_LABELS,
+  type AssignableDepartment,
 } from '../../domain/access/access.constants';
 import { Company } from '../../domain/entities/company';
-import { Role } from '../../domain/entities/role';
 import { User } from '../../domain/entities/user';
 import { isValidCpf } from '../../shared/utils/brazilian-documents';
 import {
@@ -25,6 +25,7 @@ import {
 import {
   DepartmentCode,
   ServiceIdentityType,
+  UserAccountStatus,
   WhatsAppProviderType,
 } from '../database/prisma/generated/client';
 import { PrismaService } from '../database/prisma/prisma.service';
@@ -32,6 +33,35 @@ import { PrismaService } from '../database/prisma/prisma.service';
 function hashSecret(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
+
+export async function stillUsesBootstrapPassword(
+  passwordHasher: PasswordHasher,
+  bootstrapPassword: string,
+  currentPasswordHash: string | null,
+): Promise<boolean> {
+  if (!bootstrapPassword || !currentPasswordHash) return false;
+  return passwordHasher.compare(bootstrapPassword, currentPasswordHash);
+}
+
+const departmentPersistenceCodes: Readonly<
+  Record<AssignableDepartment, DepartmentCode>
+> = {
+  commercial: DepartmentCode.COMMERCIAL,
+  purchasing: DepartmentCode.PURCHASING,
+  controllership: DepartmentCode.CONTROLLING,
+  'personnel-department': DepartmentCode.PERSONNEL_DEPARTMENT,
+  financial: DepartmentCode.FINANCIAL,
+  management: DepartmentCode.MANAGEMENT,
+  maintenance: DepartmentCode.MAINTENANCE,
+  monitoring: DepartmentCode.MONITORING,
+  operations: DepartmentCode.OPERATIONS,
+};
+
+const tenantDepartments = ASSIGNABLE_DEPARTMENTS.map((publicCode) => ({
+  code: departmentPersistenceCodes[publicCode],
+  name: ASSIGNABLE_DEPARTMENT_LABELS[publicCode],
+  isDefault: publicCode === 'commercial',
+}));
 
 @Injectable()
 export class ProductionBootstrapService {
@@ -70,7 +100,7 @@ export class ProductionBootstrapService {
     const emailNormalized = normalizeEmail(email);
     const existingAdministrator = await this.prisma.user.findFirst({
       where: { companyId: licensedTenantId, usernameNormalized },
-      select: { id: true },
+      select: { id: true, passwordHash: true },
     });
     const adminPassword =
       this.config.get<string>('TENANT_ADMIN_PASSWORD')?.trim() ?? '';
@@ -82,38 +112,12 @@ export class ProductionBootstrapService {
     const passwordHash = existingAdministrator
       ? null
       : await this.passwordHasher.hash(adminPassword);
+    const requireBootstrapPasswordChange = await stillUsesBootstrapPassword(
+      this.passwordHasher,
+      adminPassword,
+      existingAdministrator?.passwordHash ?? null,
+    );
     const now = new Date();
-    const roles = [
-      Role.create({
-        companyId: licensedTenantId,
-        code: 'administrator',
-        name: 'Administrador',
-        description: 'Acesso completo à instalação.',
-        permissionCodes: ALL_PERMISSION_CODES,
-        isSystem: true,
-      }),
-      Role.create({
-        companyId: licensedTenantId,
-        code: 'director',
-        name: 'Diretoria',
-        permissionCodes: DEFAULT_ROLE_PERMISSIONS.director,
-        isSystem: true,
-      }),
-      Role.create({
-        companyId: licensedTenantId,
-        code: 'manager',
-        name: 'Gerência',
-        permissionCodes: DEFAULT_ROLE_PERMISSIONS.manager,
-        isSystem: true,
-      }),
-      Role.create({
-        companyId: licensedTenantId,
-        code: 'driver',
-        name: 'Motorista',
-        permissionCodes: DEFAULT_ROLE_PERMISSIONS.driver,
-        isSystem: true,
-      }),
-    ];
     const whatsappEnabled = this.config.getOrThrow<boolean>('WHATSAPP_ENABLED');
 
     return this.prisma.$transaction(async (transaction) => {
@@ -126,35 +130,6 @@ export class ProductionBootstrapService {
         },
       });
 
-      for (const role of roles) {
-        await transaction.role.upsert({
-          where: {
-            companyId_code: {
-              companyId: licensedTenantId,
-              code: role.code,
-            },
-          },
-          create: {
-            ...role.props,
-            permissionCodes: [...role.permissionCodes],
-          },
-          update: {
-            name: role.name,
-            description: role.description,
-            permissionCodes: [...role.permissionCodes],
-            isSystem: true,
-          },
-        });
-      }
-
-      const administratorRole = await transaction.role.findUniqueOrThrow({
-        where: {
-          companyId_code: {
-            companyId: licensedTenantId,
-            code: 'administrator',
-          },
-        },
-      });
       let administrator = await transaction.user.findFirst({
         where: { companyId: licensedTenantId, usernameNormalized },
       });
@@ -173,12 +148,18 @@ export class ProductionBootstrapService {
           emailNormalized,
           cpfNormalized,
           passwordHash,
+          mustChangePassword: true,
+          isAdministrator: true,
           departments: [],
+          permissionCodes: [],
         });
         administrator = await transaction.user.create({
           data: {
             ...newAdministrator.props,
+            isAdministrator: true,
             departments: [],
+            permissionCodes: [],
+            status: UserAccountStatus.ACTIVE,
           },
         });
       } else {
@@ -195,39 +176,40 @@ export class ProductionBootstrapService {
             emailNormalized,
             cpfNormalized,
             isActive: true,
+            status: UserAccountStatus.ACTIVE,
+            suspendedUntil: null,
+            suspensionReason: null,
+            isAdministrator: true,
+            departments: [],
+            permissionCodes: [],
+            ...(requireBootstrapPasswordChange
+              ? { mustChangePassword: true }
+              : {}),
           },
         });
       }
-      await transaction.userRole.upsert({
-        where: {
-          userId_roleId: {
-            userId: administrator.id,
-            roleId: administratorRole.id,
+      let defaultDepartmentId = '';
+      for (const department of tenantDepartments) {
+        const persistedDepartment = await transaction.tenantDepartment.upsert({
+          where: {
+            companyId_code: {
+              companyId: licensedTenantId,
+              code: department.code,
+            },
           },
-        },
-        create: {
-          companyId: licensedTenantId,
-          userId: administrator.id,
-          roleId: administratorRole.id,
-        },
-        update: { companyId: licensedTenantId },
-      });
-
-      const department = await transaction.tenantDepartment.upsert({
-        where: {
-          companyId_code: {
+          create: {
             companyId: licensedTenantId,
-            code: DepartmentCode.COMMERCIAL,
+            ...department,
           },
-        },
-        create: {
-          companyId: licensedTenantId,
-          code: DepartmentCode.COMMERCIAL,
-          name: 'Comercial',
-          isDefault: true,
-        },
-        update: { name: 'Comercial', isDefault: true },
-      });
+          update: {
+            name: department.name,
+            isDefault: department.isDefault,
+          },
+        });
+        if (department.isDefault) {
+          defaultDepartmentId = persistedDepartment.id;
+        }
+      }
 
       let providerId: string | null = null;
       let channelId: string | null = null;
@@ -360,7 +342,7 @@ export class ProductionBootstrapService {
       return {
         tenantId: licensedTenantId,
         administratorId: administrator.id,
-        departmentId: department.id,
+        departmentId: defaultDepartmentId,
         providerId,
         channelId,
         serviceIdentityId,

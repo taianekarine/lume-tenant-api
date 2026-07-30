@@ -47,32 +47,41 @@ export class WhatsAppRetentionService implements OnModuleInit, OnModuleDestroy {
     messages: number;
     inbox: number;
     outbox: number;
+    dataExchangeArtifacts: number;
   }> {
     const messageCutoff = new Date(now.valueOf() - this.retentionDays * DAY_MS);
     const integrationCutoff = new Date(
       now.valueOf() - this.integrationRetentionDays * DAY_MS,
     );
-    const [messages, inbox, outbox] = await this.prisma.$transaction([
-      this.prisma.whatsAppMessage.deleteMany({
-        where: { createdAt: { lt: messageCutoff } },
-      }),
-      this.prisma.integrationInbox.deleteMany({
-        where: { receivedAt: { lt: integrationCutoff } },
-      }),
-      this.prisma.integrationOutbox.deleteMany({
-        where: {
-          status: IntegrationOutboxStatus.DELIVERED,
-          deliveredAt: { lt: integrationCutoff },
-        },
-      }),
-    ]);
+    const [messages, inbox, outbox, dataExchangeArtifacts] =
+      await this.prisma.$transaction([
+        this.prisma.whatsAppMessage.deleteMany({
+          where: { createdAt: { lt: messageCutoff } },
+        }),
+        this.prisma.integrationInbox.deleteMany({
+          where: { receivedAt: { lt: integrationCutoff } },
+        }),
+        this.prisma.integrationOutbox.deleteMany({
+          where: {
+            status: IntegrationOutboxStatus.DELIVERED,
+            deliveredAt: { lt: integrationCutoff },
+          },
+        }),
+        this.prisma.dataExchangeArtifact.deleteMany({
+          where: {
+            expiresAt: { lt: now },
+            conversions: { none: {} },
+          },
+        }),
+      ]);
     this.logger.log(
-      `Retenção concluída messages=${messages.count} inbox=${inbox.count} outbox=${outbox.count}`,
+      `Retenção concluída messages=${messages.count} inbox=${inbox.count} outbox=${outbox.count} dataExchangeArtifacts=${dataExchangeArtifacts.count}`,
     );
     return {
       messages: messages.count,
       inbox: inbox.count,
       outbox: outbox.count,
+      dataExchangeArtifacts: dataExchangeArtifacts.count,
     };
   }
 }

@@ -22,8 +22,17 @@
     "prisma:validate": "prisma validate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "node scripts/prisma-studio.mjs",
     "tenant:bootstrap": "npm run prisma:generate && ts-node src/infra/cli/bootstrap-tenant.ts",
-    "tenant:bootstrap:prod": "node dist/infra/cli/bootstrap-tenant.js"
+    "tenant:bootstrap:prod": "node dist/infra/cli/bootstrap-tenant.js",
+    "whatsapp:import:validate": "npm run prisma:generate && ts-node src/infra/cli/import-whatsapp-current-conversations.ts validate",
+    "whatsapp:import:apply": "npm run prisma:generate && ts-node src/infra/cli/import-whatsapp-current-conversations.ts apply",
+    "whatsapp:import:reconcile": "npm run prisma:generate && ts-node src/infra/cli/import-whatsapp-current-conversations.ts reconcile",
+    "whatsapp:import:rollback": "npm run prisma:generate && ts-node src/infra/cli/import-whatsapp-current-conversations.ts rollback",
+    "whatsapp:import:validate:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js validate",
+    "whatsapp:import:apply:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js apply",
+    "whatsapp:import:reconcile:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js reconcile",
+    "whatsapp:import:rollback:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js rollback"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -39,7 +48,9 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "helmet": "^8.3.0",
+    "jszip": "^3.10.1",
     "pg": "^8.22.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"

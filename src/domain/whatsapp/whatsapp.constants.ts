@@ -29,6 +29,13 @@ export const REQUEST_STATUSES = [
   'cancelled',
 ] as const;
 
+export const ACTIVE_QUOTE_REQUEST_STATUSES = [
+  'collecting-information',
+  'waiting-for-customer',
+  'under-review',
+  'approved',
+] as const satisfies readonly (typeof REQUEST_STATUSES)[number][];
+
 export const MESSAGE_DIRECTIONS = ['inbound', 'outbound'] as const;
 
 export const DELIVERY_STATUSES = [
@@ -52,19 +59,29 @@ export const MESSAGE_KINDS = [
   'unknown',
 ] as const;
 
+export const QUOTE_PROPOSAL_MAX_PDF_BYTES = 10 * 1024 * 1024;
+
+export const UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT =
+  'No momento não consigo ler, ver ou ouvir este tipo de mensagem. Por favor, envie sua mensagem em texto para continuarmos o atendimento.';
+
 export const TRANSITION_NAMES = [
   'present-main-menu',
   'select-commercial',
+  'start-department-contact',
   'start-quote',
   'present-quote-summary',
   'correct-quote',
   'confirm-quote',
+  'proposal-delivery-confirmed',
+  'proposal-response-received',
   'new-quote-request',
   'return-to-main-menu',
   'take-over',
   'return-to-bot',
   'forward',
   'mark-read',
+  'close',
+  'close-after-rejection',
   'resume-awaited-reply',
   'resume-contextual-contact',
 ] as const;

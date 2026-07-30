@@ -1,32 +1,43 @@
-import type { Prisma, Role as PrismaRole } from './generated/client';
+import type { Prisma } from './generated/client';
 
 import type {
-  Department,
   PermissionCode,
+  UserDepartment,
 } from '../../../domain/access/access.constants';
-import { Role } from '../../../domain/entities/role';
 import { User } from '../../../domain/entities/user';
-import type { UserWithRoles } from '../../../application/contracts/repositories';
+import type { UserRecord } from '../../../application/contracts/repositories';
 
-export type PrismaUserWithRelations = Prisma.UserGetPayload<{
-  include: { company: true; roles: { include: { role: true } } };
+export const userRecordSelect = {
+  id: true,
+  companyId: true,
+  name: true,
+  username: true,
+  usernameNormalized: true,
+  email: true,
+  emailNormalized: true,
+  cpfNormalized: true,
+  passwordHash: true,
+  mustChangePassword: true,
+  profilePictureMime: true,
+  isAdministrator: true,
+  departments: true,
+  permissionCodes: true,
+  status: true,
+  suspendedUntil: true,
+  suspensionReason: true,
+  isActive: true,
+  tokenVersion: true,
+  lastLoginAt: true,
+  createdAt: true,
+  updatedAt: true,
+  company: { select: { status: true } },
+} as const satisfies Prisma.UserSelect;
+
+export type PrismaUserRecord = Prisma.UserGetPayload<{
+  select: typeof userRecordSelect;
 }>;
 
-export function mapRole(row: PrismaRole): Role {
-  return Role.restore({
-    id: row.id,
-    companyId: row.companyId,
-    code: row.code,
-    name: row.name,
-    description: row.description,
-    permissionCodes: row.permissionCodes as PermissionCode[],
-    isSystem: row.isSystem,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  });
-}
-
-export function mapUserWithRoles(row: PrismaUserWithRelations): UserWithRoles {
+export function mapUserRecord(row: PrismaUserRecord): UserRecord {
   return {
     user: User.restore({
       id: row.id,
@@ -38,19 +49,21 @@ export function mapUserWithRoles(row: PrismaUserWithRelations): UserWithRoles {
       emailNormalized: row.emailNormalized,
       cpfNormalized: row.cpfNormalized,
       passwordHash: row.passwordHash,
-      departments: row.departments as Department[],
+      mustChangePassword: row.mustChangePassword,
+      profilePicture: null,
+      profilePictureMime: row.profilePictureMime,
+      isAdministrator: row.isAdministrator,
+      departments: row.departments as UserDepartment[],
+      permissionCodes: row.permissionCodes as PermissionCode[],
+      status: row.status.toLowerCase() as 'active' | 'inactive' | 'suspended',
+      suspendedUntil: row.suspendedUntil,
+      suspensionReason: row.suspensionReason,
       isActive: row.isActive,
       tokenVersion: row.tokenVersion,
       lastLoginAt: row.lastLoginAt,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }),
-    roles: row.roles.map(({ role }) => mapRole(role)),
     companyIsActive: row.company.status === 'ACTIVE',
   };
 }
-
-export const userWithRelations = {
-  company: true,
-  roles: { include: { role: true } },
-} as const;

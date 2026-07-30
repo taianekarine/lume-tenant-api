@@ -4,14 +4,19 @@ import {
   notFound,
   validationError,
 } from '../../../core/errors/app-error';
-import type { Department } from '../../../domain/access/access.constants';
+import {
+  allowedPermissionsForDepartments,
+  isPermissionCode,
+  normalizeUserDepartments,
+  type PermissionCode,
+  type SupportedUserDepartment,
+} from '../../../domain/access/access.constants';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
 import {
   normalizeCpf,
   normalizeEmail,
 } from '../../../shared/utils/normalization';
 import {
-  RolesRepository,
   TenantAuditLogsRepository,
   UsersRepository,
 } from '../../contracts/repositories';
@@ -25,15 +30,14 @@ export interface UpdateUserInput {
   name?: string;
   email?: string;
   cpf?: string | null;
-  departments?: Department[];
-  roleIds?: string[];
-  isActive?: boolean;
+  isAdministrator?: boolean;
+  departments?: SupportedUserDepartment[];
+  permissionCodes?: PermissionCode[];
 }
 
 export class UpdateUserUseCase {
   constructor(
     private readonly users: UsersRepository,
-    private readonly roles: RolesRepository,
     private readonly auditLogs?: TenantAuditLogsRepository,
   ) {}
 
@@ -42,14 +46,6 @@ export class UpdateUserUseCase {
 
     if (!target) {
       throw notFound('Usuário');
-    }
-
-    if (
-      input.currentUserId &&
-      input.userId === input.currentUserId &&
-      input.isActive === false
-    ) {
-      throw forbidden('Você não pode desativar o próprio usuário.');
     }
 
     const emailNormalized = input.email
@@ -62,25 +58,18 @@ export class UpdateUserUseCase {
       throw validationError('Informe um CPF válido.');
     }
 
-    const roleIds = input.roleIds
-      ? Array.from(new Set(input.roleIds))
-      : undefined;
     const departments = input.departments
-      ? Array.from(new Set(input.departments))
+      ? normalizeUserDepartments(input.departments)
+      : undefined;
+    const permissionCodes = input.permissionCodes
+      ? Array.from(new Set(input.permissionCodes)).sort()
       : undefined;
 
-    const [identifierConflict, selectedRoles, administratorRole] =
-      await Promise.all([
-        this.users.loginIdentifierExists({
-          emailNormalized,
-          cpfNormalized,
-          exceptUserId: input.userId,
-        }),
-        roleIds
-          ? this.roles.findByIds(input.companyId, roleIds)
-          : Promise.resolve([]),
-        this.roles.findByCode(input.companyId, 'administrator'),
-      ]);
+    const identifierConflict = await this.users.loginIdentifierExists({
+      emailNormalized,
+      cpfNormalized,
+      exceptUserId: input.userId,
+    });
 
     if (identifierConflict) {
       throw conflict(
@@ -89,52 +78,93 @@ export class UpdateUserUseCase {
       );
     }
 
-    if (roleIds && selectedRoles.length !== roleIds.length) {
+    const finalIsAdministrator =
+      input.isAdministrator ?? target.user.props.isAdministrator;
+    const administratorChanged =
+      finalIsAdministrator !== target.user.props.isAdministrator;
+
+    if (target.user.props.isAdministrator || administratorChanged) {
+      const actorId = input.actorUserId ?? input.currentUserId;
+      const actor = actorId
+        ? await this.users.findById(input.companyId, actorId)
+        : null;
+      if (!actor?.user.props.isAdministrator) {
+        throw forbidden(
+          'Somente outro administrador pode alterar uma conta administradora.',
+        );
+      }
+      if (input.currentUserId === input.userId && !finalIsAdministrator) {
+        throw forbidden(
+          'Você não pode remover o próprio acesso de administrador.',
+        );
+      }
+    }
+
+    if (
+      target.user.props.isAdministrator &&
+      !finalIsAdministrator &&
+      (input.departments === undefined || input.permissionCodes === undefined)
+    ) {
       throw validationError(
-        'Um ou mais papéis não pertencem à empresa autenticada.',
+        'Ao remover o acesso de administrador, informe departamentos e permissões diretas.',
       );
     }
 
-    const currentlyAdministrator = Boolean(
-      administratorRole &&
-      target.roles.some((role) => role.id === administratorRole.id),
+    const finalDepartments = finalIsAdministrator
+      ? []
+      : (departments ?? target.user.props.departments);
+    const finalPermissionCodes = finalIsAdministrator
+      ? []
+      : (permissionCodes ?? target.user.props.permissionCodes);
+
+    if (!finalIsAdministrator && finalDepartments.length === 0) {
+      throw validationError('Informe ao menos um departamento para o usuário.');
+    }
+    const allowedPermissions = new Set(
+      allowedPermissionsForDepartments(finalDepartments),
     );
-    const willRemainAdministrator = Boolean(
-      administratorRole && (!roleIds || roleIds.includes(administratorRole.id)),
-    );
-    const removesLastAdministrator =
-      currentlyAdministrator &&
+    if (
+      !finalIsAdministrator &&
+      finalPermissionCodes.some(
+        (permission) =>
+          !isPermissionCode(permission) || !allowedPermissions.has(permission),
+      )
+    ) {
+      throw validationError(
+        'Uma ou mais permissões não são permitidas para os departamentos selecionados.',
+      );
+    }
+
+    const isActiveAdministrator =
       target.user.props.isActive &&
-      (!willRemainAdministrator || input.isActive === false) &&
-      administratorRole &&
-      (await this.users.countActiveByRole(
-        input.companyId,
-        administratorRole.id,
-      )) <= 1;
+      target.user.props.status === 'active' &&
+      target.user.props.isAdministrator;
 
-    if (removesLastAdministrator) {
-      throw conflict('A empresa deve manter ao menos um administrador ativo.');
-    }
-
-    const finalRoleCount = roleIds?.length ?? target.roles.length;
-    const finalDepartmentCount =
-      departments?.length ?? target.user.props.departments.length;
-
-    if (finalRoleCount === 0 && finalDepartmentCount === 0) {
-      throw validationError(
-        'Informe ao menos um departamento ou papel para o usuário.',
-      );
-    }
-
-    const updated = await this.users.update(input.companyId, input.userId, {
+    const persistenceInput = {
       name: input.name?.trim(),
       email: input.email?.trim(),
       emailNormalized,
       cpfNormalized,
-      departments,
-      roleIds,
-      isActive: input.isActive,
-    });
+      isAdministrator:
+        input.isAdministrator === undefined ? undefined : finalIsAdministrator,
+      departments: finalIsAdministrator ? [] : departments,
+      permissionCodes: finalIsAdministrator ? [] : permissionCodes,
+    };
+    const updated =
+      isActiveAdministrator && !finalIsAdministrator
+        ? await this.users.updateWithAdministratorInvariant(
+            input.companyId,
+            input.userId,
+            persistenceInput,
+          )
+        : await this.users.update(
+            input.companyId,
+            input.userId,
+            persistenceInput,
+          );
+    if (!updated) {
+      throw conflict('A empresa deve manter ao menos um administrador ativo.');
+    }
     if (this.auditLogs) {
       await this.auditLogs.create({
         companyId: input.companyId,
@@ -147,9 +177,9 @@ export class UpdateUserUseCase {
             'name',
             'email',
             'cpf',
+            'isAdministrator',
             'departments',
-            'roleIds',
-            'isActive',
+            'permissionCodes',
           ].filter(
             (field) => input[field as keyof UpdateUserInput] !== undefined,
           ),

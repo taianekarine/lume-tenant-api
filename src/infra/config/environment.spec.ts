@@ -10,6 +10,12 @@ const validEnvironment = {
   LICENSE_PUBLIC_KEY_BASE64: 'a'.repeat(64),
   LICENSE_DOCUMENT: 'payload.signature-with-enough-characters',
 };
+const productionEmailEnvironment = {
+  EMAIL_DELIVERY_ENABLED: 'true',
+  RESEND_API_KEY: 're_test_key_with_enough_characters',
+  RESEND_FROM_EMAIL: 'no-reply@example.test',
+  RESEND_FROM_NAME: 'Lume',
+};
 
 describe('validateEnvironment', () => {
   it('normalizes defaults required by an autonomous tenant', () => {
@@ -19,9 +25,35 @@ describe('validateEnvironment', () => {
       JWT_ACCESS_TTL_SECONDS: 900,
       JWT_REFRESH_TTL_DAYS: 7,
       JWT_REFRESH_REMEMBER_TTL_DAYS: 30,
+      HTTP_MAX_JSON_BODY_BYTES: 1_048_576,
+      PASSWORD_RESET_MIN_RESPONSE_MS: 750,
       INSTALLATION_ID: validEnvironment.INSTALLATION_ID,
       SWAGGER_ENABLED: true,
+      SUPPORT_RECIPIENT_EMAIL: 'devops@mileniumturismo.com.br',
+      SUPPORT_CC_EMAIL:
+        'taiane.karine@mileniumturismo.com.br,taianekas.dev@outlook.com',
     });
+  });
+
+  it('normalizes and validates multiple support copy recipients', () => {
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        SUPPORT_RECIPIENT_EMAIL: 'support@example.com',
+        SUPPORT_CC_EMAIL:
+          'first@example.com, second@example.com, FIRST@example.com',
+      }),
+    ).toMatchObject({
+      SUPPORT_RECIPIENT_EMAIL: 'support@example.com',
+      SUPPORT_CC_EMAIL: 'first@example.com,second@example.com',
+    });
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        SUPPORT_CC_EMAIL: 'valid@example.com, invalid-address',
+      }),
+    ).toThrow('SUPPORT_CC_EMAIL');
   });
 
   it('rejects a non-PostgreSQL database', () => {
@@ -73,6 +105,7 @@ describe('validateEnvironment', () => {
         ...validEnvironment,
         NODE_ENV: 'production',
         CORS_ORIGINS: 'https://app.example.com',
+        ...productionEmailEnvironment,
         SWAGGER_ENABLED: 'false',
         TRUST_PROXY_HOPS: '1',
       }),
@@ -80,6 +113,55 @@ describe('validateEnvironment', () => {
       SWAGGER_ENABLED: false,
       TRUST_PROXY_HOPS: 1,
     });
+  });
+
+  it('requires safe Resend settings when e-mail delivery is enabled', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        EMAIL_DELIVERY_ENABLED: 'true',
+      }),
+    ).toThrow('RESEND_API_KEY');
+
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        EMAIL_DELIVERY_ENABLED: 'true',
+        RESEND_API_KEY: 're_test_key_with_enough_characters',
+        RESEND_FROM_EMAIL: 'no-reply@example.test',
+        RESEND_FROM_NAME: 'Lume',
+      }),
+    ).toMatchObject({
+      EMAIL_DELIVERY_ENABLED: true,
+      RESEND_API_URL: 'https://api.resend.com',
+      RESEND_FROM_EMAIL: 'no-reply@example.test',
+      RESEND_REQUEST_TIMEOUT_MS: 10_000,
+      RESEND_MAX_ATTEMPTS: 2,
+      RESEND_RETRY_DELAY_MS: 150,
+    });
+  });
+
+  it('requires e-mail delivery in production', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://app.example.com',
+        EMAIL_DELIVERY_ENABLED: 'false',
+      }),
+    ).toThrow('EMAIL_DELIVERY_ENABLED deve ser true');
+  });
+
+  it('rejects the Resend sandbox sender in production', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://app.example.com',
+        ...productionEmailEnvironment,
+        RESEND_FROM_EMAIL: 'onboarding@resend.dev',
+      }),
+    ).toThrow('domínio verificado no Resend');
   });
 
   it('requires WhatsApp credentials only when the module is enabled', () => {
@@ -119,6 +201,7 @@ describe('validateEnvironment', () => {
       ...validEnvironment,
       NODE_ENV: 'production',
       CORS_ORIGINS: 'https://app.example.com',
+      ...productionEmailEnvironment,
       WHATSAPP_ENABLED: 'true',
       WHATSAPP_CHANNEL_ID: '00000000-0000-4000-8000-000000000221',
       WHATSAPP_CHANNEL_NAME: 'WhatsApp principal',

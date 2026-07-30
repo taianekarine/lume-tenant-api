@@ -1,26 +1,40 @@
 import {
-  DEFAULT_DEPARTMENT_PERMISSIONS,
-  type Department,
+  ALL_PERMISSION_CODES,
+  EMPLOYEE_SELF_SERVICE_PERMISSIONS,
+  allowedPermissionsForDepartments,
   type PermissionCode,
+  type SupportedUserDepartment,
 } from './access.constants';
-import type { Role } from '../entities/role';
+
+export function filterPermissionCodesForDepartments(
+  departments: readonly SupportedUserDepartment[],
+  permissionCodes: readonly PermissionCode[],
+): PermissionCode[] {
+  const ceiling = new Set(allowedPermissionsForDepartments(departments));
+
+  return Array.from(
+    new Set(permissionCodes.filter((permission) => ceiling.has(permission))),
+  ).sort();
+}
 
 export function resolveEffectivePermissions(
-  departments: readonly Department[],
-  roles: readonly Role[],
+  departments: readonly SupportedUserDepartment[],
+  individualPermissions: readonly PermissionCode[] = [],
+  isAdministrator = false,
 ): PermissionCode[] {
-  const permissions = new Set<PermissionCode>();
-
-  for (const department of departments) {
-    for (const permission of DEFAULT_DEPARTMENT_PERMISSIONS[department]) {
-      permissions.add(permission);
-    }
+  if (isAdministrator) {
+    return [...ALL_PERMISSION_CODES];
   }
 
-  for (const role of roles) {
-    for (const permission of role.permissionCodes) {
-      permissions.add(permission);
-    }
+  const permissions = new Set<PermissionCode>(
+    EMPLOYEE_SELF_SERVICE_PERMISSIONS,
+  );
+
+  for (const permission of filterPermissionCodesForDepartments(
+    departments,
+    individualPermissions,
+  )) {
+    permissions.add(permission);
   }
 
   return Array.from(permissions).sort();
