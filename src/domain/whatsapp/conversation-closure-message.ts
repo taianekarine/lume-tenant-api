@@ -23,3 +23,9 @@ export function buildConversationClosureMessage(
 ): string {
   return `Foi um prazer te atender! Qualquer outra dúvida ou nova demanda, é só me chamar por aqui. Conte sempre conosco e tenha ${getConversationClosureGreeting(sentAt, timeZone)} 😊`;
 }
+
+export function buildDepartmentContactClosureMessage(
+  departmentLabel: string,
+): string {
+  return `Sua solicitação foi enviada para o departamento ${departmentLabel}. O responsável entrará em contato em breve.`;
+}

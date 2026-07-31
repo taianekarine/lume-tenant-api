@@ -31,7 +31,10 @@ import {
   validationError,
 } from '../../../core/errors/app-error';
 import type { Department } from '../../../domain/access/access.constants';
-import { buildConversationClosureMessage } from '../../../domain/whatsapp/conversation-closure-message';
+import {
+  buildConversationClosureMessage,
+  buildDepartmentContactClosureMessage,
+} from '../../../domain/whatsapp/conversation-closure-message';
 import {
   assertTransitionActor,
   resolveConversationTransition,
@@ -100,6 +103,17 @@ const departmentFromPrisma: Readonly<Record<DepartmentCode, Department>> = {
   CLEANING: 'cleaning',
   FINANCIAL: 'financial',
   INFORMATION_TECHNOLOGY: 'information-technology',
+};
+
+const departmentContactLabels: Readonly<Partial<Record<Department, string>>> = {
+  purchasing: 'Compras (Fornecedores)',
+  controlling: 'Controladoria',
+  'personnel-department': 'Departamento Pessoal',
+  financial: 'Financeiro',
+  management: 'Gerência',
+  maintenance: 'Manutenção',
+  monitoring: 'Monitoramento',
+  operations: 'Operacional',
 };
 
 const stateToPrisma: Readonly<
@@ -1077,6 +1091,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
               id: conversation.id,
               ...snapshot(conversation),
               version: conversation.version,
+              departmentContactOption: conversation.departmentContactOption,
             },
             automationAllowed,
             canGenerateReply,
@@ -1314,9 +1329,22 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         const nextVersion = conversation.version + 1;
         const transitionId = randomUUID();
         const transitionedAt = new Date();
-        const closureMessageText = closing
-          ? buildConversationClosureMessage(transitionedAt)
-          : null;
+        const departmentContactCompleted =
+          input.name === 'return-to-main-menu' &&
+          input.metadata?.reason === 'department-contact-forwarded';
+        const closureMessageText = departmentContactCompleted
+          ? buildDepartmentContactClosureMessage(
+              departmentContactLabels[
+                input.targetDepartment ??
+                  departmentFromPrisma[conversation.department]
+              ] ?? 'responsável',
+            )
+          : closing
+            ? buildConversationClosureMessage(transitionedAt)
+            : null;
+        const finalizationPurpose = departmentContactCompleted
+          ? 'department-contact-finalization'
+          : 'conversation-closure';
         const closureMessage = closureMessageText
           ? await transaction.whatsAppMessage.create({
               data: {
@@ -1329,9 +1357,12 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                 deliveryStatus: DeliveryStatus.PENDING,
                 kind: MessageKind.TEXT,
                 text: closureMessageText,
+                automationPurpose: departmentContactCompleted
+                  ? finalizationPurpose
+                  : null,
                 recipientPhone: conversation.contact.phoneNormalized,
                 correlationId: correlation(
-                  'conversation-closure-outbound',
+                  `${finalizationPurpose}-outbound`,
                   input.commandId,
                 ),
                 occurredAt: transitionedAt,
@@ -1528,7 +1559,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                   ? null
                   : conversation.assignedToUserId,
             unreadCount:
-              input.name === 'mark-read' || closing
+              input.name === 'mark-read' ||
+              closing ||
+              departmentContactCompleted
                 ? 0
                 : conversation.unreadCount,
             ...(closureMessageText
@@ -1564,7 +1597,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             aggregateType: 'whatsapp-conversation',
             aggregateId: input.conversationId,
             correlationId: correlation(
-              'conversation-closure-request',
+              `${finalizationPurpose}-request`,
               input.commandId,
             ),
             payload: {
@@ -1594,7 +1627,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                 ...snapshot(updated),
                 version: updated.version,
               },
-              automatic: false,
+              automatic: departmentContactCompleted,
               automationAllowed: false,
               canGenerateReply: false,
               canSendReply: true,
@@ -2885,6 +2918,18 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
   async completeOutboxExecution(
     input: CompleteOutboxExecutionInput,
   ): Promise<unknown> {
+    const consumedSourceEventIds = [
+      ...new Set(
+        (input.consumedSourceEventIds ?? [])
+          .map((sourceEventId) => sourceEventId.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (consumedSourceEventIds.length > 50) {
+      throw validationError(
+        'Uma conclusão pode incorporar no máximo 50 eventos inbound.',
+      );
+    }
     const fingerprint = commandFingerprint(input);
     try {
       return await this.prisma.$transaction(async (transaction) => {
@@ -2949,6 +2994,15 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           throw new AppError(
             'CONFLICT',
             'executionId não corresponde à execução atual do evento.',
+          );
+        }
+        if (
+          consumedSourceEventIds.length > 0 &&
+          (input.outcome !== 'succeeded' ||
+            event.topic !== 'whatsapp.inbound.persisted')
+        ) {
+          throw validationError(
+            'Somente uma conclusão inbound bem-sucedida pode incorporar eventos do mesmo lote.',
           );
         }
         if (
@@ -3102,6 +3156,30 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                     lastError: failure,
                   },
         });
+        const consumed =
+          consumedSourceEventIds.length > 0
+            ? await transaction.integrationOutbox.updateMany({
+                where: {
+                  id: { not: event.id },
+                  companyId: input.companyId,
+                  aggregateType: event.aggregateType,
+                  aggregateId: event.aggregateId,
+                  topic: 'whatsapp.inbound.persisted',
+                  correlationId: { in: consumedSourceEventIds },
+                  status: IntegrationOutboxStatus.PENDING,
+                },
+                data: {
+                  status: IntegrationOutboxStatus.DELIVERED,
+                  deliveredAt: now,
+                  executionId: null,
+                  acceptedAt: null,
+                  executionLeaseUntil: null,
+                  lockedAt: null,
+                  lockId: null,
+                  lastError: null,
+                },
+              })
+            : { count: 0 };
         const persistedResult = {
           eventId: updated.id,
           executionId: input.executionId,
@@ -3111,6 +3189,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           outcome: input.outcome,
           status: updated.status.toLowerCase(),
           attempts: updated.attempts,
+          consumedEventCount: consumed.count,
         };
         await transaction.integrationInbox.update({
           where: inboxKey,
@@ -4944,6 +5023,100 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
     });
     if (!conversation) throw notFound('Conversa');
     return presentConversationDetail(conversation);
+  }
+
+  async getAutomationBatch(
+    companyId: string,
+    conversationId: string,
+    sourceEventId: string,
+    windowSeconds: number,
+  ): Promise<unknown> {
+    if (
+      !Number.isInteger(windowSeconds) ||
+      windowSeconds < 1 ||
+      windowSeconds > 300
+    ) {
+      throw validationError(
+        'A janela do lote de automação deve estar entre 1 e 300 segundos.',
+      );
+    }
+    const conversation = await this.prisma.whatsAppConversation.findUnique({
+      where: { id_companyId: { id: conversationId, companyId } },
+      include: conversationDetailInclude,
+    });
+    if (!conversation) throw notFound('Conversa');
+
+    const anchor = await this.prisma.whatsAppMessage.findUnique({
+      where: {
+        companyId_correlationId: {
+          companyId,
+          correlationId: sourceEventId,
+        },
+      },
+      select: {
+        id: true,
+        conversationId: true,
+        direction: true,
+        kind: true,
+        correlationId: true,
+        text: true,
+        occurredAt: true,
+        createdAt: true,
+      },
+    });
+    if (
+      !anchor ||
+      anchor.conversationId !== conversationId ||
+      anchor.direction !== MessageDirection.INBOUND
+    ) {
+      throw notFound('Mensagem inicial do lote de automação');
+    }
+
+    const windowEndsAt = new Date(
+      anchor.createdAt.valueOf() + windowSeconds * 1_000,
+    );
+    const messages =
+      anchor.kind === MessageKind.TEXT
+        ? await this.prisma.whatsAppMessage.findMany({
+            where: {
+              companyId,
+              conversationId,
+              direction: MessageDirection.INBOUND,
+              kind: MessageKind.TEXT,
+              createdAt: {
+                gte: anchor.createdAt,
+                lte: windowEndsAt,
+              },
+            },
+            select: {
+              id: true,
+              correlationId: true,
+              kind: true,
+              text: true,
+              occurredAt: true,
+              createdAt: true,
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            take: 50,
+          })
+        : [anchor];
+
+    return {
+      conversation: presentConversationDetail(conversation),
+      batch: {
+        sourceEventId,
+        windowStartedAt: anchor.createdAt.toISOString(),
+        windowEndsAt: windowEndsAt.toISOString(),
+        messages: messages.map((message) => ({
+          messageId: message.id,
+          sourceEventId: message.correlationId,
+          kind: kindFromPrisma[message.kind],
+          text: message.text,
+          occurredAt: message.occurredAt.toISOString(),
+          persistedAt: message.createdAt.toISOString(),
+        })),
+      },
+    };
   }
 
   async listMessages(

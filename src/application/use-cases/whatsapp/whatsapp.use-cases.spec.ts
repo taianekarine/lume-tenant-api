@@ -81,6 +81,15 @@ class RecordingWhatsAppRepository extends WhatsAppRepository {
     this.calls.push('getConversation');
     return { operation: 'getConversation' };
   }
+  async getAutomationBatch(
+    _companyId: string,
+    _conversationId: string,
+    _sourceEventId: string,
+    _windowSeconds: number,
+  ) {
+    this.calls.push('getAutomationBatch');
+    return { operation: 'getAutomationBatch' };
+  }
   async listMessages(
     _companyId: string,
     _conversationId: string,
@@ -222,6 +231,12 @@ describe('casos de uso WhatsApp', () => {
 
     await query.listConversations('company', { page: 1, pageSize: 20 });
     await query.getConversation('company', 'conversation');
+    await query.getAutomationBatch(
+      'company',
+      'conversation',
+      'source-event',
+      120,
+    );
     await query.listMessages('company', 'conversation', {
       page: 1,
       pageSize: 50,
@@ -235,6 +250,7 @@ describe('casos de uso WhatsApp', () => {
     expect(repository.calls).toEqual([
       'listConversations',
       'getConversation',
+      'getAutomationBatch',
       'listMessages',
       'listTransitions',
       'getCurrentQuoteRequest',

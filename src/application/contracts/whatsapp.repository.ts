@@ -120,6 +120,7 @@ export interface CompleteOutboxExecutionInput {
   aggregateType: string;
   aggregateId: string;
   outcome: 'succeeded' | 'retryable-failure' | 'terminal-failure';
+  consumedSourceEventIds?: string[];
   errorCode?: string;
   errorMessage?: string;
 }
@@ -265,6 +266,12 @@ export abstract class WhatsAppRepository {
   abstract getConversation(
     companyId: string,
     conversationId: string,
+  ): Promise<unknown>;
+  abstract getAutomationBatch(
+    companyId: string,
+    conversationId: string,
+    sourceEventId: string,
+    windowSeconds: number,
   ): Promise<unknown>;
   abstract listMessages(
     companyId: string,

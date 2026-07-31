@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Res,
   StreamableFile,
   UseGuards,
@@ -30,6 +31,7 @@ import {
 import { Public } from '../../shared/http/decorators/public.decorator';
 import { ServiceIdentityGuard } from '../../shared/http/guards/service-identity.guard';
 import {
+  AutomationBatchQueryDto,
   ClaimEvolutionDispatchDto,
   CompleteOutboxExecutionDto,
   CreateOutboundMessageDto,
@@ -189,6 +191,24 @@ export class InternalWhatsAppController {
     @Param('conversationId', new ParseUUIDPipe()) conversationId: string,
   ) {
     return this.query.getConversation(service.companyId, conversationId);
+  }
+
+  @Get('conversations/:conversationId/automation-batch')
+  @ApiOkResponse({
+    description:
+      'Lote durável de mensagens inbound persistidas durante a janela de automação.',
+  })
+  getAutomationBatch(
+    @CurrentService() service: ServicePrincipal,
+    @Param('conversationId', new ParseUUIDPipe()) conversationId: string,
+    @Query() query: AutomationBatchQueryDto,
+  ) {
+    return this.query.getAutomationBatch(
+      service.companyId,
+      conversationId,
+      query.sourceEventId,
+      query.windowSeconds,
+    );
   }
 
   @Get('proposal-documents/:documentId/content')

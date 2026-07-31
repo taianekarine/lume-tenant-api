@@ -87,7 +87,7 @@ do Painel WhatsApp.
 | Primeiro contato                                     | `commercial / bot-active / main-menu / not-started`                                                                          |
 | Seleciona Comercial                                  | `commercial / bot-active / commercial-menu / not-started`                                                                    |
 | Seleciona opção 2 a 9                                | mantém `bot-active/main-menu`, persiste `departmentContactOption` e solicita nome e motivo                                   |
-| Responde nome e motivo                               | notifica o telefone interno; após entrega confirmada usa `forward`, limpa `departmentContactOption` e mantém a fila canônica |
+| Responde nome e motivo                               | reúne por 120 s as mensagens persistidas, notifica o telefone interno e usa `return-to-main-menu`, limpando `departmentContactOption` |
 | Inicia orçamento                                     | `commercial / bot-active / quote-data-collection / collecting-information`                                                   |
 | Resumo apresentado                                   | `commercial / waiting-for-customer / quote-summary-confirmation / waiting-for-customer`, com `resumeState=bot-active`        |
 | Cliente responde ao resumo                           | retoma `bot-active` mantendo `quote-summary-confirmation`; não abre menu de acompanhamento                                   |
@@ -130,10 +130,12 @@ pelo Tenant Web são lidos do PostgreSQL; portanto, não dependem do n8n, do Red
 ou da conclusão da notificação assíncrona. Se o cliente enviar várias mensagens,
 nenhuma delas é reduzida a uma única “próxima mensagem”.
 
-O MVP não agrupa mensagens automatizáveis da mesma conversa. Cada inbound é um
-evento próprio e a outbox preserva ordem estrita até o completion do evento
-anterior. Um eventual buffer/debounce no n8n não pode ser tratado como fonte de
-verdade nem como garantia de captura.
+Cada inbound continua sendo mensagem e evento próprios. Para processar entradas
+rápidas sem duplicar perguntas, o n8n aguarda a janela configurada e consulta o
+lote durável pelo `sourceEventId` da primeira mensagem. O completion
+bem-sucedido informa `consumedSourceEventIds`; a mesma transação conclui os
+eventos pendentes já incorporados. A outbox mantém a ordem e o histórico não é
+compactado. Redis/debounce continuam sem autoridade sobre a captura.
 
 ## Webhook Evolution
 
@@ -173,6 +175,22 @@ conforme a configuração do canal. O `data.key.id` é a chave idempotente.
 Anexos não são baixados no MVP. A API guarda somente metadados aprovados:
 MIME, tamanho, URL HTTPS e nome; `WHATSAPP_MAX_ATTACHMENT_BYTES` e
 `WHATSAPP_ALLOWED_MIME_TYPES` controlam os limites.
+Imagem, figurinha, áudio, vídeo e documento são persistidos apenas como
+histórico e nunca são enviados ao agente de IA para leitura. O painel usa a
+URL HTTPS validada para exibir ou reproduzir o conteúdo disponibilizado pela
+Evolution.
+A Evolution serializa o tamanho de mídia com frequência como um inteiro protobuf
+`{ low, high, unsigned }`. A API aceita esse formato, além de número e texto,
+e também desembrulha mensagens efêmeras, de visualização única e documentos com
+legenda antes de persistir o anexo. Uma resposta HTTP 400 da Evolution indica que
+o evento foi rejeitado e ela não o repetirá; após corrigir a API, reenvie esse
+anexo para que ele entre no histórico.
+
+Para as opções 2 a 9, a automação só confirma a transição depois que a
+notificação interna foi entregue. A transição `return-to-main-menu` com
+`reason=department-contact-forwarded` limpa a coleta departamental, mantém o
+bot ativo, zera as mensagens não lidas e cria um outbound pendente para o
+cliente: a solicitação foi enviada e o responsável entrará em contato.
 
 ## Autenticação n8n
 
@@ -199,6 +217,7 @@ no corpo ou na URL.
 | `POST /internal/whatsapp/messages/{id}/evolution-result`          | registra resultado e `providerMessageId`                  |
 | `POST /internal/whatsapp/outbox-events/{id}/completions`          | conclui uma execução n8n aceita                           |
 | `GET /internal/whatsapp/conversations/{id}`                       | refaz leitura após HTTP 409                               |
+| `GET /internal/whatsapp/conversations/{id}/automation-batch`      | relê mensagens inbound persistidas na janela da automação |
 
 Todos ficam sob `/api/v1` e exigem a identidade n8n. Transição, patch e
 outbound usam `expectedVersion`. O outbound aceita `purpose=main-menu` e
@@ -335,7 +354,9 @@ x-lume-correlation-id: <correlation id>
 O n8n deve deduplicar por `x-lume-event-id` e ecoar o `executionId` atual no
 completion. `succeeded` marca `delivered`; `retryable-failure` volta a
 `pending`; `terminal-failure` marca `dead`. O `commandId` do completion é
-idempotente e fingerprintado. Callback de execução antiga recebe 409 e nunca
+idempotente e fingerprintado. Para inbound bem-sucedido, o campo opcional
+`consumedSourceEventIds` aceita até 50 identificadores do mesmo agregado e
+conclui atomicamente os eventos pendentes incorporados ao lote. Callback de execução antiga recebe 409 e nunca
 regrede `delivered`/`dead`. O readiness expõe `pendingOutbox`,
 `acceptedOutbox`, `expiredExecutionOutbox` e `deadOutbox`; logs usam
 IDs/correlação e não gravam payload, telefone, CPF ou tokens.

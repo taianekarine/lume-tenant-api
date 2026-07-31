@@ -338,6 +338,20 @@ export class CompleteOutboxExecutionDto {
   @IsIn(['succeeded', 'retryable-failure', 'terminal-failure'])
   outcome!: 'succeeded' | 'retryable-failure' | 'terminal-failure';
 
+  @ApiPropertyOptional({
+    type: [String],
+    maxItems: 50,
+    description:
+      'Eventos inbound persistidos que foram incorporados ao mesmo lote durável.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @MaxLength(120, { each: true })
+  consumedSourceEventIds?: string[];
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -349,6 +363,20 @@ export class CompleteOutboxExecutionDto {
   @IsString()
   @MaxLength(500)
   errorMessage?: string;
+}
+
+export class AutomationBatchQueryDto {
+  @ApiProperty({ maxLength: 120 })
+  @IsString()
+  @MaxLength(120)
+  sourceEventId!: string;
+
+  @ApiProperty({ minimum: 1, maximum: 300 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(300)
+  windowSeconds!: number;
 }
 
 export class ConversationListQueryDto {

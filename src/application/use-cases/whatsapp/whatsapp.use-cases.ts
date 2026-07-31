@@ -145,6 +145,20 @@ export class QueryWhatsAppUseCase {
     return this.repository.getConversation(companyId, conversationId);
   }
 
+  getAutomationBatch(
+    companyId: string,
+    conversationId: string,
+    sourceEventId: string,
+    windowSeconds: number,
+  ) {
+    return this.repository.getAutomationBatch(
+      companyId,
+      conversationId,
+      sourceEventId,
+      windowSeconds,
+    );
+  }
+
   listMessages(
     companyId: string,
     conversationId: string,

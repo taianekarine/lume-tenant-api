@@ -480,7 +480,7 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     WHATSAPP_ALLOWED_MIME_TYPES: optionalString(
       config,
       'WHATSAPP_ALLOWED_MIME_TYPES',
-      'image/jpeg,image/png,application/pdf,audio/ogg,video/mp4',
+      'image/jpeg,image/png,image/webp,image/gif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/octet-stream,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/wav,video/mp4,video/webm,video/quicktime',
     ),
     WHATSAPP_RETENTION_DAYS: positiveInteger(
       config,

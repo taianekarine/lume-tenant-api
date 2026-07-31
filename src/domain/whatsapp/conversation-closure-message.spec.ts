@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildConversationClosureMessage,
+  buildDepartmentContactClosureMessage,
   getConversationClosureGreeting,
 } from './conversation-closure-message';
 
@@ -19,6 +20,12 @@ describe('conversation closure message', () => {
       buildConversationClosureMessage(new Date('2026-07-30T17:00:00.000Z')),
     ).toBe(
       'Foi um prazer te atender! Qualquer outra dúvida ou nova demanda, é só me chamar por aqui. Conte sempre conosco e tenha uma ótima tarde! 😊',
+    );
+  });
+
+  it('builds the canonical department forwarding confirmation', () => {
+    expect(buildDepartmentContactClosureMessage('Operacional')).toBe(
+      'Sua solicitação foi enviada para o departamento Operacional. O responsável entrará em contato em breve.',
     );
   });
 });

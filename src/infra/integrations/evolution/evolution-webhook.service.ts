@@ -28,6 +28,59 @@ function optionalObject(value: unknown): JsonObject | null {
     : null;
 }
 
+function protobufInteger(value: unknown): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Number(value);
+
+  const serialized = optionalObject(value);
+  if (!serialized) return Number.NaN;
+
+  const low = serialized.low;
+  const high = serialized.high;
+  if (
+    typeof low !== 'number' ||
+    !Number.isInteger(low) ||
+    typeof high !== 'number' ||
+    !Number.isInteger(high) ||
+    (serialized.unsigned !== undefined &&
+      typeof serialized.unsigned !== 'boolean')
+  ) {
+    return Number.NaN;
+  }
+  if (serialized.unsigned !== true && high < 0) return Number.NaN;
+
+  const result = (high >>> 0) * 4_294_967_296 + (low >>> 0);
+  return Number.isSafeInteger(result) ? result : Number.NaN;
+}
+
+function unwrapMessage(message: JsonObject): JsonObject {
+  const wrappers = [
+    'ephemeralMessage',
+    'viewOnceMessage',
+    'viewOnceMessageV2',
+    'viewOnceMessageV2Extension',
+    'documentWithCaptionMessage',
+  ] as const;
+  let current = message;
+
+  for (let depth = 0; depth < 8; depth += 1) {
+    let nested: JsonObject | null = null;
+    for (const field of wrappers) {
+      const wrapper = optionalObject(current[field]);
+      nested = wrapper ? optionalObject(wrapper.message) : null;
+      if (nested) break;
+    }
+    if (!nested) {
+      const protocol = optionalObject(current.protocolMessage);
+      nested = protocol ? optionalObject(protocol.editedMessage) : null;
+    }
+    if (!nested) return current;
+    current = nested;
+  }
+
+  return current;
+}
+
 function requiredString(
   value: unknown,
   field: string,
@@ -99,7 +152,7 @@ export class EvolutionWebhookService {
     this.allowedMimeTypes = new Set(
       (
         config.get<string>('WHATSAPP_ALLOWED_MIME_TYPES') ??
-        'image/jpeg,image/png,application/pdf,audio/ogg,video/mp4'
+        'image/jpeg,image/png,image/webp,image/gif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/octet-stream,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/wav,video/mp4,video/webm,video/quicktime'
       )
         .split(',')
         .map((item) => item.trim().toLowerCase())
@@ -265,6 +318,7 @@ export class EvolutionWebhookService {
     text?: string;
     media?: Readonly<Record<string, unknown>>;
   } {
+    message = unwrapMessage(message);
     if (typeof message.conversation === 'string') {
       return {
         kind: 'text',
@@ -330,13 +384,7 @@ export class EvolutionWebhookService {
     if (!mimeType || !this.allowedMimeTypes.has(mimeType)) {
       throw validationError('Tipo MIME do anexo não permitido.');
     }
-    const rawSize = media.fileLength ?? media.fileSize;
-    const size =
-      typeof rawSize === 'number'
-        ? rawSize
-        : typeof rawSize === 'string'
-          ? Number(rawSize)
-          : Number.NaN;
+    const size = protobufInteger(media.fileLength ?? media.fileSize);
     if (
       !Number.isFinite(size) ||
       size < 0 ||
