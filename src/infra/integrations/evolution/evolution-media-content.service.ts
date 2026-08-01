@@ -45,6 +45,16 @@ const MIME_EXTENSIONS: Readonly<Record<string, string>> = {
   'video/quicktime': '.mov',
 };
 
+const RESERVED_FILE_NAME_CHARACTERS = new Set([
+  '"',
+  '<',
+  '>',
+  ':',
+  '|',
+  '?',
+  '*',
+]);
+
 export interface WhatsAppMediaContent {
   readonly content: Buffer;
   readonly fileName: string;
@@ -125,7 +135,9 @@ function decodeBase64(value: unknown, maximumBytes: number): Buffer {
     Math.floor((padded.length * 3) / 4) -
     (padded.endsWith('==') ? 2 : padded.endsWith('=') ? 1 : 0);
   if (estimatedBytes < 1 || estimatedBytes > maximumBytes) {
-    throw validationError('A mídia excede o limite permitido para visualização.');
+    throw validationError(
+      'A mídia excede o limite permitido para visualização.',
+    );
   }
 
   const content = Buffer.from(padded, 'base64');
@@ -142,6 +154,17 @@ function decodeBase64(value: unknown, maximumBytes: number): Buffer {
   return content;
 }
 
+function replaceUnsafeFileNameCharacters(value: string): string {
+  return Array.from(value, (character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f ||
+      codePoint === 0x7f ||
+      RESERVED_FILE_NAME_CHARACTERS.has(character)
+      ? '_'
+      : character;
+  }).join('');
+}
+
 function normalizedFileName(
   value: unknown,
   kind: MessageKind,
@@ -152,20 +175,22 @@ function normalizedFileName(
     typeof value === 'string'
       ? (value.split(/[\\/]/).pop() ?? '').trim()
       : '';
-  const withoutControlCharacters = raw
-    .replace(/[\u0000-\u001f\u007f]/g, '_')
-    .replace(/["<>:|?*]/g, '_')
-    .slice(0, 180);
+  const withoutControlCharacters = replaceUnsafeFileNameCharacters(raw).slice(
+    0,
+    180,
+  );
   const removedEncryptedSuffix = withoutControlCharacters.replace(/\.enc$/i, '');
   const extension = MIME_EXTENSIONS[mimeType] ?? '';
   const fallback = `whatsapp-${canonicalKind(kind)}-${messageId.slice(0, 8)}`;
   let fileName = removedEncryptedSuffix || fallback;
 
-  const currentExtension = /\.[a-z0-9]{1,10}$/i.exec(fileName)?.[0]?.toLowerCase();
+  const currentExtension = /\.[a-z0-9]{1,10}$/i
+    .exec(fileName)?.[0]
+    ?.toLowerCase();
   const shouldReplaceExtension =
     Boolean(extension) &&
     (!currentExtension ||
-      kind !== MessageKind.DOCUMENT && currentExtension !== extension);
+      (kind !== MessageKind.DOCUMENT && currentExtension !== extension));
 
   if (shouldReplaceExtension) {
     fileName = currentExtension
@@ -244,7 +269,9 @@ export class EvolutionMediaContentService {
         content.byteLength > this.maximumBytes ||
         content.byteLength !== message.proposalDocument.sizeBytes
       ) {
-        throw validationError('O documento persistido possui tamanho inválido.');
+        throw validationError(
+          'O documento persistido possui tamanho inválido.',
+        );
       }
       return {
         content,
@@ -325,7 +352,9 @@ export class EvolutionMediaContentService {
       !this.allowedMimeTypes.has(mimeType) ||
       !isMimeCompatible(message.kind, mimeType)
     ) {
-      throw validationError('O tipo MIME retornado para a mídia não é permitido.');
+      throw validationError(
+        'O tipo MIME retornado para a mídia não é permitido.',
+      );
     }
 
     const content = decodeBase64(providerPayload.base64, this.maximumBytes);
