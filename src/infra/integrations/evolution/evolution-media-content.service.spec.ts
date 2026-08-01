@@ -71,7 +71,11 @@ describe('EvolutionMediaContentService', () => {
       config(),
     );
 
-    const result = await service.getContent(companyId, conversationId, messageId);
+    const result = await service.getContent(
+      companyId,
+      conversationId,
+      messageId,
+    );
 
     expect(result).toMatchObject({
       fileName: 'audio.m4a',
@@ -151,7 +155,11 @@ describe('EvolutionMediaContentService', () => {
       config(),
     );
 
-    const result = await service.getContent(companyId, conversationId, messageId);
+    const result = await service.getContent(
+      companyId,
+      conversationId,
+      messageId,
+    );
 
     expect(result.content).toEqual(content);
     expect(result).toMatchObject({
