@@ -1,7 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AppError } from '../../../core/errors/app-error';
 import {
   MessageDirection,
   MessageKind,
@@ -191,6 +190,6 @@ describe('EvolutionMediaContentService', () => {
 
     await expect(
       service.getContent(companyId, conversationId, messageId),
-    ).rejects.toMatchObject<AppError>({ code: 'VALIDATION_ERROR' });
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 });
