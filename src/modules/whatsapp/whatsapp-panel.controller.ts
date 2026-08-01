@@ -2,10 +2,13 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
+  StreamableFile,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -14,6 +17,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import type { Response } from 'express';
 
 import type { AuthenticatedPrincipal } from '../../application/presenters/user.presenter';
 import {
@@ -23,6 +27,7 @@ import {
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
 import { forbidden, validationError } from '../../core/errors/app-error';
 import { normalizeUserDepartment } from '../../domain/access/access.constants';
+import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
@@ -34,6 +39,16 @@ import {
   TransitionListQueryDto,
   VersionedCommandDto,
 } from './dto/whatsapp.dto';
+
+function contentDisposition(fileName: string): string {
+  const fallback =
+    fileName
+      .normalize('NFKD')
+      .replace(/[^\x20-\x7e]/g, '')
+      .replace(/["\\\r\n]/g, '_')
+      .slice(0, 180) || 'whatsapp-media';
+  return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
 
 @ApiTags('Painel WhatsApp')
 @ApiBearerAuth()
@@ -47,6 +62,7 @@ export class WhatsAppPanelController {
     private readonly queryUseCase: QueryWhatsAppUseCase,
     private readonly transition: TransitionWhatsAppConversationUseCase,
     private readonly createHumanOutbound: CreateHumanOutboundWhatsAppUseCase,
+    private readonly mediaContent: EvolutionMediaContentService,
   ) {}
 
   @Get()
@@ -125,6 +141,38 @@ export class WhatsAppPanelController {
       conversationId,
       query,
     );
+  }
+
+  @Get(':conversationId/messages/:messageId/content')
+  @Header('Cache-Control', 'private, no-store')
+  @ApiOkResponse({
+    description:
+      'Conteúdo descriptografado da mídia, recuperado no servidor sem expor a credencial da Evolution API.',
+  })
+  async messageContent(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('conversationId', new ParseUUIDPipe()) conversationId: string,
+    @Param('messageId', new ParseUUIDPipe()) messageId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const media = await this.mediaContent.getContent(
+      current.companyId,
+      conversationId,
+      messageId,
+    );
+    response.setHeader('Content-Type', media.mimeType);
+    response.setHeader('Content-Length', String(media.content.byteLength));
+    response.setHeader(
+      'Content-Disposition',
+      contentDisposition(media.fileName),
+    );
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader(
+      'X-WhatsApp-Media-Filename',
+      encodeURIComponent(media.fileName),
+    );
+    response.setHeader('X-WhatsApp-Media-Kind', media.kind);
+    return new StreamableFile(media.content);
   }
 
   @Get(':conversationId/transitions')
