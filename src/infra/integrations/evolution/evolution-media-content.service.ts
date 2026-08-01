@@ -155,14 +155,16 @@ function decodeBase64(value: unknown, maximumBytes: number): Buffer {
 }
 
 function replaceUnsafeFileNameCharacters(value: string): string {
-  return Array.from(value, (character) => {
-    const codePoint = character.codePointAt(0) ?? 0;
-    return codePoint <= 0x1f ||
-      codePoint === 0x7f ||
-      RESERVED_FILE_NAME_CHARACTERS.has(character)
-      ? '_'
-      : character;
-  }).join('');
+  return Array.from(value)
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      const unsafe =
+        codePoint <= 0x1f ||
+        codePoint === 0x7f ||
+        RESERVED_FILE_NAME_CHARACTERS.has(character);
+      return unsafe ? '_' : character;
+    })
+    .join('');
 }
 
 function normalizedFileName(
@@ -172,14 +174,15 @@ function normalizedFileName(
   messageId: string,
 ): string {
   const raw =
-    typeof value === 'string'
-      ? (value.split(/[\\/]/).pop() ?? '').trim()
-      : '';
+    typeof value === 'string' ? (value.split(/[\\/]/).pop() ?? '').trim() : '';
   const withoutControlCharacters = replaceUnsafeFileNameCharacters(raw).slice(
     0,
     180,
   );
-  const removedEncryptedSuffix = withoutControlCharacters.replace(/\.enc$/i, '');
+  const removedEncryptedSuffix = withoutControlCharacters.replace(
+    /\.enc$/i,
+    '',
+  );
   const extension = MIME_EXTENSIONS[mimeType] ?? '';
   const fallback = `whatsapp-${canonicalKind(kind)}-${messageId.slice(0, 8)}`;
   let fileName = removedEncryptedSuffix || fallback;
