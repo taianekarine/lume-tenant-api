@@ -12,6 +12,7 @@ import {
   RecordEvolutionResultUseCase,
   TransitionWhatsAppConversationUseCase,
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
+import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
 import { EvolutionWebhookService } from '../../infra/integrations/evolution/evolution-webhook.service';
 import { IntegrationOutboxDispatcher } from '../../infra/integrations/n8n/integration-outbox.dispatcher';
 import { WhatsAppRetentionService } from '../../infra/retention/whatsapp-retention.service';
@@ -32,6 +33,7 @@ import { WhatsAppPanelController } from './whatsapp-panel.controller';
   ],
   providers: [
     EvolutionWebhookService,
+    EvolutionMediaContentService,
     IntegrationOutboxDispatcher,
     WhatsAppRetentionService,
     ServiceIdentityGuard,
