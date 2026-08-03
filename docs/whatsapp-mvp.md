@@ -82,23 +82,23 @@ do Painel WhatsApp.
 
 ## Matriz MVP
 
-| Evento                                               | Estado resultante                                                                                                            |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Primeiro contato                                     | `commercial / bot-active / main-menu / not-started`                                                                          |
-| Seleciona Comercial                                  | `commercial / bot-active / commercial-menu / not-started`                                                                    |
-| Seleciona opção 2 a 9                                | mantém `bot-active/main-menu`, persiste `departmentContactOption` e solicita nome e motivo                                   |
+| Evento                                               | Estado resultante                                                                                                                     |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Primeiro contato                                     | `commercial / bot-active / main-menu / not-started`                                                                                   |
+| Seleciona Comercial                                  | `commercial / bot-active / commercial-menu / not-started`                                                                             |
+| Seleciona opção 2 a 9                                | mantém `bot-active/main-menu`, persiste `departmentContactOption` e solicita nome e motivo                                            |
 | Responde nome e motivo                               | reúne por 120 s as mensagens persistidas, notifica o telefone interno e usa `return-to-main-menu`, limpando `departmentContactOption` |
-| Inicia orçamento                                     | `commercial / bot-active / quote-data-collection / collecting-information`                                                   |
-| Resumo apresentado                                   | `commercial / waiting-for-customer / quote-summary-confirmation / waiting-for-customer`, com `resumeState=bot-active`        |
-| Cliente responde ao resumo                           | retoma `bot-active` mantendo `quote-summary-confirmation`; não abre menu de acompanhamento                                   |
-| Solicita correção                                    | volta para coleta e preserva os campos já persistidos                                                                        |
-| Confirma resumo                                      | `commercial / bot-active / commercial-follow-up-menu / under-review`                                                         |
-| Mensagem complementar logo após confirmação          | permanece automatizável; após o intervalo contextual o webhook muda para `commercial-follow-up-menu`                         |
-| Novo inbound após `WHATSAPP_FOLLOW_UP_INACTIVITY_MS` | `commercial / bot-active / commercial-follow-up-menu / <status atual>`                                                       |
-| Painel devolve orçamento ao bot                      | `commercial / bot-active / commercial-follow-up-menu / <status atual>` e agenda o menu no próximo inbound                    |
-| Opção 1 a 4 ou conteúdo inválido no acompanhamento   | responde pelo n8n e depois usa `forward` para o Comercial                                                                    |
-| Opção 0 no acompanhamento                            | envia o menu principal e aplica `return-to-main-menu`                                                                        |
-| Novo inbound em atendimento humano                   | persiste no histórico/fila, sem reativar o bot                                                                               |
+| Inicia orçamento                                     | `commercial / bot-active / quote-data-collection / collecting-information`                                                            |
+| Resumo apresentado                                   | `commercial / waiting-for-customer / quote-summary-confirmation / waiting-for-customer`, com `resumeState=bot-active`                 |
+| Cliente responde ao resumo                           | retoma `bot-active` mantendo `quote-summary-confirmation`; não abre menu de acompanhamento                                            |
+| Solicita correção                                    | volta para coleta e preserva os campos já persistidos                                                                                 |
+| Confirma resumo                                      | `commercial / bot-active / commercial-follow-up-menu / under-review`                                                                  |
+| Mensagem complementar logo após confirmação          | permanece automatizável; após o intervalo contextual o webhook muda para `commercial-follow-up-menu`                                  |
+| Novo inbound após `WHATSAPP_FOLLOW_UP_INACTIVITY_MS` | `commercial / bot-active / commercial-follow-up-menu / <status atual>`                                                                |
+| Painel devolve orçamento ao bot                      | `commercial / bot-active / commercial-follow-up-menu / <status atual>` e agenda o menu no próximo inbound                             |
+| Opção 1 a 4 ou conteúdo inválido no acompanhamento   | responde pelo n8n e depois usa `forward` para o Comercial                                                                             |
+| Opção 0 no acompanhamento                            | envia o menu principal e aplica `return-to-main-menu`                                                                                 |
+| Novo inbound em atendimento humano                   | persiste no histórico/fila, sem reativar o bot                                                                                        |
 
 `start-quote` existe apenas no `commercial-menu`. `new-quote-request` cria um
 novo ciclo sequencial na mesma conversa quando o orquestrador inicia outra
@@ -420,7 +420,9 @@ podem representar retorno anterior à saída.
    `under-review` continua enviável depois de ser encaminhado ao atendimento.
    O primeiro envio realizado sem responsável vincula a conversa ao usuário
    autenticado, muda o passo para `quote-send-pending` e conserva
-   `bot-active/under-review`;
+   `bot-active/under-review`. Esse passo limpa qualquer retomada contextual
+   anterior. Enquanto houver documento `queued`, novos inbounds são
+   persistidos e encaminhados ao atendimento sem resposta automática;
 5. n8n baixa o conteúdo pelo endpoint interno autenticado, adquire o claim da
    tentativa, envia pelo provedor e registra `evolution-result`;
 6. cada resultado `sent`, `delivered` ou `read` acompanhado de
@@ -436,7 +438,11 @@ podem representar retorno anterior à saída.
 Enquanto o documento estiver `queued`, takeover, devolução ao bot e
 encaminhamento retornam `409`. A confirmação da Evolution serializa pela
 conversa e atualiza documento, solicitação e conversa sob a mesma
-pré-condição; uma divergência faz a transação inteira falhar para reconciliação.
+pré-condição. A única divergência recuperada automaticamente é o passo legado
+`commercial-follow-up-menu` causado por uma retomada contextual anterior ao
+envio: a existência do documento `queued` autoriza a confirmação a restaurar
+`quote-send-pending` sem repetir a chamada ao provedor. Outras divergências
+fazem a transação inteira falhar para reconciliação.
 Além disso, uma completion `succeeded` de `whatsapp.outbound.requested` só é
 aceita depois de mensagem e tentativa registrarem o resultado positivo da
 Evolution.

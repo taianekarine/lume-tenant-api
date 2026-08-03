@@ -510,6 +510,26 @@ function snapshot(row: {
   };
 }
 
+function snapshotForProposalDelivery(row: {
+  department: DepartmentCode;
+  conversationState: ConversationState;
+  flowStep: FlowStep;
+  requestStatus: RequestStatus;
+  resumeState: ConversationState | null;
+  resumeFlowStep: FlowStep | null;
+}): ConversationSnapshot {
+  const current = snapshot(row);
+  if (
+    current.department === 'commercial' &&
+    current.conversationState === 'bot-active' &&
+    current.flowStep === 'commercial-follow-up-menu' &&
+    current.requestStatus === 'under-review'
+  ) {
+    return { ...current, flowStep: 'quote-send-pending' };
+  }
+  return current;
+}
+
 function presentQuote(row: {
   id: string;
   sequence: number;
@@ -890,6 +910,15 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           },
         );
 
+        const hasQueuedProposalDocument =
+          (await transaction.quoteProposalDocument.count({
+            where: {
+              companyId: input.channel.companyId,
+              conversationId: conversation.id,
+              status: QuoteProposalDocumentStatus.QUEUED,
+            },
+          })) > 0;
+
         let contextualTransition = false;
         let automaticResumeName:
           | 'resume-awaited-reply'
@@ -913,6 +942,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         ) {
           automaticResumeName = 'proposal-response-received';
         } else if (
+          !hasQueuedProposalDocument &&
           conversation.contextualFollowUpAt !== null &&
           input.occurredAt >= conversation.contextualFollowUpAt &&
           (conversation.requestStatus === RequestStatus.UNDER_REVIEW ||
@@ -1049,6 +1079,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         });
 
         const humanRouted =
+          hasQueuedProposalDocument ||
           conversation.conversationState === ConversationState.HUMAN_ACTIVE ||
           conversation.conversationState === ConversationState.SENT_TO_HUMAN ||
           conversation.flowStep === FlowStep.HUMAN_SERVICE;
@@ -2455,6 +2486,23 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             throw new AppError('CONFLICT', 'Claim Evolution incompleto.');
           }
           if (
+            attempt.status !== MessageAttemptStatus.PENDING ||
+            message.deliveryStatus !== DeliveryStatus.PENDING
+          ) {
+            const result = await completeClaim({
+              shouldSend: false,
+              state: attempt.dispatchState.toLowerCase(),
+              messageId: message.id,
+              attemptId: attempt.id,
+              claimedAt: attempt.dispatchClaimedAt?.toISOString() ?? null,
+            });
+            return {
+              ...result,
+              alreadyClaimed: true,
+              idempotent: true,
+            };
+          }
+          if (
             attempt.dispatchState === EvolutionDispatchState.LEASED &&
             attempt.dispatchLeaseUntil &&
             attempt.dispatchLeaseUntil <= now
@@ -2774,7 +2822,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             );
           }
           resolveConversationTransition({
-            current: snapshot(conversation),
+            current: snapshotForProposalDelivery(conversation),
             name: 'proposal-delivery-confirmed',
           });
         }
@@ -4820,6 +4868,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             conversationState: ConversationState.BOT_ACTIVE,
             flowStep: FlowStep.QUOTE_SEND_PENDING,
             requestStatus: RequestStatus.UNDER_REVIEW,
+            resumeState: null,
+            resumeFlowStep: null,
+            contextualFollowUpAt: null,
             assignedToUserId: input.actorUserId,
             lastMessagePreview: 'Orçamento em PDF aguardando envio.',
             version: { increment: 1 },
@@ -5323,7 +5374,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
     if (sentDocuments.length === 0) return;
 
     const next = resolveConversationTransition({
-      current: snapshot(conversation),
+      current: snapshotForProposalDelivery(conversation),
       name: 'proposal-delivery-confirmed',
     });
     const quoteUpdated = await transaction.quoteRequest.updateMany({
@@ -5362,7 +5413,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             ConversationState.HUMAN_ACTIVE,
           ],
         },
-        flowStep: FlowStep.QUOTE_SEND_PENDING,
+        flowStep: {
+          in: [FlowStep.QUOTE_SEND_PENDING, FlowStep.COMMERCIAL_FOLLOW_UP_MENU],
+        },
         requestStatus: RequestStatus.UNDER_REVIEW,
       },
       data: {

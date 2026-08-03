@@ -3283,6 +3283,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         conversationState: 'BOT_ACTIVE',
         flowStep: 'QUOTE_SEND_PENDING',
         requestStatus: 'UNDER_REVIEW',
+        contextualFollowUpAt: new Date(0),
       },
     });
     const proposalQuote = await prisma.quoteRequest.create({
@@ -3440,6 +3441,19 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         status: 'queued',
       },
     });
+    expect(
+      await prisma.whatsAppConversation.findUniqueOrThrow({
+        where: {
+          id_companyId: {
+            id: proposalConversation.id,
+            companyId: tenantId,
+          },
+        },
+      }),
+    ).toMatchObject({
+      flowStep: 'QUOTE_SEND_PENDING',
+      contextualFollowUpAt: null,
+    });
     const messageId = send.body.message.id as string;
     const attemptId = send.body.message.attempts[0].id as string;
     const duplicateSend = await request(app.getHttpServer())
@@ -3463,6 +3477,39 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         where: { id: messageId, companyId: tenantId },
       }),
     ).toBe(1);
+
+    const inboundWhileQueuedPayload = webhookPayload(
+      `provider-proposal-queued-${randomUUID()}`,
+      contact.phoneNormalized,
+      'placeholder',
+    );
+    inboundWhileQueuedPayload.data.message = {
+      imageMessage: {
+        mimetype: 'image/jpeg',
+        fileLength: 128,
+        url: 'https://evolution.example.test/media/proposal-queued.jpg',
+      },
+    } as unknown as typeof inboundWhileQueuedPayload.data.message;
+    await signedWebhook(app, inboundWhileQueuedPayload)
+      .expect(202)
+      .expect(({ body }) =>
+        expect(body).toMatchObject({
+          conversationId: proposalConversation.id,
+          automationAllowed: false,
+          canGenerateReply: false,
+          canSendReply: false,
+          version: 2,
+        }),
+      );
+    expect(
+      await prisma.integrationOutbox.findFirstOrThrow({
+        where: {
+          companyId: tenantId,
+          aggregateId: proposalConversation.id,
+        },
+        orderBy: { aggregateSequence: 'desc' },
+      }),
+    ).toMatchObject({ topic: 'whatsapp.inbound.human-notification' });
 
     const outbound = await prisma.integrationOutbox.findFirstOrThrow({
       where: {
@@ -3529,12 +3576,13 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       .expect(200);
     expect(internalDownload.body).toEqual(pdf);
 
+    const claimCommandId = randomUUID();
     await request(app.getHttpServer())
       .post(
         `/api/v1/internal/whatsapp/messages/${messageId}/evolution-dispatch-claims`,
       )
       .set('authorization', `Bearer ${serviceToken}`)
-      .send({ commandId: randomUUID(), attemptId })
+      .send({ commandId: claimCommandId, attemptId })
       .expect(201);
 
     await request(app.getHttpServer())
@@ -3560,6 +3608,16 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       requestStatus: 'UNDER_REVIEW',
       assignedToUserId: actor.id,
       version: 2,
+    });
+
+    await prisma.whatsAppConversation.update({
+      where: {
+        id_companyId: {
+          id: proposalConversation.id,
+          companyId: tenantId,
+        },
+      },
+      data: { flowStep: 'COMMERCIAL_FOLLOW_UP_MENU' },
     });
     await request(app.getHttpServer())
       .post(
@@ -3595,6 +3653,21 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       })
       .expect(201)
       .expect(({ body }) => expect(body.idempotent).toBe(true));
+    await request(app.getHttpServer())
+      .post(
+        `/api/v1/internal/whatsapp/messages/${messageId}/evolution-dispatch-claims`,
+      )
+      .set('authorization', `Bearer ${serviceToken}`)
+      .send({ commandId: claimCommandId, attemptId })
+      .expect(201)
+      .expect(({ body }) =>
+        expect(body).toMatchObject({
+          shouldSend: false,
+          state: 'succeeded',
+          alreadyClaimed: true,
+          idempotent: true,
+        }),
+      );
     await request(app.getHttpServer())
       .post(
         `/api/v1/internal/whatsapp/outbox-events/${outbound.id}/completions`,
@@ -3656,6 +3729,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     ).toMatchObject({
       expectedVersion: 2,
       resultingVersion: 3,
+      fromFlowStep: 'COMMERCIAL_FOLLOW_UP_MENU',
       toState: 'WAITING_FOR_CUSTOMER',
       toRequestStatus: 'WAITING_FOR_CUSTOMER',
     });
