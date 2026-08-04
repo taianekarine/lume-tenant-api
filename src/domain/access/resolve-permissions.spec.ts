@@ -13,6 +13,9 @@ describe('resolveEffectivePermissions', () => {
     expect(resolveEffectivePermissions([])).toEqual([
       'ai-agents:use',
       'dashboard:view',
+      'documents:create',
+      'documents:update',
+      'documents:view',
       'profile:update',
       'profile:view',
       'support:create',
@@ -51,9 +54,15 @@ describe('resolveEffectivePermissions', () => {
     );
   });
 
-  it('reserves users, settings and license permissions to management', () => {
+  it('reserves administrative access to management and people operations', () => {
     for (const department of ASSIGNABLE_DEPARTMENTS) {
-      if (department === 'management') continue;
+      if (
+        department === 'management' ||
+        department === 'human-resources' ||
+        department === 'personnel-department'
+      ) {
+        continue;
+      }
       expect(
         DEFAULT_DEPARTMENT_PERMISSIONS[department].some(
           (permission) =>

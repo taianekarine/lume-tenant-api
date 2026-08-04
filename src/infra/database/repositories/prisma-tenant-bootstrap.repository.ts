@@ -5,7 +5,11 @@ import {
   type BootstrapTenantPersistenceInput,
 } from '../../../application/contracts/repositories';
 import type { UserDepartment } from '../../../domain/access/access.constants';
-import { DepartmentCode, UserAccountStatus } from '../prisma/generated/client';
+import {
+  DepartmentCode,
+  DocumentAccessMode,
+  UserAccountStatus,
+} from '../prisma/generated/client';
 import { rethrowKnownPrismaConflict } from '../prisma/prisma-errors';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -51,6 +55,7 @@ export class PrismaTenantBootstrapRepository implements TenantBootstrapRepositor
         await transaction.user.create({
           data: {
             ...input.administrator.props,
+            documentAccessMode: DocumentAccessMode.STANDARD,
             departments: [...input.administrator.props.departments],
             permissionCodes: [...input.administrator.props.permissionCodes],
             status: UserAccountStatus.ACTIVE,

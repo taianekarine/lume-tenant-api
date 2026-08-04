@@ -24,11 +24,13 @@ import {
 } from '../../shared/utils/normalization';
 import {
   DepartmentCode,
+  DocumentAccessMode,
   ServiceIdentityType,
   UserAccountStatus,
   WhatsAppProviderType,
 } from '../database/prisma/generated/client';
 import { PrismaService } from '../database/prisma/prisma.service';
+import { seedInitialDocumentCatalog } from './document-catalog.seed';
 
 function hashSecret(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -156,6 +158,7 @@ export class ProductionBootstrapService {
         administrator = await transaction.user.create({
           data: {
             ...newAdministrator.props,
+            documentAccessMode: DocumentAccessMode.STANDARD,
             isAdministrator: true,
             departments: [],
             permissionCodes: [],
@@ -321,6 +324,12 @@ export class ProductionBootstrapService {
         });
         serviceIdentityId = identity.id;
       }
+
+      await seedInitialDocumentCatalog(
+        transaction,
+        licensedTenantId,
+        administrator.id,
+      );
 
       await transaction.tenantAuditLog.create({
         data: {

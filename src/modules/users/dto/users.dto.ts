@@ -70,6 +70,14 @@ export class CreateUserDto {
   @IsOptional()
   @IsBoolean()
   isAdministrator = false;
+
+  @ApiPropertyOptional({
+    enum: ['standard', 'document-portal'],
+    default: 'standard',
+  })
+  @IsOptional()
+  @IsIn(['standard', 'document-portal'])
+  documentAccessMode: 'standard' | 'document-portal' = 'standard';
 }
 
 export class UpdateUserDto {
@@ -107,6 +115,11 @@ export class UpdateUserDto {
   @IsOptional()
   @IsBoolean()
   isAdministrator?: boolean;
+
+  @ApiPropertyOptional({ enum: ['standard', 'document-portal'] })
+  @IsOptional()
+  @IsIn(['standard', 'document-portal'])
+  documentAccessMode?: 'standard' | 'document-portal';
 }
 
 export class ListUsersQueryDto {

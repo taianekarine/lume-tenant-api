@@ -1,5 +1,10 @@
 # Arquitetura do Lume Tenant API
 
+O módulo documental mantém estados e validação em `src/domain/documents`, casos
+de uso em `src/application` e composição HTTP em `src/modules/documents`.
+Solicitações guardam snapshots de checklists versionados para que alterações
+futuras não modifiquem processos iniciados.
+
 ## Instância única por cliente
 
 ```text

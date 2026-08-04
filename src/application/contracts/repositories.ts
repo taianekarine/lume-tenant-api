@@ -5,6 +5,7 @@ import type {
 import type { Company } from '../../domain/entities/company';
 import type { User } from '../../domain/entities/user';
 import type { UserAccountStatus } from '../../domain/entities/user';
+import type { DocumentAccessMode } from '../../domain/entities/user';
 
 export interface UserRecord {
   user: User;
@@ -48,6 +49,7 @@ export interface UpdateUserPersistenceInput {
   emailNormalized?: string;
   cpfNormalized?: string | null;
   isAdministrator?: boolean;
+  documentAccessMode?: DocumentAccessMode;
   departments?: UserDepartment[];
   permissionCodes?: PermissionCode[];
 }

@@ -15,6 +15,7 @@ import {
   isImplicitPermissionCode,
 } from '../../../domain/access/access.constants';
 import {
+  DocumentAccessMode as PrismaDocumentAccessMode,
   UserAccountStatus as PrismaUserAccountStatus,
   type Prisma,
 } from '../prisma/generated/client';
@@ -57,6 +58,14 @@ function userUpdateData(
     ...(input.isAdministrator === undefined
       ? {}
       : { isAdministrator: input.isAdministrator }),
+    ...(input.documentAccessMode === undefined
+      ? {}
+      : {
+          documentAccessMode:
+            input.documentAccessMode === 'document-portal'
+              ? PrismaDocumentAccessMode.DOCUMENT_PORTAL
+              : PrismaDocumentAccessMode.STANDARD,
+        }),
     ...(input.departments === undefined
       ? {}
       : { departments: [...input.departments] }),
@@ -222,6 +231,10 @@ export class PrismaUsersRepository extends UsersRepository {
             departments: [...user.props.departments],
             permissionCodes: [...user.props.permissionCodes],
             status: PrismaUserAccountStatus.ACTIVE,
+            documentAccessMode:
+              user.props.documentAccessMode === 'document-portal'
+                ? PrismaDocumentAccessMode.DOCUMENT_PORTAL
+                : PrismaDocumentAccessMode.STANDARD,
             suspendedUntil: null,
             suspensionReason: null,
           },

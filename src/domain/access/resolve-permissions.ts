@@ -21,9 +21,22 @@ export function resolveEffectivePermissions(
   departments: readonly SupportedUserDepartment[],
   individualPermissions: readonly PermissionCode[] = [],
   isAdministrator = false,
+  documentAccessMode: 'standard' | 'document-portal' = 'standard',
 ): PermissionCode[] {
   if (isAdministrator) {
     return [...ALL_PERMISSION_CODES];
+  }
+
+  if (documentAccessMode === 'document-portal') {
+    return [
+      'documents:view',
+      'documents:create',
+      'documents:update',
+      'profile:view',
+      'profile:update',
+      'support:view',
+      'support:create',
+    ];
   }
 
   const permissions = new Set<PermissionCode>(

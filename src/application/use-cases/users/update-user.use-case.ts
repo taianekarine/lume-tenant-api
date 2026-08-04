@@ -12,6 +12,7 @@ import {
   type SupportedUserDepartment,
 } from '../../../domain/access/access.constants';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
+import type { DocumentAccessMode } from '../../../domain/entities/user';
 import {
   normalizeCpf,
   normalizeEmail,
@@ -31,6 +32,7 @@ export interface UpdateUserInput {
   email?: string;
   cpf?: string | null;
   isAdministrator?: boolean;
+  documentAccessMode?: DocumentAccessMode;
   departments?: SupportedUserDepartment[];
   permissionCodes?: PermissionCode[];
 }
@@ -147,6 +149,7 @@ export class UpdateUserUseCase {
       cpfNormalized,
       isAdministrator:
         input.isAdministrator === undefined ? undefined : finalIsAdministrator,
+      documentAccessMode: input.documentAccessMode,
       departments: finalIsAdministrator ? [] : departments,
       permissionCodes: finalIsAdministrator ? [] : permissionCodes,
     };
@@ -178,6 +181,7 @@ export class UpdateUserUseCase {
             'email',
             'cpf',
             'isAdministrator',
+            'documentAccessMode',
             'departments',
             'permissionCodes',
           ].filter(

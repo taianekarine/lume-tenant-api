@@ -6,6 +6,7 @@ import type {
 } from '../access/access.constants';
 
 export type UserAccountStatus = 'active' | 'inactive' | 'suspended';
+export type DocumentAccessMode = 'standard' | 'document-portal';
 export const USERNAME_PATTERN = /^(?=.*[A-Za-z])[A-Za-z0-9._-]{3,40}$/;
 
 export function isValidUsername(value: string): boolean {
@@ -26,6 +27,7 @@ export interface UserProps {
   profilePicture: Uint8Array<ArrayBuffer> | null;
   profilePictureMime: string | null;
   isAdministrator: boolean;
+  documentAccessMode: DocumentAccessMode;
   departments: UserDepartment[];
   permissionCodes: PermissionCode[];
   status: UserAccountStatus;
@@ -52,6 +54,7 @@ export class User {
       | 'profilePicture'
       | 'profilePictureMime'
       | 'isAdministrator'
+      | 'documentAccessMode'
       | 'permissionCodes'
       | 'status'
       | 'suspendedUntil'
@@ -61,6 +64,7 @@ export class User {
     > & {
       mustChangePassword?: boolean;
       isAdministrator?: boolean;
+      documentAccessMode?: DocumentAccessMode;
       permissionCodes?: PermissionCode[];
     },
   ): User {
@@ -80,6 +84,7 @@ export class User {
       profilePicture: null,
       profilePictureMime: null,
       isAdministrator: input.isAdministrator ?? false,
+      documentAccessMode: input.documentAccessMode ?? 'standard',
       permissionCodes: input.permissionCodes ?? [],
       status: 'active',
       suspendedUntil: null,
@@ -90,8 +95,15 @@ export class User {
     });
   }
 
-  static restore(props: UserProps): User {
-    return new User(props);
+  static restore(
+    props: Omit<UserProps, 'documentAccessMode'> & {
+      documentAccessMode?: DocumentAccessMode;
+    },
+  ): User {
+    return new User({
+      ...props,
+      documentAccessMode: props.documentAccessMode ?? 'standard',
+    });
   }
 
   get id(): string {

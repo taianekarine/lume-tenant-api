@@ -15,6 +15,7 @@ import { TenantBootstrapModule } from './modules/tenant-bootstrap.module';
 import { UsersModule } from './modules/users/users.module';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.module';
 import { DataExchangeModule } from './modules/data-exchange/data-exchange.module';
+import { DocumentManagementModule } from './modules/documents/document-management.module';
 import { AppErrorFilter } from './shared/http/filters/app-error.filter';
 
 @Module({
@@ -46,6 +47,7 @@ import { AppErrorFilter } from './shared/http/filters/app-error.filter';
     HealthModule,
     WhatsAppModule,
     DataExchangeModule,
+    DocumentManagementModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AppErrorFilter },

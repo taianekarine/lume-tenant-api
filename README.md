@@ -1,5 +1,8 @@
 # Lume Tenant API
 
+O fluxo reutilizável de checklists, uploads versionados, revisão humana e
+renovação está em [`docs/document-management.md`](docs/document-management.md).
+
 Data plane autônomo da plataforma Lume. Cada cliente executa sua própria
 instalação, seu próprio PostgreSQL e seus próprios backups.
 

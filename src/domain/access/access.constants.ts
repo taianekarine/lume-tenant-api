@@ -155,7 +155,15 @@ export const PERMISSION_ACTIONS_BY_RESOURCE = {
   contracts: ['view', 'create', 'update', 'delete', 'manage'],
   quotes: ['view', 'create', 'update', 'delete', 'manage', 'approve'],
   trips: ['view', 'create', 'update', 'delete', 'manage'],
-  documents: ['view', 'create', 'update', 'delete', 'manage'],
+  documents: [
+    'view',
+    'create',
+    'update',
+    'delete',
+    'manage',
+    'approve',
+    'export',
+  ],
   invoices: ['view', 'create', 'update', 'delete', 'manage'],
   'service-requests': ['view', 'create', 'update', 'manage'],
   support: ['view', 'create', 'update', 'manage'],
@@ -174,6 +182,9 @@ export const EMPLOYEE_SELF_SERVICE_PERMISSIONS = [
   'profile:update',
   'support:view',
   'support:create',
+  'documents:view',
+  'documents:create',
+  'documents:update',
 ] as const satisfies readonly PermissionCode[];
 
 export const MANAGEMENT_DEPARTMENT_PERMISSIONS = [
@@ -198,6 +209,12 @@ export const MANAGEMENT_DEPARTMENT_PERMISSIONS = [
   'profile:update',
   'support:view',
   'support:create',
+  'documents:view',
+  'documents:create',
+  'documents:update',
+  'documents:manage',
+  'documents:approve',
+  'documents:export',
 ] as const satisfies readonly PermissionCode[];
 
 export const ALL_PERMISSION_CODES: readonly PermissionCode[] =
@@ -225,6 +242,15 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'manuals:view',
     'ai-agents:use',
     'reports:view',
+    'users:view',
+    'users:create',
+    'users:update',
+    'documents:view',
+    'documents:create',
+    'documents:update',
+    'documents:manage',
+    'documents:approve',
+    'documents:export',
   ],
   'personnel-department': [
     'dashboard:view',
@@ -235,6 +261,15 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'manuals:view',
     'reports:view',
     'reports:export',
+    'users:view',
+    'users:create',
+    'users:update',
+    'documents:view',
+    'documents:create',
+    'documents:update',
+    'documents:manage',
+    'documents:approve',
+    'documents:export',
   ],
   commercial: [
     'dashboard:view',

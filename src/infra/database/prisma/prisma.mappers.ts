@@ -20,6 +20,7 @@ export const userRecordSelect = {
   mustChangePassword: true,
   profilePictureMime: true,
   isAdministrator: true,
+  documentAccessMode: true,
   departments: true,
   permissionCodes: true,
   status: true,
@@ -53,6 +54,10 @@ export function mapUserRecord(row: PrismaUserRecord): UserRecord {
       profilePicture: null,
       profilePictureMime: row.profilePictureMime,
       isAdministrator: row.isAdministrator,
+      documentAccessMode:
+        row.documentAccessMode === 'DOCUMENT_PORTAL'
+          ? 'document-portal'
+          : 'standard',
       departments: row.departments as UserDepartment[],
       permissionCodes: row.permissionCodes as PermissionCode[],
       status: row.status.toLowerCase() as 'active' | 'inactive' | 'suspended',

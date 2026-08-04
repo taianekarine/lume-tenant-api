@@ -20,6 +20,7 @@ export interface UserOutput {
   cpf: string | null;
   type: 'employee';
   isAdministrator: boolean;
+  documentAccessMode?: 'standard' | 'document-portal';
   departments: PresentedUserDepartment[];
   permissionCodes: PermissionCode[];
   permissions: PermissionCode[];
@@ -56,6 +57,7 @@ export function presentUser(record: UserRecord): UserOutput {
     cpf: user.props.cpfNormalized,
     type: 'employee',
     isAdministrator: user.props.isAdministrator,
+    documentAccessMode: user.props.documentAccessMode ?? 'standard',
     departments: user.props.isAdministrator
       ? [...ASSIGNABLE_DEPARTMENTS]
       : user.props.departments.map(presentUserDepartment),
@@ -64,6 +66,7 @@ export function presentUser(record: UserRecord): UserOutput {
       user.props.departments,
       permissionCodes,
       user.props.isAdministrator,
+      user.props.documentAccessMode,
     ),
     clientCategory: null,
     isActive: user.props.isActive,

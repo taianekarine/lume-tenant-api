@@ -10,7 +10,11 @@ import {
   type PermissionCode,
   type SupportedUserDepartment,
 } from '../../../domain/access/access.constants';
-import { isValidUsername, User } from '../../../domain/entities/user';
+import {
+  isValidUsername,
+  User,
+  type DocumentAccessMode,
+} from '../../../domain/entities/user';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
 import {
   normalizeCpf,
@@ -33,6 +37,7 @@ export interface CreateUserInput {
   cpf?: string;
   password: string;
   isAdministrator?: boolean;
+  documentAccessMode?: DocumentAccessMode;
   departments: SupportedUserDepartment[];
   permissionCodes: PermissionCode[];
 }
@@ -118,6 +123,7 @@ export class CreateUserUseCase {
       passwordHash: await this.passwordHasher.hash(input.password),
       mustChangePassword: true,
       isAdministrator,
+      documentAccessMode: input.documentAccessMode,
       departments,
       permissionCodes,
     });
@@ -130,7 +136,12 @@ export class CreateUserUseCase {
         action: 'USER_CREATED',
         targetType: 'user',
         targetId: user.id,
-        metadata: { isAdministrator, departments, permissionCodes },
+        metadata: {
+          isAdministrator,
+          documentAccessMode: input.documentAccessMode ?? 'standard',
+          departments,
+          permissionCodes,
+        },
       });
     }
     return presentUser(created);
