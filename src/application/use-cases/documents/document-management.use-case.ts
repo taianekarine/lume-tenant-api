@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 
 import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
 import {
@@ -161,12 +162,27 @@ type RequestDetailRow = Prisma.DocumentRequestGetPayload<{
   include: typeof requestDetailInclude;
 }>;
 
-function jsonRecord(
-  value: Prisma.JsonValue,
-): Readonly<Record<string, unknown>> {
+function jsonRecord(value: unknown): Readonly<Record<string, unknown>> {
   return value && typeof value === 'object' && !Array.isArray(value)
-    ? value
+    ? (value as Readonly<Record<string, unknown>>)
     : {};
+}
+
+function spreadsheetValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean')
+    return String(value);
+  return JSON.stringify(value);
+}
+
+function safeArchiveName(value: string): string {
+  return (
+    value
+      .normalize('NFKD')
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .slice(0, 120) || 'arquivo'
+  );
 }
 
 function contextFromPrisma(
@@ -522,8 +538,9 @@ export class DocumentManagementUseCase {
       deadline?: string;
       notes?: string;
     },
+    options: { skipManageAssertion?: boolean } = {},
   ) {
-    assertManage(principal);
+    if (!options.skipManageAssertion) assertManage(principal);
     const duplicate = await this.prisma.documentRequest.findUnique({
       where: {
         companyId_commandId: {
@@ -648,6 +665,48 @@ export class DocumentManagementUseCase {
       request: await this.getRequestById(principal, requestId),
       idempotent: false,
     };
+  }
+
+  async createAdmissionRequest(
+    principal: AuthenticatedPrincipal,
+    input: {
+      commandId: string;
+      subjectUserId: string;
+      checklistCode:
+        'admission-general' | 'admission-administrative' | 'admission-driver';
+    },
+  ) {
+    if (
+      !principal.isAdministrator &&
+      !principal.departments.some((department) =>
+        ['personnel-department', 'human-resources'].includes(department),
+      )
+    ) {
+      throw forbidden(
+        'Somente administradores, RH e Departamento Pessoal podem iniciar a admissão documental.',
+      );
+    }
+    const checklist = await this.prisma.documentChecklistTemplate.findFirst({
+      where: {
+        companyId: principal.companyId,
+        code: input.checklistCode,
+        active: true,
+      },
+      orderBy: { version: 'desc' },
+      select: { id: true },
+    });
+    if (!checklist) throw notFound('Checklist de admissão ativo');
+    return this.createRequest(
+      principal,
+      {
+        commandId: input.commandId,
+        subjectUserId: input.subjectUserId,
+        checklistId: checklist.id,
+        context: 'admission',
+        notes: 'Solicitação criada automaticamente no cadastro do usuário.',
+      },
+      { skipManageAssertion: true },
+    );
   }
 
   async listRequests(
@@ -1109,6 +1168,7 @@ export class DocumentManagementUseCase {
         id_companyId: { id: submissionId, companyId: principal.companyId },
       },
       include: {
+        files: { where: { deletedAt: null }, select: { id: true } },
         requestItem: { include: { request: true, documentType: true } },
       },
     });
@@ -1137,7 +1197,21 @@ export class DocumentManagementUseCase {
 
     const reviewId = await this.prisma.$transaction(async (transaction) => {
       const correctedFields = input.correctedFields ?? {};
-      const confirmedFields = input.confirmedFields ?? {};
+      const confirmedAt = new Date();
+      const confirmedFields = Object.fromEntries(
+        Object.entries(input.confirmedFields ?? {}).map(([key, value]) => [
+          key,
+          {
+            value,
+            confirmedByUserId: principal.id,
+            confirmedAt: confirmedAt.toISOString(),
+            sourceSubmissionId: submission.id,
+            sourceDocumentTypeCode: submission.requestItem.documentType.code,
+            sourceVersion: submission.version,
+            sourceFileIds: submission.files.map((file) => file.id),
+          },
+        ]),
+      );
       await transaction.documentSubmission.update({
         where: {
           id_companyId: { id: submission.id, companyId: principal.companyId },
@@ -1257,6 +1331,136 @@ export class DocumentManagementUseCase {
       ),
       reviewId,
       idempotent: false,
+    };
+  }
+
+  async updateExtractedData(
+    principal: AuthenticatedPrincipal,
+    submissionId: string,
+    input: {
+      fields: Readonly<Record<string, unknown>>;
+      confidences?: Readonly<Record<string, unknown>>;
+    },
+  ) {
+    assertReview(principal);
+    const submission = await this.prisma.documentSubmission.findUnique({
+      where: {
+        id_companyId: { id: submissionId, companyId: principal.companyId },
+      },
+      include: {
+        files: { where: { deletedAt: null }, select: { id: true } },
+        validation: true,
+        requestItem: { include: { request: true, documentType: true } },
+      },
+    });
+    if (!submission) throw notFound('Envio documental');
+    if (submission.status !== PrismaDocumentItemStatus.PENDING_HUMAN_REVIEW) {
+      throw validationError(
+        'Os dados propostos só podem ser alterados durante a revisão humana.',
+      );
+    }
+    const config = jsonRecord(submission.requestItem.configSnapshot);
+    const schema = jsonRecord(config.extractionSchema);
+    const definitions = Array.isArray(schema.fields) ? schema.fields : [];
+    const allowedKeys = new Set(
+      definitions
+        .map((definition) => jsonRecord(definition).key)
+        .filter((key): key is string => typeof key === 'string'),
+    );
+    const unexpected = Object.keys(input.fields).filter(
+      (key) => !allowedKeys.has(key),
+    );
+    if (unexpected.length) {
+      throw validationError(
+        `Campos fora do esquema configurado: ${unexpected.join(', ')}.`,
+      );
+    }
+    const updatedAt = new Date();
+    const sourceFileIds = submission.files.map((file) => file.id);
+    const extractedData = Object.fromEntries(
+      Object.entries(input.fields).map(([key, value]) => {
+        const rawConfidence = input.confidences?.[key];
+        const confidence =
+          typeof rawConfidence === 'number' &&
+          rawConfidence >= 0 &&
+          rawConfidence <= 1
+            ? rawConfidence
+            : null;
+        return [
+          key,
+          {
+            value,
+            confidence,
+            proposedByUserId: principal.id,
+            proposedAt: updatedAt.toISOString(),
+            sourceSubmissionId: submission.id,
+            sourceDocumentTypeCode: submission.requestItem.documentType.code,
+            sourceVersion: submission.version,
+            sourceFileIds,
+          },
+        ];
+      }),
+    );
+    const numericConfidences = Object.values(extractedData)
+      .map((record) => record.confidence)
+      .filter((value): value is number => typeof value === 'number');
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.documentSubmission.update({
+        where: {
+          id_companyId: { id: submission.id, companyId: principal.companyId },
+        },
+        data: { extractedData: extractedData as Prisma.InputJsonValue },
+      });
+      await transaction.documentValidation.upsert({
+        where: {
+          submissionId_companyId: {
+            submissionId: submission.id,
+            companyId: principal.companyId,
+          },
+        },
+        create: {
+          companyId: principal.companyId,
+          submissionId: submission.id,
+          status: DocumentValidationStatus.COMPLETED,
+          extractedFields: extractedData as Prisma.InputJsonValue,
+          alerts: [],
+          result: { manualReviewRequired: true },
+          provider: 'human-assisted',
+          startedAt: updatedAt,
+          completedAt: updatedAt,
+          overallConfidence: numericConfidences.length
+            ? numericConfidences.reduce((sum, value) => sum + value, 0) /
+              numericConfidences.length
+            : null,
+          summary: 'Dados propostos registrados para confirmação humana.',
+        },
+        update: {
+          extractedFields: extractedData as Prisma.InputJsonValue,
+          provider: 'human-assisted',
+          completedAt: updatedAt,
+          overallConfidence: numericConfidences.length
+            ? numericConfidences.reduce((sum, value) => sum + value, 0) /
+              numericConfidences.length
+            : null,
+          summary: 'Dados propostos registrados para confirmação humana.',
+        },
+      });
+      await transaction.tenantAuditLog.create({
+        data: {
+          companyId: principal.companyId,
+          actorUserId: principal.id,
+          action: 'document.extraction.proposed',
+          targetType: 'document-submission',
+          targetId: submission.id,
+          metadata: { fieldNames: Object.keys(input.fields), sourceFileIds },
+        },
+      });
+    });
+    return {
+      request: await this.getRequestById(
+        principal,
+        submission.requestItem.requestId,
+      ),
     };
   }
 
@@ -1422,7 +1626,7 @@ export class DocumentManagementUseCase {
     };
   }
 
-  async exportXlsx(principal: AuthenticatedPrincipal) {
+  async exportXlsx(principal: AuthenticatedPrincipal, subjectUserId?: string) {
     assertManage(principal);
     if (
       !principal.isAdministrator &&
@@ -1432,13 +1636,39 @@ export class DocumentManagementUseCase {
         'Esta operação exige permissão de exportação documental.',
       );
     }
+    if (subjectUserId) {
+      const subject = await this.prisma.user.findUnique({
+        where: {
+          id_companyId: { id: subjectUserId, companyId: principal.companyId },
+        },
+        select: { id: true },
+      });
+      if (!subject) throw notFound('Usuário titular');
+    }
     const submissions = await this.prisma.documentSubmission.findMany({
-      where: { companyId: principal.companyId },
+      where: {
+        companyId: principal.companyId,
+        ...(subjectUserId
+          ? { requestItem: { request: { subjectUserId } } }
+          : {}),
+      },
       include: {
+        validation: true,
+        files: {
+          where: { deletedAt: null },
+          select: { id: true, fileName: true },
+        },
+        reviews: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          include: { reviewedBy: { select: { id: true, name: true } } },
+        },
         requestItem: {
           include: {
             request: {
-              include: { subject: { select: { name: true, email: true } } },
+              include: {
+                subject: { select: { id: true, name: true, email: true } },
+              },
             },
             documentType: { select: { code: true, name: true } },
           },
@@ -1447,8 +1677,8 @@ export class DocumentManagementUseCase {
       orderBy: { submittedAt: 'desc' },
     });
     const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Documentos');
-    sheet.columns = [
+    const summary = workbook.addWorksheet('Resumo');
+    summary.columns = [
       { header: 'Solicitação', key: 'requestId', width: 38 },
       { header: 'Titular', key: 'subject', width: 32 },
       { header: 'E-mail', key: 'email', width: 32 },
@@ -1458,8 +1688,25 @@ export class DocumentManagementUseCase {
       { header: 'Enviado em', key: 'submittedAt', width: 24 },
       { header: 'Dados confirmados (JSON)', key: 'confirmedData', width: 70 },
     ];
+    const structured = workbook.addWorksheet('Dados estruturados');
+    structured.columns = [
+      { header: 'ID do usuário', key: 'subjectId', width: 38 },
+      { header: 'Titular', key: 'subject', width: 32 },
+      { header: 'E-mail', key: 'email', width: 32 },
+      { header: 'Código do documento', key: 'documentCode', width: 28 },
+      { header: 'Documento', key: 'documentType', width: 38 },
+      { header: 'Campo', key: 'field', width: 28 },
+      { header: 'Valor extraído/proposto', key: 'extracted', width: 42 },
+      { header: 'Confiança', key: 'confidence', width: 14 },
+      { header: 'Valor confirmado', key: 'confirmed', width: 42 },
+      { header: 'Confirmado por', key: 'confirmedBy', width: 30 },
+      { header: 'Data da confirmação', key: 'confirmedAt', width: 24 },
+      { header: 'Envio de origem', key: 'submissionId', width: 38 },
+      { header: 'Versão', key: 'version', width: 10 },
+      { header: 'Arquivos de origem', key: 'fileIds', width: 60 },
+    ];
     for (const submission of submissions) {
-      sheet.addRow({
+      summary.addRow({
         requestId: submission.requestItem.requestId,
         subject: submission.requestItem.request.subject.name,
         email: submission.requestItem.request.subject.email,
@@ -1469,9 +1716,42 @@ export class DocumentManagementUseCase {
         submittedAt: submission.submittedAt.toISOString(),
         confirmedData: JSON.stringify(submission.confirmedData),
       });
+      const extracted = jsonRecord(submission.extractedData);
+      const confirmed = jsonRecord(submission.confirmedData);
+      const fieldNames = new Set([
+        ...Object.keys(extracted),
+        ...Object.keys(confirmed),
+      ]);
+      for (const field of fieldNames) {
+        const proposedRecord = jsonRecord(extracted[field]);
+        const confirmedRecord = jsonRecord(confirmed[field]);
+        structured.addRow({
+          subjectId: submission.requestItem.request.subject.id,
+          subject: submission.requestItem.request.subject.name,
+          email: submission.requestItem.request.subject.email,
+          documentCode: submission.requestItem.documentType.code,
+          documentType: submission.requestItem.documentType.name,
+          field,
+          extracted: spreadsheetValue(proposedRecord.value ?? extracted[field]),
+          confidence:
+            typeof proposedRecord.confidence === 'number'
+              ? proposedRecord.confidence
+              : '',
+          confirmed: spreadsheetValue(
+            confirmedRecord.value ?? confirmed[field],
+          ),
+          confirmedBy: submission.reviews[0]?.reviewedBy.name ?? '',
+          confirmedAt: spreadsheetValue(confirmedRecord.confirmedAt),
+          submissionId: submission.id,
+          version: submission.version,
+          fileIds: submission.files.map((file) => file.id).join(', '),
+        });
+      }
     }
-    sheet.getRow(1).font = { bold: true };
-    sheet.autoFilter = { from: 'A1', to: 'H1' };
+    summary.getRow(1).font = { bold: true };
+    summary.autoFilter = { from: 'A1', to: 'H1' };
+    structured.getRow(1).font = { bold: true };
+    structured.autoFilter = { from: 'A1', to: 'N1' };
     const buffer = await workbook.xlsx.writeBuffer();
     await this.audit(
       principal,
@@ -1480,9 +1760,87 @@ export class DocumentManagementUseCase {
       principal.companyId,
       {
         rowCount: submissions.length,
+        subjectUserId: subjectUserId ?? null,
       },
     );
     return Buffer.from(buffer);
+  }
+
+  async exportUserFiles(
+    principal: AuthenticatedPrincipal,
+    subjectUserId: string,
+  ) {
+    assertManage(principal);
+    if (
+      !principal.isAdministrator &&
+      !principal.permissions.includes('documents:export')
+    ) {
+      throw forbidden(
+        'Esta operação exige permissão de exportação documental.',
+      );
+    }
+    const subject = await this.prisma.user.findUnique({
+      where: {
+        id_companyId: { id: subjectUserId, companyId: principal.companyId },
+      },
+      select: { id: true, name: true, email: true },
+    });
+    if (!subject) throw notFound('Usuário titular');
+    const files = await this.prisma.documentFile.findMany({
+      where: {
+        companyId: principal.companyId,
+        deletedAt: null,
+        submission: { requestItem: { request: { subjectUserId } } },
+      },
+      include: {
+        submission: {
+          include: {
+            requestItem: { include: { documentType: true, request: true } },
+          },
+        },
+      },
+      orderBy: [
+        { submission: { requestItem: { position: 'asc' } } },
+        { createdAt: 'asc' },
+      ],
+    });
+    const zip = new JSZip();
+    const manifest = files.map((file) => {
+      const folder = `${safeArchiveName(file.submission.requestItem.documentType.code)}/v${file.submission.version}`;
+      const archivePath = `${folder}/${file.id}_${safeArchiveName(file.fileName)}`;
+      zip.file(archivePath, Buffer.from(file.content));
+      return {
+        archivePath,
+        fileId: file.id,
+        originalName: file.fileName,
+        documentTypeCode: file.submission.requestItem.documentType.code,
+        documentTypeName: file.submission.requestItem.documentType.name,
+        submissionId: file.submissionId,
+        version: file.submission.version,
+        sha256: file.sha256,
+        createdAt: file.createdAt.toISOString(),
+      };
+    });
+    zip.file(
+      'manifesto.json',
+      JSON.stringify(
+        { subject, generatedAt: new Date().toISOString(), files: manifest },
+        null,
+        2,
+      ),
+    );
+    const content = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+    });
+    await this.audit(
+      principal,
+      'document.export.files',
+      'user',
+      subjectUserId,
+      { fileCount: files.length },
+    );
+    return content;
   }
 
   private async getRequestById(

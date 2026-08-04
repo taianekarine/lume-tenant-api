@@ -25,8 +25,10 @@ import {
   UpdateProfilePictureUseCase,
 } from '../../application/use-cases/users/profile.use-cases';
 import { UsersController } from './users.controller';
+import { DocumentManagementModule } from '../documents/document-management.module';
 
 @Module({
+  imports: [DocumentManagementModule],
   controllers: [UsersController],
   providers: [
     {

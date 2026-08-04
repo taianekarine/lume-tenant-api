@@ -44,9 +44,19 @@ export async function seedInitialDocumentCatalog(
         maxFiles: definition.maxFiles ?? (definition.requiresFrontBack ? 2 : 1),
         extractionSchema: {
           fields: definition.extractionFields ?? [],
-        },
+        } as unknown as Prisma.InputJsonValue,
       },
-      update: {},
+      update: {
+        name: definition.name,
+        expires: definition.expires ?? false,
+        renewalLeadDays: definition.renewalLeadDays,
+        requiresFrontBack: definition.requiresFrontBack ?? false,
+        allowsMultiplePages: definition.allowsMultiplePages ?? false,
+        maxFiles: definition.maxFiles ?? (definition.requiresFrontBack ? 2 : 1),
+        extractionSchema: {
+          fields: definition.extractionFields ?? [],
+        } as unknown as Prisma.InputJsonValue,
+      },
       select: { id: true },
     });
     typeIds.set(definition.code, documentType.id);
@@ -92,11 +102,21 @@ export async function seedInitialDocumentCatalog(
           position: index + 1,
           instructions: item.instructions,
           condition: (item.condition ?? {}) as Prisma.InputJsonValue,
-          configOverrides: definition.requiresOriginals
-            ? { requiresOriginal: true }
-            : {},
+          configOverrides: {
+            ...(definition.requiresOriginals ? { requiresOriginal: true } : {}),
+            ...(item.configOverrides ?? {}),
+          },
         },
-        update: {},
+        update: {
+          requirement: requirements[item.requirement ?? 'required'],
+          position: index + 1,
+          instructions: item.instructions,
+          condition: (item.condition ?? {}) as Prisma.InputJsonValue,
+          configOverrides: {
+            ...(definition.requiresOriginals ? { requiresOriginal: true } : {}),
+            ...(item.configOverrides ?? {}),
+          },
+        },
       });
     }
   }

@@ -6,5 +6,6 @@ import { DocumentManagementController } from './document-management.controller';
 @Module({
   controllers: [DocumentManagementController],
   providers: [DocumentManagementUseCase],
+  exports: [DocumentManagementUseCase],
 })
 export class DocumentManagementModule {}

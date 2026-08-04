@@ -15,6 +15,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  IsUUID,
 } from 'class-validator';
 
 import {
@@ -78,6 +79,20 @@ export class CreateUserDto {
   @IsOptional()
   @IsIn(['standard', 'document-portal'])
   documentAccessMode: 'standard' | 'document-portal' = 'standard';
+
+  @ApiPropertyOptional({
+    enum: ['admission-general', 'admission-administrative', 'admission-driver'],
+    description: 'Lista documental criada automaticamente para o novo usuário.',
+  })
+  @IsOptional()
+  @IsIn(['admission-general', 'admission-administrative', 'admission-driver'])
+  initialDocumentChecklistCode?:
+    'admission-general' | 'admission-administrative' | 'admission-driver';
+
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID('4')
+  initialDocumentRequestCommandId?: string;
 }
 
 export class UpdateUserDto {

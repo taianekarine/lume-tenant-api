@@ -255,6 +255,15 @@ export class ReviewDocumentSubmissionDto {
   originalObservation?: string;
 }
 
+export class UpdateExtractedFieldsDto {
+  @IsObject()
+  fields!: Readonly<Record<string, unknown>>;
+
+  @IsOptional()
+  @IsObject()
+  confidences?: Readonly<Record<string, unknown>>;
+}
+
 export class ExpiringDocumentsQueryDto {
   @IsOptional()
   @Type(() => Number)

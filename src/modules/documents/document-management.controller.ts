@@ -36,6 +36,7 @@ import {
   ListDocumentRequestsQueryDto,
   RenewDocumentDto,
   ReviewDocumentSubmissionDto,
+  UpdateExtractedFieldsDto,
   UploadDocumentSubmissionDto,
 } from './dto/document-management.dto';
 
@@ -218,6 +219,17 @@ export class DocumentManagementController {
     return this.documents.completeSubmission(current, submissionId);
   }
 
+  @Post('submissions/:submissionId/extracted-data')
+  @RequireAnyPermission('documents:approve')
+  updateExtractedData(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('submissionId', new ParseUUIDPipe({ version: '4' }))
+    submissionId: string,
+    @Body() body: UpdateExtractedFieldsDto,
+  ) {
+    return this.documents.updateExtractedData(current, submissionId, body);
+  }
+
   @Post('submissions/:submissionId/reviews')
   @RequireAnyPermission('documents:approve')
   review(
@@ -283,6 +295,51 @@ export class DocumentManagementController {
     response.setHeader(
       'Content-Disposition',
       contentDisposition('gestao-documental.xlsx', 'attachment'),
+    );
+    return new StreamableFile(file);
+  }
+
+  @Get('users/:subjectUserId/export.xlsx')
+  @RequireAnyPermission('documents:export')
+  @Header('Cache-Control', 'private, no-store')
+  async exportUserXlsx(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('subjectUserId', new ParseUUIDPipe({ version: '4' }))
+    subjectUserId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const file = await this.documents.exportXlsx(current, subjectUserId);
+    response.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    response.setHeader(
+      'Content-Disposition',
+      contentDisposition(
+        `dados-documentais-${subjectUserId}.xlsx`,
+        'attachment',
+      ),
+    );
+    return new StreamableFile(file);
+  }
+
+  @Get('users/:subjectUserId/files.zip')
+  @RequireAnyPermission('documents:export')
+  @Header('Cache-Control', 'private, no-store')
+  async exportUserFiles(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('subjectUserId', new ParseUUIDPipe({ version: '4' }))
+    subjectUserId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const file = await this.documents.exportUserFiles(current, subjectUserId);
+    response.setHeader('Content-Type', 'application/zip');
+    response.setHeader(
+      'Content-Disposition',
+      contentDisposition(
+        `arquivos-documentais-${subjectUserId}.zip`,
+        'attachment',
+      ),
     );
     return new StreamableFile(file);
   }

@@ -33,6 +33,8 @@ import {
   UpdateProfilePictureUseCase,
 } from '../../application/use-cases/users/profile.use-cases';
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
+import { DocumentManagementUseCase } from '../../application/use-cases/documents/document-management.use-case';
+import { validationError } from '../../core/errors/app-error';
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
   CreateUserDto,
@@ -80,6 +82,7 @@ export class UsersController {
     private readonly requestPasswordReset: RequestAdminPasswordResetUseCase,
     private readonly getProfile: GetProfileUseCase,
     private readonly updateProfilePicture: UpdateProfilePictureUseCase,
+    private readonly documents: DocumentManagementUseCase,
   ) {}
 
   @Post()
@@ -87,16 +90,42 @@ export class UsersController {
   @ApiCreatedResponse({
     description: 'Usuário interno criado na empresa autenticada.',
   })
-  create(
+  async create(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Body() body: CreateUserDto,
   ) {
     assertPeopleOperationsCreationAccess(current);
-    return this.createUser.execute({
-      ...body,
+    const {
+      initialDocumentChecklistCode,
+      initialDocumentRequestCommandId,
+      ...userInput
+    } = body;
+    if (
+      body.documentAccessMode === 'document-portal' &&
+      !initialDocumentChecklistCode
+    ) {
+      throw validationError(
+        'Selecione a lista de documentos para o novo usuário.',
+      );
+    }
+    if (initialDocumentChecklistCode && !initialDocumentRequestCommandId) {
+      throw validationError(
+        'Identificador da solicitação documental não informado.',
+      );
+    }
+    const user = await this.createUser.execute({
+      ...userInput,
       companyId: current.companyId,
       actorUserId: current.id,
     });
+    const initialDocumentRequest = initialDocumentChecklistCode
+      ? await this.documents.createAdmissionRequest(current, {
+          commandId: initialDocumentRequestCommandId!,
+          subjectUserId: user.id,
+          checklistCode: initialDocumentChecklistCode,
+        })
+      : null;
+    return { ...user, initialDocumentRequest };
   }
 
   @Get()

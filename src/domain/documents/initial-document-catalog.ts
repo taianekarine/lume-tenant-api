@@ -3,6 +3,13 @@ import type {
   DocumentRequirement,
 } from './document-workflow';
 
+export interface InitialExtractionField {
+  readonly key: string;
+  readonly label: string;
+  readonly type?: 'text' | 'date' | 'boolean' | 'number' | 'list';
+  readonly multiple?: boolean;
+}
+
 export interface InitialDocumentType {
   readonly code: string;
   readonly name: string;
@@ -11,34 +18,86 @@ export interface InitialDocumentType {
   readonly requiresFrontBack?: boolean;
   readonly allowsMultiplePages?: boolean;
   readonly maxFiles?: number;
-  readonly extractionFields?: readonly string[];
+  readonly extractionFields?: readonly InitialExtractionField[];
 }
 
+const fields = (...definitions: readonly InitialExtractionField[]) =>
+  definitions;
+const personFields = fields(
+  { key: 'fullName', label: 'Nome completo' },
+  { key: 'cpf', label: 'CPF' },
+  { key: 'birthDate', label: 'Data de nascimento', type: 'date' },
+);
+const certificateFields = fields(
+  { key: 'holderName', label: 'Nome do titular' },
+  { key: 'cpf', label: 'CPF' },
+  { key: 'certificateType', label: 'Tipo da certidão' },
+  { key: 'issuer', label: 'Órgão emissor' },
+  { key: 'jurisdiction', label: 'Jurisdição' },
+  { key: 'issuedAt', label: 'Data de emissão', type: 'date' },
+  { key: 'validUntil', label: 'Data de validade', type: 'date' },
+  { key: 'result', label: 'Resultado' },
+  { key: 'validationCode', label: 'Código de validação' },
+);
+
 export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
-  { code: 'photo-3x4', name: 'Foto 3x4 recente' },
+  { code: 'photo-3x4', name: 'Foto 3x4 recente', maxFiles: 4 },
   {
     code: 'marriage-certificate',
     name: 'Certidão de casamento',
     allowsMultiplePages: true,
     maxFiles: 4,
+    extractionFields: fields(
+      { key: 'spouseNames', label: 'Nomes dos cônjuges', multiple: true },
+      { key: 'previousNames', label: 'Nomes anteriores', multiple: true },
+      { key: 'marriageDate', label: 'Data do casamento', type: 'date' },
+      { key: 'propertyRegime', label: 'Regime de bens' },
+      { key: 'registration', label: 'Matrícula da certidão' },
+      { key: 'registryOffice', label: 'Cartório' },
+      { key: 'city', label: 'Município' },
+      { key: 'state', label: 'UF' },
+    ),
   },
   {
     code: 'child-birth-certificate',
     name: 'Certidão de nascimento dos filhos',
     allowsMultiplePages: true,
     maxFiles: 12,
+    extractionFields: fields(
+      { key: 'childName', label: 'Nome da criança' },
+      { key: 'birthDate', label: 'Data de nascimento', type: 'date' },
+      { key: 'parentage', label: 'Filiação', multiple: true },
+      { key: 'registration', label: 'Matrícula da certidão' },
+      { key: 'registryOffice', label: 'Cartório' },
+      { key: 'city', label: 'Município' },
+      { key: 'state', label: 'UF' },
+    ),
   },
   {
     code: 'child-vaccination-card',
     name: 'Carteira de vacinação dos filhos',
     allowsMultiplePages: true,
     maxFiles: 12,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'issuer', label: 'Unidade emissora' },
+      { key: 'issuedAt', label: 'Data de emissão', type: 'date' },
+      { key: 'referencePeriod', label: 'Período de referência' },
+      { key: 'requirementInformation', label: 'Informações para conferência' },
+    ),
   },
   {
     code: 'child-school-statement',
     name: 'Atestado escolar dos filhos',
     allowsMultiplePages: true,
     maxFiles: 12,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'institution', label: 'Instituição' },
+      { key: 'issuedAt', label: 'Data de emissão', type: 'date' },
+      { key: 'referencePeriod', label: 'Período de referência' },
+      { key: 'requirementInformation', label: 'Informações para conferência' },
+    ),
   },
   {
     code: 'child-identification',
@@ -46,22 +105,87 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
     requiresFrontBack: true,
     allowsMultiplePages: true,
     maxFiles: 24,
+    extractionFields: fields(
+      { key: 'name', label: 'Nome' },
+      { key: 'cpf', label: 'CPF' },
+      { key: 'rg', label: 'RG' },
+      { key: 'birthDate', label: 'Data de nascimento', type: 'date' },
+      { key: 'relationship', label: 'Vínculo com o funcionário' },
+      { key: 'validUntil', label: 'Validade', type: 'date' },
+    ),
   },
-  { code: 'pis-card', name: 'Cartão do PIS/PASEP/NIT' },
+  {
+    code: 'pis-card',
+    name: 'Cartão do PIS/PASEP/NIT',
+    extractionFields: fields(...personFields, {
+      key: 'pisPasepNit',
+      label: 'PIS/PASEP/NIT',
+    }),
+  },
   {
     code: 'voter-registration',
     name: 'Título de eleitor',
     requiresFrontBack: true,
     maxFiles: 2,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'registrationNumber', label: 'Número do título' },
+      { key: 'zone', label: 'Zona' },
+      { key: 'section', label: 'Seção' },
+      { key: 'city', label: 'Município' },
+      { key: 'state', label: 'UF' },
+    ),
   },
-  { code: 'proof-of-address', name: 'Comprovante de residência atual' },
-  { code: 'cpf', name: 'CPF' },
-  { code: 'rg', name: 'RG', requiresFrontBack: true, maxFiles: 2 },
+  {
+    code: 'proof-of-address',
+    name: 'Comprovante de residência atual',
+    extractionFields: fields(
+      { key: 'holderName', label: 'Nome do titular' },
+      { key: 'street', label: 'Endereço' },
+      { key: 'number', label: 'Número' },
+      { key: 'complement', label: 'Complemento' },
+      { key: 'district', label: 'Bairro' },
+      { key: 'city', label: 'Município' },
+      { key: 'state', label: 'UF' },
+      { key: 'postalCode', label: 'CEP' },
+      { key: 'issuedAt', label: 'Data de emissão ou referência', type: 'date' },
+      { key: 'proofType', label: 'Tipo de comprovante' },
+    ),
+  },
+  {
+    code: 'cpf',
+    name: 'CPF',
+    extractionFields: fields(...personFields, {
+      key: 'statusInformation',
+      label: 'Situação ou informação disponível',
+    }),
+  },
+  {
+    code: 'rg',
+    name: 'RG',
+    requiresFrontBack: true,
+    maxFiles: 2,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'rg', label: 'Número do RG' },
+      { key: 'issuer', label: 'Órgão emissor' },
+      { key: 'state', label: 'UF' },
+      { key: 'issuedAt', label: 'Data de expedição', type: 'date' },
+      { key: 'birthPlace', label: 'Naturalidade' },
+      { key: 'parentage', label: 'Filiação', multiple: true },
+    ),
+  },
   {
     code: 'ctps',
     name: 'CTPS — Carteira de Trabalho',
     allowsMultiplePages: true,
     maxFiles: 12,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'pisPasepNit', label: 'PIS/PASEP/NIT' },
+      { key: 'parentage', label: 'Filiação', multiple: true },
+      { key: 'essentialInformation', label: 'Informações essenciais' },
+    ),
   },
   {
     code: 'cnh',
@@ -70,24 +194,44 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
     renewalLeadDays: 60,
     requiresFrontBack: true,
     maxFiles: 2,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'registrationNumber', label: 'Número de registro' },
+      { key: 'category', label: 'Categoria' },
+      { key: 'issuedAt', label: 'Data de emissão', type: 'date' },
+      {
+        key: 'firstLicenseAt',
+        label: 'Data da primeira habilitação',
+        type: 'date',
+      },
+      { key: 'validUntil', label: 'Data de validade', type: 'date' },
+      { key: 'state', label: 'UF' },
+      { key: 'ear', label: 'EAR', type: 'boolean' },
+      { key: 'observations', label: 'Observações' },
+      { key: 'registeredCourses', label: 'Cursos registrados', type: 'list' },
+      { key: 'securityCode', label: 'Código de segurança ou identificador' },
+    ),
   },
   {
     code: 'state-criminal-clearance',
     name: 'Certidão negativa criminal estadual',
     expires: true,
     renewalLeadDays: 30,
+    extractionFields: certificateFields,
   },
   {
     code: 'civil-clearance',
     name: 'Certidão negativa de distribuição civil',
     expires: true,
     renewalLeadDays: 30,
+    extractionFields: certificateFields,
   },
   {
     code: 'ambiguous-federal-state-clearance',
     name: 'Certidão negativa de distribuição federal (estadual) — validação pendente',
     expires: true,
     renewalLeadDays: 30,
+    extractionFields: certificateFields,
   },
   {
     code: 'military-certificate',
@@ -99,30 +243,52 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
     requiresFrontBack: true,
     allowsMultiplePages: true,
     maxFiles: 4,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'rg', label: 'RG' },
+      { key: 'relationship', label: 'Vínculo com o funcionário' },
+    ),
   },
   {
     code: 'vaccination-card',
     name: 'Cartão de vacinação atualizado',
     allowsMultiplePages: true,
     maxFiles: 8,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'issuer', label: 'Unidade emissora' },
+      { key: 'issuedAt', label: 'Data de emissão', type: 'date' },
+      { key: 'requirementInformation', label: 'Informações para conferência' },
+    ),
   },
   {
     code: 'passenger-transport-course',
     name: 'Certificado do Curso de Transporte Coletivo de Passageiros',
     expires: true,
     renewalLeadDays: 60,
+    extractionFields: fields(
+      ...personFields,
+      { key: 'courseName', label: 'Nome do curso' },
+      { key: 'institution', label: 'Instituição emissora' },
+      { key: 'workloadHours', label: 'Carga horária', type: 'number' },
+      { key: 'completedAt', label: 'Data de conclusão', type: 'date' },
+      { key: 'validUntil', label: 'Data de validade', type: 'date' },
+      { key: 'certificateNumber', label: 'Número do certificado' },
+    ),
   },
   {
     code: 'driver-license-record',
     name: 'Prontuário ou certidão de nada consta da CNH',
     expires: true,
     renewalLeadDays: 30,
+    extractionFields: certificateFields,
   },
   {
     code: 'municipal-debt-clearance',
     name: 'Certidão negativa de débito municipal',
     expires: true,
     renewalLeadDays: 30,
+    extractionFields: certificateFields,
   },
 ];
 
@@ -131,6 +297,7 @@ interface InitialChecklistItem {
   readonly requirement?: DocumentRequirement;
   readonly instructions?: string;
   readonly condition?: Readonly<Record<string, unknown>>;
+  readonly configOverrides?: Readonly<Record<string, unknown>>;
 }
 
 export interface InitialChecklist {
@@ -159,7 +326,10 @@ const familyConditions = {
 } as const;
 
 const commonItems: readonly InitialChecklistItem[] = [
-  { documentTypeCode: 'photo-3x4' },
+  {
+    documentTypeCode: 'photo-3x4',
+    configOverrides: { minFiles: 2, maxFiles: 2, expectedCopies: 2 },
+  },
   {
     documentTypeCode: 'marriage-certificate',
     requirement: 'conditional',
@@ -238,7 +408,11 @@ export const INITIAL_DOCUMENT_CHECKLISTS: readonly InitialChecklist[] = [
     context: 'admission',
     requiresOriginals: true,
     items: [
-      ...commonItems.slice(0, 5),
+      {
+        documentTypeCode: 'photo-3x4',
+        configOverrides: { minFiles: 4, maxFiles: 4, expectedCopies: 4 },
+      },
+      ...commonItems.slice(1, 5),
       {
         documentTypeCode: 'child-identification',
         requirement: 'conditional',
