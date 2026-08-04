@@ -189,10 +189,6 @@ export const EMPLOYEE_SELF_SERVICE_PERMISSIONS = [
 
 export const MANAGEMENT_DEPARTMENT_PERMISSIONS = [
   'dashboard:view',
-  'users:view',
-  'users:create',
-  'users:update',
-  'users:manage',
   'ai-agents:use',
   'manuals:view',
   'manuals:create',
@@ -244,7 +240,6 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'reports:view',
     'users:view',
     'users:create',
-    'users:update',
     'documents:view',
     'documents:create',
     'documents:update',
@@ -263,7 +258,6 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'reports:export',
     'users:view',
     'users:create',
-    'users:update',
     'documents:view',
     'documents:create',
     'documents:update',

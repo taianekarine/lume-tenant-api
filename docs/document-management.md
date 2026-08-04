@@ -15,6 +15,12 @@ desligamento e outras solicitações. A solicitação é vinculada ao tenant e a
   validados antes da persistência;
 - logs guardam metadados mínimos e hashes, nunca os bytes integrais.
 
+Na administração de usuários, somente contas com `isAdministrator=true`
+podem editar departamentos, permissões, estado ou recuperação de acesso. RH e
+Departamento Pessoal possuem apenas `users:view` e `users:create`; ao criarem
+uma conta, a API exige `documentAccessMode=document-portal`, sem departamento
+ou permissão adicional. O administrador completa os acessos posteriormente.
+
 ## Fluxo
 
 1. tipos definem formatos, limites, validade, frente/verso, original e extração;

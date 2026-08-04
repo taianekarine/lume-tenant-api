@@ -50,22 +50,53 @@ export class CreateUserUseCase {
   ) {}
 
   async execute(input: CreateUserInput) {
+    const actor = input.actorUserId
+      ? await this.users.findById(input.companyId, input.actorUserId)
+      : null;
+    if (input.actorUserId && !actor) {
+      throw forbidden('O usuário responsável pela criação não foi encontrado.');
+    }
+
+    const actorIsAdministrator = actor?.user.props.isAdministrator === true;
+    const actorCanCreateDocumentAccess =
+      actor?.user.props.departments.some((department) =>
+        ['personnel-department', 'human-resources'].includes(department),
+      ) === true;
     const isAdministrator = input.isAdministrator === true;
-    if (isAdministrator) {
-      const actor = input.actorUserId
-        ? await this.users.findById(input.companyId, input.actorUserId)
-        : null;
-      if (!actor?.user.props.isAdministrator) {
+
+    if (input.actorUserId && !actorIsAdministrator) {
+      if (!actorCanCreateDocumentAccess) {
         throw forbidden(
-          'Somente outro administrador pode criar uma conta administradora.',
+          'Somente administradores, RH e Departamento Pessoal podem criar acessos.',
+        );
+      }
+      if (
+        isAdministrator ||
+        input.documentAccessMode !== 'document-portal' ||
+        input.departments.length > 0 ||
+        input.permissionCodes.length > 0
+      ) {
+        throw forbidden(
+          'RH e Departamento Pessoal podem criar somente o acesso inicial ao portal de documentos, sem departamentos ou permissões adicionais.',
         );
       }
     }
+    if (isAdministrator && !actorIsAdministrator) {
+      throw forbidden(
+        'Somente outro administrador pode criar uma conta administradora.',
+      );
+    }
+
+    const documentAccessMode = input.documentAccessMode ?? 'standard';
     const departments = isAdministrator
       ? []
       : normalizeUserDepartments(input.departments);
 
-    if (!isAdministrator && departments.length === 0) {
+    if (
+      !isAdministrator &&
+      documentAccessMode !== 'document-portal' &&
+      departments.length === 0
+    ) {
       throw validationError('Informe ao menos um departamento para o usuário.');
     }
     const permissionCodes = isAdministrator
@@ -123,7 +154,7 @@ export class CreateUserUseCase {
       passwordHash: await this.passwordHasher.hash(input.password),
       mustChangePassword: true,
       isAdministrator,
-      documentAccessMode: input.documentAccessMode,
+      documentAccessMode,
       departments,
       permissionCodes,
     });
@@ -138,7 +169,7 @@ export class CreateUserUseCase {
         targetId: user.id,
         metadata: {
           isAdministrator,
-          documentAccessMode: input.documentAccessMode ?? 'standard',
+          documentAccessMode,
           departments,
           permissionCodes,
         },

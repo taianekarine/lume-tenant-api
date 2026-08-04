@@ -75,8 +75,31 @@ describe('resolveEffectivePermissions', () => {
     }
   });
 
-  it('does not grant Commercial access to a management-only user', () => {
-    expect(MANAGEMENT_DEPARTMENT_PERMISSIONS).toContain('users:manage');
+  it('limits HR and Personnel Department to viewing and creating user access', () => {
+    for (const department of [
+      'human-resources',
+      'personnel-department',
+    ] as const) {
+      expect(DEFAULT_DEPARTMENT_PERMISSIONS[department]).toContain(
+        'users:view',
+      );
+      expect(DEFAULT_DEPARTMENT_PERMISSIONS[department]).toContain(
+        'users:create',
+      );
+      expect(DEFAULT_DEPARTMENT_PERMISSIONS[department]).not.toContain(
+        'users:update',
+      );
+      expect(DEFAULT_DEPARTMENT_PERMISSIONS[department]).not.toContain(
+        'users:manage',
+      );
+    }
+  });
+
+  it('does not treat the Management department as administrator authority', () => {
+    expect(MANAGEMENT_DEPARTMENT_PERMISSIONS).not.toContain('users:view');
+    expect(MANAGEMENT_DEPARTMENT_PERMISSIONS).not.toContain('users:create');
+    expect(MANAGEMENT_DEPARTMENT_PERMISSIONS).not.toContain('users:update');
+    expect(MANAGEMENT_DEPARTMENT_PERMISSIONS).not.toContain('users:manage');
     expect(MANAGEMENT_DEPARTMENT_PERMISSIONS).toContain('settings:manage');
     expect(MANAGEMENT_DEPARTMENT_PERMISSIONS).toContain('license:view');
     expect(

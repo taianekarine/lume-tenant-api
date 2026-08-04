@@ -43,17 +43,25 @@ import {
   UpdateUserDto,
 } from './dto/users.dto';
 
-function assertPeopleOperationsAccess(current: AuthenticatedPrincipal): void {
+function assertPeopleOperationsCreationAccess(
+  current: AuthenticatedPrincipal,
+): void {
   if (
     !current.isAdministrator &&
     !current.departments.some((department) =>
-      ['management', 'personnel-department', 'human-resources'].includes(
-        department,
-      ),
+      ['personnel-department', 'human-resources'].includes(department),
     )
   ) {
     throw forbidden(
-      'A gestão de usuários é restrita ao departamento Gerência.',
+      'A criação de acessos é restrita a administradores, RH e Departamento Pessoal.',
+    );
+  }
+}
+
+function assertAdministratorAccess(current: AuthenticatedPrincipal): void {
+  if (!current.isAdministrator) {
+    throw forbidden(
+      'Somente administradores podem gerenciar acessos e permissões de usuários.',
     );
   }
 }
@@ -83,7 +91,7 @@ export class UsersController {
     @CurrentUser() current: AuthenticatedPrincipal,
     @Body() body: CreateUserDto,
   ) {
-    assertPeopleOperationsAccess(current);
+    assertPeopleOperationsCreationAccess(current);
     return this.createUser.execute({
       ...body,
       companyId: current.companyId,
@@ -105,7 +113,7 @@ export class UsersController {
     @CurrentUser() current: AuthenticatedPrincipal,
     @Query() query: ListUsersQueryDto,
   ) {
-    assertPeopleOperationsAccess(current);
+    assertPeopleOperationsCreationAccess(current);
     return this.listUsers.execute(current.companyId, {
       ...query,
       department: query.department
@@ -163,7 +171,7 @@ export class UsersController {
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
   ) {
-    assertPeopleOperationsAccess(current);
+    assertPeopleOperationsCreationAccess(current);
     return this.getUser.execute(current.companyId, userId);
   }
 
@@ -175,7 +183,7 @@ export class UsersController {
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
     @Body() body: UpdateUserDto,
   ) {
-    assertPeopleOperationsAccess(current);
+    assertAdministratorAccess(current);
     return this.updateUser.execute({
       ...body,
       companyId: current.companyId,
@@ -196,7 +204,7 @@ export class UsersController {
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
     @Body() body: UpdateUserStatusDto,
   ) {
-    assertPeopleOperationsAccess(current);
+    assertAdministratorAccess(current);
     return this.updateUserStatus.execute({
       companyId: current.companyId,
       actorUserId: current.id,
@@ -219,7 +227,7 @@ export class UsersController {
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
   ) {
-    assertPeopleOperationsAccess(current);
+    assertAdministratorAccess(current);
     return this.requestPasswordReset.execute({
       companyId: current.companyId,
       actorUserId: current.id,

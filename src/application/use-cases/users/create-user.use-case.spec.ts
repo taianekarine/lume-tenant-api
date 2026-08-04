@@ -146,6 +146,62 @@ describe('tenant-scoped user use cases', () => {
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
+  it('allows HR to create only an initial document portal access', async () => {
+    const humanResources = await createUser.execute({
+      companyId: store.companies[0].id,
+      name: 'Analista de RH',
+      username: 'analista.rh',
+      email: 'rh@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['human-resources'],
+      permissionCodes: ['users:create'],
+    });
+
+    const created = await createUser.execute({
+      companyId: store.companies[0].id,
+      actorUserId: humanResources.id,
+      name: 'Novo Candidato',
+      username: 'novo.candidato',
+      email: 'candidato@empresa.test',
+      password: 'OutraSenha@2026',
+      documentAccessMode: 'document-portal',
+      departments: [],
+      permissionCodes: [],
+    });
+
+    expect(created.documentAccessMode).toBe('document-portal');
+    expect(created.departments).toEqual([]);
+    expect(created.permissions).toEqual(
+      expect.arrayContaining(['documents:view', 'documents:create']),
+    );
+  });
+
+  it('prevents HR from assigning departments or permissions during initial access', async () => {
+    const humanResources = await createUser.execute({
+      companyId: store.companies[0].id,
+      name: 'Analista de RH',
+      username: 'analista.rh',
+      email: 'rh@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['human-resources'],
+      permissionCodes: ['users:create'],
+    });
+
+    await expect(
+      createUser.execute({
+        companyId: store.companies[0].id,
+        actorUserId: humanResources.id,
+        name: 'Acesso Indevido',
+        username: 'acesso.indevido',
+        email: 'indevido@empresa.test',
+        password: 'OutraSenha@2026',
+        documentAccessMode: 'standard',
+        departments: ['commercial'],
+        permissionCodes: ['commercial:view'],
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
   it.each(['12345678901', '---', '1234'])(
     'rejects username without at least one letter: %s',
     async (username) => {

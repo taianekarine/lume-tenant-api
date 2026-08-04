@@ -149,7 +149,7 @@ describe('UpdateUserUseCase', () => {
       email: 'gerente@empresa.test',
       password: 'OutraSenha@2026',
       departments: ['management'],
-      permissionCodes: ['users:manage'],
+      permissionCodes: [],
     });
 
     await expect(
@@ -200,7 +200,7 @@ describe('UpdateUserUseCase', () => {
         userId: administrator.id,
         isAdministrator: false,
         departments: ['management'],
-        permissionCodes: ['users:view'],
+        permissionCodes: [],
       }),
     ).rejects.toMatchObject({ code: 'CONFLICT' });
 
