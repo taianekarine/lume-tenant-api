@@ -41,7 +41,7 @@ const certificateFields = fields(
 );
 
 export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
-  { code: 'photo-3x4', name: 'Foto 3x4 recente', maxFiles: 4 },
+  { code: 'photo-3x4', name: 'Foto 3x4 recente' },
   {
     code: 'marriage-certificate',
     name: 'Certidão de casamento',
@@ -328,7 +328,7 @@ const familyConditions = {
 const commonItems: readonly InitialChecklistItem[] = [
   {
     documentTypeCode: 'photo-3x4',
-    configOverrides: { minFiles: 2, maxFiles: 2, expectedCopies: 2 },
+    configOverrides: { minFiles: 1, maxFiles: 1 },
   },
   {
     documentTypeCode: 'marriage-certificate',
@@ -410,7 +410,7 @@ export const INITIAL_DOCUMENT_CHECKLISTS: readonly InitialChecklist[] = [
     items: [
       {
         documentTypeCode: 'photo-3x4',
-        configOverrides: { minFiles: 4, maxFiles: 4, expectedCopies: 4 },
+        configOverrides: { minFiles: 1, maxFiles: 1 },
       },
       ...commonItems.slice(1, 5),
       {
