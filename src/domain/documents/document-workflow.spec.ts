@@ -61,4 +61,37 @@ describe('document workflow', () => {
     expect(files[0]?.originalName).toBe('.._frente.jpg');
     expect(files[0]?.sha256).toHaveLength(64);
   });
+
+  it('groups a complete front/back pair for each child', () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    const file = (side: 'front' | 'back', pageNumber: number) => ({
+      originalName: `filho-${pageNumber}-${side}.jpg`,
+      mimeType: 'image/jpeg',
+      sizeBytes: jpeg.byteLength,
+      content: jpeg,
+      side,
+      pageNumber,
+    });
+    const policy = {
+      acceptedMimeTypes: ['image/jpeg'],
+      maxFileSizeBytes: 1024,
+      minFiles: 2,
+      maxFiles: 24,
+      allowsMultiplePages: true,
+      requiresFrontBack: true,
+    };
+
+    expect(() =>
+      validateDocumentUpload(
+        [file('front', 1), file('back', 1), file('front', 2), file('back', 2)],
+        policy,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateDocumentUpload(
+        [file('front', 1), file('back', 1), file('front', 2)],
+        policy,
+      ),
+    ).toThrow(/par completo de frente e verso/);
+  });
 });

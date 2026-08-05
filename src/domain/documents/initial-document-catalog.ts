@@ -23,6 +23,8 @@ export interface InitialDocumentType {
 
 const fields = (...definitions: readonly InitialExtractionField[]) =>
   definitions;
+const repeatedFields = (...definitions: readonly InitialExtractionField[]) =>
+  definitions.map((definition) => ({ ...definition, multiple: true }));
 const personFields = fields(
   { key: 'fullName', label: 'Nome completo' },
   { key: 'cpf', label: 'CPF' },
@@ -63,7 +65,7 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
     name: 'Certidão de nascimento dos filhos',
     allowsMultiplePages: true,
     maxFiles: 12,
-    extractionFields: fields(
+    extractionFields: repeatedFields(
       { key: 'childName', label: 'Nome da criança' },
       { key: 'birthDate', label: 'Data de nascimento', type: 'date' },
       { key: 'parentage', label: 'Filiação', multiple: true },
@@ -78,7 +80,7 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
     name: 'Carteira de vacinação dos filhos',
     allowsMultiplePages: true,
     maxFiles: 12,
-    extractionFields: fields(
+    extractionFields: repeatedFields(
       ...personFields,
       { key: 'issuer', label: 'Unidade emissora' },
       { key: 'issuedAt', label: 'Data de emissão', type: 'date' },
@@ -91,7 +93,7 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
     name: 'Atestado escolar dos filhos',
     allowsMultiplePages: true,
     maxFiles: 12,
-    extractionFields: fields(
+    extractionFields: repeatedFields(
       ...personFields,
       { key: 'institution', label: 'Instituição' },
       { key: 'issuedAt', label: 'Data de emissão', type: 'date' },
@@ -105,7 +107,7 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
     requiresFrontBack: true,
     allowsMultiplePages: true,
     maxFiles: 24,
-    extractionFields: fields(
+    extractionFields: repeatedFields(
       { key: 'name', label: 'Nome' },
       { key: 'cpf', label: 'CPF' },
       { key: 'rg', label: 'RG' },
@@ -339,16 +341,19 @@ const commonItems: readonly InitialChecklistItem[] = [
     documentTypeCode: 'child-birth-certificate',
     requirement: 'conditional',
     condition: familyConditions.childrenUnder14,
+    configOverrides: { repeatableByDependent: true },
   },
   {
     documentTypeCode: 'child-vaccination-card',
     requirement: 'conditional',
     condition: familyConditions.childrenUnder7,
+    configOverrides: { repeatableByDependent: true },
   },
   {
     documentTypeCode: 'child-school-statement',
     requirement: 'conditional',
     condition: familyConditions.childrenSchool,
+    configOverrides: { repeatableByDependent: true },
   },
   { documentTypeCode: 'pis-card' },
   { documentTypeCode: 'voter-registration' },
@@ -380,6 +385,7 @@ export const INITIAL_DOCUMENT_CHECKLISTS: readonly InitialChecklist[] = [
         documentTypeCode: 'child-identification',
         requirement: 'conditional',
         condition: { field: 'hasChildren', operator: 'equals', value: true },
+        configOverrides: { repeatableByDependent: true },
       },
       ...commonItems.slice(5),
       { documentTypeCode: 'state-criminal-clearance' },
@@ -417,6 +423,7 @@ export const INITIAL_DOCUMENT_CHECKLISTS: readonly InitialChecklist[] = [
         documentTypeCode: 'child-identification',
         requirement: 'conditional',
         condition: { field: 'hasChildren', operator: 'equals', value: true },
+        configOverrides: { repeatableByDependent: true },
       },
       ...commonItems.slice(5, 11),
       { documentTypeCode: 'vaccination-card' },

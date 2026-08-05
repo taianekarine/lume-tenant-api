@@ -892,7 +892,6 @@ export class DocumentManagementUseCase {
           version: item.currentVersion + 1,
           files: {
             create: files.map((file) => ({
-              companyId: principal.companyId,
               uploadedByUserId: principal.id,
               side: sidesToPrisma[file.side],
               pageNumber: file.pageNumber,

@@ -157,6 +157,27 @@ export function validateDocumentUpload(
   if (policy.requiresFrontBack && (!sides.has('front') || !sides.has('back'))) {
     throw validationError('Envie a frente e o verso do documento.');
   }
+  if (policy.requiresFrontBack) {
+    const sidesByPage = new Map<number, Set<DocumentFileSide>>();
+    for (const file of files) {
+      const pageSides =
+        sidesByPage.get(file.pageNumber) ?? new Set<DocumentFileSide>();
+      pageSides.add(file.side);
+      sidesByPage.set(file.pageNumber, pageSides);
+    }
+    if (
+      [...sidesByPage.values()].some(
+        (pageSides) =>
+          pageSides.size !== 2 ||
+          !pageSides.has('front') ||
+          !pageSides.has('back'),
+      )
+    ) {
+      throw validationError(
+        'Envie um par completo de frente e verso para cada documento.',
+      );
+    }
+  }
   if (
     !policy.allowsMultiplePages &&
     files.some((file) => file.pageNumber > 1)

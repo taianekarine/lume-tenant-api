@@ -112,3 +112,111 @@ describe('DocumentManagementUseCase.createRequest', () => {
     expect(data.items.create[0]).not.toHaveProperty('companyId');
   });
 });
+
+describe('DocumentManagementUseCase.upload', () => {
+  it('does not send companyId in nested document file creates', async () => {
+    const createdAt = new Date('2026-08-05T12:00:00.000Z');
+    const createSubmission = vi.fn().mockResolvedValue({
+      id: 'submission-id',
+      version: 1,
+    });
+    const transaction = {
+      documentRequestItem: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { status: 'SUBMITTED', requirement: 'REQUIRED' },
+          ]),
+      },
+      documentSubmission: { create: createSubmission },
+      documentRequest: { update: vi.fn().mockResolvedValue({}) },
+      documentStatusHistory: { createMany: vi.fn().mockResolvedValue({}) },
+      tenantAuditLog: { create: vi.fn().mockResolvedValue({}) },
+    };
+    const prisma = {
+      documentSubmission: { findUnique: vi.fn().mockResolvedValue(null) },
+      documentRequestItem: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'item-id',
+          requestId: 'request-id',
+          currentVersion: 0,
+          status: 'PENDING_UPLOAD',
+          configSnapshot: {},
+          request: { subjectUserId: 'subject-id' },
+          documentType: {
+            acceptedMimeTypes: ['image/jpeg'],
+            maxFileSizeBytes: 10_485_760,
+            minFiles: 1,
+            maxFiles: 2,
+            allowsMultiplePages: true,
+            requiresFrontBack: false,
+          },
+        }),
+      },
+      documentRequest: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'request-id',
+          subjectUserId: 'subject-id',
+          context: 'ADMISSION',
+          department: 'PERSONNEL_DEPARTMENT',
+          status: 'PARTIALLY_SUBMITTED',
+          deadline: null,
+          notes: null,
+          version: 2,
+          completedAt: null,
+          createdAt,
+          updatedAt: createdAt,
+          subject: {
+            id: 'subject-id',
+            name: 'Pessoa Teste',
+            email: 'pessoa@example.com',
+            documentAccessMode: 'DOCUMENT_PORTAL',
+          },
+          createdBy: { id: 'admin-id', name: 'Admin' },
+          checklist: {
+            id: 'checklist-id',
+            code: 'admission-general',
+            name: 'Admissão geral',
+            version: 1,
+          },
+          items: [],
+        }),
+      },
+      $transaction: vi.fn(
+        async (callback: (client: typeof transaction) => unknown) =>
+          callback(transaction),
+      ),
+    };
+    const principal = {
+      id: 'admin-id',
+      companyId: 'company-id',
+      isAdministrator: true,
+      departments: ['management'],
+      permissions: ['documents:manage'],
+    } as AuthenticatedPrincipal;
+
+    await new DocumentManagementUseCase(prisma as never).upload(
+      principal,
+      'item-id',
+      {
+        commandId: 'command-id',
+        files: [
+          {
+            originalName: 'filho.jpg',
+            mimeType: 'image/jpeg',
+            sizeBytes: 4,
+            content: Buffer.from([0xff, 0xd8, 0xff, 0x00]),
+            side: 'page',
+            pageNumber: 1,
+          },
+        ],
+      },
+    );
+
+    const data = createSubmission.mock.calls[0][0].data;
+    expect(data.companyId).toBe('company-id');
+    expect(data.files.create).toHaveLength(1);
+    expect(data.files.create[0]).not.toHaveProperty('companyId');
+  });
+});
