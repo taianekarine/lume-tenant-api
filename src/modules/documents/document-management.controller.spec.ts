@@ -26,6 +26,7 @@ describe('DocumentManagementController permissions', () => {
     ]);
     expect(permissionsFor('review')).toEqual(['documents:approve']);
     expect(permissionsFor('exportXlsx')).toEqual(['documents:export']);
+    expect(permissionsFor('createBatchRequests')).toEqual(['documents:manage']);
   });
 
   it('does not allow automatic validation to use the approval permission', () => {

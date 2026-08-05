@@ -167,6 +167,37 @@ export class CreateDocumentRequestDto {
   notes?: string;
 }
 
+export class CreateBatchDocumentRequestsDto {
+  @IsUUID('4')
+  commandId!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ArrayUnique()
+  @IsUUID('4', { each: true })
+  subjectUserIds!: string[];
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ArrayUnique()
+  @IsUUID('4', { each: true })
+  documentTypeIds!: string[];
+
+  @IsIn(DOCUMENT_REQUEST_CONTEXTS)
+  context!: DocumentRequestContext;
+
+  @IsOptional()
+  @IsDateString()
+  deadline?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  notes?: string;
+}
+
 export class ListDocumentRequestsQueryDto {
   @IsOptional()
   @Type(() => Number)

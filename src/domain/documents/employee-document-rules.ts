@@ -30,14 +30,41 @@ function ageAt(date: Date, reference: Date): number {
   return age;
 }
 
+function dependentAge(
+  dependent: UserDependent,
+  reference: Date,
+): number | null {
+  const date = new Date(`${dependent.birthDate}T00:00:00.000Z`);
+  return Number.isNaN(date.getTime()) ? null : ageAt(date, reference);
+}
+
+export function eligibleDependentsForDocument(
+  documentTypeCode: string,
+  dependents: readonly UserDependent[],
+  reference = new Date(),
+): readonly UserDependent[] {
+  if (documentTypeCode === 'child-vaccination-card') {
+    return dependents.filter((dependent) => {
+      const age = dependentAge(dependent, reference);
+      return age !== null && age >= 0 && age < 7;
+    });
+  }
+  if (documentTypeCode === 'child-school-statement') {
+    return dependents.filter((dependent) => {
+      const age = dependentAge(dependent, reference);
+      return age !== null && age > 7 && age <= 16;
+    });
+  }
+  return documentTypeCode.startsWith('child-') ? dependents : [];
+}
+
 export function employeeDocumentRuleContext(
   profile: EmployeeDocumentProfile,
   reference = new Date(),
 ): EmployeeDocumentRuleContext {
   const ages = profile.dependents
-    .map((dependent) => new Date(`${dependent.birthDate}T00:00:00.000Z`))
-    .filter((date) => !Number.isNaN(date.getTime()))
-    .map((date) => ageAt(date, reference));
+    .map((dependent) => dependentAge(dependent, reference))
+    .filter((age): age is number => age !== null);
   const normalizedTitle = profile.jobTitle
     ?.normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')

@@ -109,6 +109,9 @@ export class UsersController {
         'Identificador da solicitação documental não informado.',
       );
     }
+    if (initialDocumentRequestCommandId) {
+      await this.documents.ensureInitialDocumentCatalog(current);
+    }
     const user = await this.createUser.execute({
       ...userInput,
       companyId: current.companyId,

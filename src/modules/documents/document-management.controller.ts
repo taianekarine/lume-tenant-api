@@ -31,6 +31,7 @@ import { RequireAnyPermission } from '../../shared/http/decorators/require-permi
 import {
   AddDocumentRequestItemDto,
   CreateChecklistDto,
+  CreateBatchDocumentRequestsDto,
   CreateDocumentRequestDto,
   CreateDocumentTypeDto,
   ExpiringDocumentsQueryDto,
@@ -132,6 +133,15 @@ export class DocumentManagementController {
     @Body() body: CreateDocumentRequestDto,
   ) {
     return this.documents.createRequest(current, body);
+  }
+
+  @Post('requests/batch')
+  @RequireAnyPermission('documents:manage')
+  createBatchRequests(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Body() body: CreateBatchDocumentRequestsDto,
+  ) {
+    return this.documents.createBatchRequests(current, body);
   }
 
   @Get('requests')

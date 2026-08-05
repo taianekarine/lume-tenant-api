@@ -24,6 +24,7 @@ import {
 } from '../../../domain/documents/document-workflow';
 import {
   employeeDocumentRuleContext,
+  eligibleDependentsForDocument,
   matchesEmployeeDocumentCondition,
 } from '../../../domain/documents/employee-document-rules';
 import type {
@@ -44,6 +45,7 @@ import {
   type Prisma,
 } from '../../../infra/database/prisma/generated/client';
 import { PrismaService } from '../../../infra/database/prisma/prisma.service';
+import { seedInitialDocumentCatalog } from '../../../infra/bootstrap/document-catalog.seed';
 import {
   DOCUMENT_REVIEW_AGENT,
   type DocumentReviewAgent,
@@ -199,6 +201,31 @@ function safeArchiveName(value: string): string {
       .normalize('NFKD')
       .replace(/[^a-zA-Z0-9._-]+/g, '_')
       .slice(0, 120) || 'arquivo'
+  );
+}
+
+function deterministicCommandId(
+  batchCommandId: string,
+  subjectUserId: string,
+): string {
+  const bytes = createHash('sha256')
+    .update(`${batchCommandId}:${subjectUserId}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function profileConditionAppliesToBatch(documentTypeCode: string): boolean {
+  return (
+    documentTypeCode.startsWith('child-') ||
+    [
+      'marriage-certificate',
+      'spouse-identification',
+      'military-certificate',
+    ].includes(documentTypeCode)
   );
 }
 
@@ -360,6 +387,63 @@ export class DocumentManagementUseCase {
     @Inject(DOCUMENT_REVIEW_AGENT)
     private readonly reviewAgent?: DocumentReviewAgent,
   ) {}
+
+  async ensureInitialDocumentCatalog(
+    principal: AuthenticatedPrincipal,
+  ): Promise<{ checklistId: string }> {
+    if (!hasPeopleOperationsScope(principal)) {
+      throw forbidden(
+        'Somente administradores, RH, Departamento Pessoal ou Gerência podem provisionar o catálogo documental.',
+      );
+    }
+    let checklist = await this.prisma.documentChecklistTemplate.findFirst({
+      where: {
+        companyId: principal.companyId,
+        code: 'employee-documents-dynamic',
+        active: true,
+      },
+      orderBy: { version: 'desc' },
+      select: {
+        id: true,
+        items: {
+          where: {
+            documentType: { code: 'child-identification' },
+            active: true,
+          },
+          select: { id: true },
+        },
+      },
+    });
+    if (!checklist || checklist.items.length === 0) {
+      await this.prisma.$transaction((transaction) =>
+        seedInitialDocumentCatalog(
+          transaction,
+          principal.companyId,
+          principal.id,
+        ),
+      );
+      checklist = await this.prisma.documentChecklistTemplate.findFirst({
+        where: {
+          companyId: principal.companyId,
+          code: 'employee-documents-dynamic',
+          active: true,
+        },
+        orderBy: { version: 'desc' },
+        select: {
+          id: true,
+          items: {
+            where: {
+              documentType: { code: 'child-identification' },
+              active: true,
+            },
+            select: { id: true },
+          },
+        },
+      });
+    }
+    if (!checklist) throw notFound('Checklist documental dinâmico');
+    return { checklistId: checklist.id };
+  }
 
   async listDocumentTypes(principal: AuthenticatedPrincipal) {
     assertManage(principal);
@@ -757,6 +841,257 @@ export class DocumentManagementUseCase {
     };
   }
 
+  async createBatchRequests(
+    principal: AuthenticatedPrincipal,
+    input: {
+      commandId: string;
+      subjectUserIds: string[];
+      documentTypeIds: string[];
+      context: DocumentRequestContext;
+      deadline?: string;
+      notes?: string;
+    },
+  ) {
+    assertManage(principal);
+    const { checklistId } = await this.ensureInitialDocumentCatalog(principal);
+    const result = await this.prisma.$transaction(async (transaction) => {
+      const [subjects, documentTypes, checklist] = await Promise.all([
+        transaction.user.findMany({
+          where: {
+            companyId: principal.companyId,
+            id: { in: input.subjectUserIds },
+            isActive: true,
+          },
+          select: {
+            id: true,
+            jobTitle: true,
+            maritalStatus: true,
+            militaryDocumentStatus: true,
+            dependents: true,
+          },
+        }),
+        transaction.documentType.findMany({
+          where: {
+            companyId: principal.companyId,
+            id: { in: input.documentTypeIds },
+            active: true,
+          },
+        }),
+        transaction.documentChecklistTemplate.findUnique({
+          where: {
+            id_companyId: { id: checklistId, companyId: principal.companyId },
+          },
+          include: {
+            items: {
+              where: { active: true },
+              include: { documentType: { select: { code: true } } },
+            },
+          },
+        }),
+      ]);
+      if (subjects.length !== input.subjectUserIds.length) {
+        throw notFound('Um ou mais usuários titulares ativos');
+      }
+      if (documentTypes.length !== input.documentTypeIds.length) {
+        throw notFound('Um ou mais tipos documentais ativos');
+      }
+      if (!checklist?.active) throw notFound('Checklist documental dinâmico');
+
+      const subjectsById = new Map(
+        subjects.map((subject) => [subject.id, subject]),
+      );
+      const typesById = new Map(documentTypes.map((type) => [type.id, type]));
+      const checklistItemsByTypeId = new Map(
+        checklist.items.map((item) => [item.documentTypeId, item]),
+      );
+      const requests: Array<{
+        id: string;
+        subjectUserId: string;
+        itemCount: number;
+        idempotent: boolean;
+      }> = [];
+      const skippedDocuments: Array<{
+        subjectUserId: string;
+        documentTypeId: string;
+        reason: string;
+      }> = [];
+
+      for (const subjectUserId of input.subjectUserIds) {
+        const subject = subjectsById.get(subjectUserId)!;
+        const commandId = deterministicCommandId(
+          input.commandId,
+          subjectUserId,
+        );
+        const duplicate = await transaction.documentRequest.findUnique({
+          where: {
+            companyId_commandId: { companyId: principal.companyId, commandId },
+          },
+          select: { id: true, items: { select: { id: true } } },
+        });
+        if (duplicate) {
+          requests.push({
+            id: duplicate.id,
+            subjectUserId,
+            itemCount: duplicate.items.length,
+            idempotent: true,
+          });
+          continue;
+        }
+
+        const dependents = Array.isArray(subject.dependents)
+          ? (subject.dependents as unknown as UserDependent[])
+          : [];
+        const ruleContext = employeeDocumentRuleContext({
+          jobTitle: subject.jobTitle,
+          maritalStatus: subject.maritalStatus as MaritalStatus | null,
+          militaryDocumentStatus:
+            subject.militaryDocumentStatus as MilitaryDocumentStatus,
+          dependents,
+        });
+        const applicableTypes = input.documentTypeIds.flatMap(
+          (documentTypeId) => {
+            const documentType = typesById.get(documentTypeId)!;
+            const checklistItem = checklistItemsByTypeId.get(documentTypeId);
+            const condition = checklistItem
+              ? jsonRecord(checklistItem.condition)
+              : {};
+            if (
+              checklistItem?.requirement ===
+                PrismaDocumentRequirement.CONDITIONAL &&
+              profileConditionAppliesToBatch(documentType.code) &&
+              !matchesEmployeeDocumentCondition(condition, ruleContext)
+            ) {
+              skippedDocuments.push({
+                subjectUserId,
+                documentTypeId,
+                reason:
+                  'Não aplicável ao perfil ou aos dependentes deste usuário.',
+              });
+              return [];
+            }
+            return [{ documentType, checklistItem }];
+          },
+        );
+        if (applicableTypes.length === 0) continue;
+
+        const request = await transaction.documentRequest.create({
+          data: {
+            companyId: principal.companyId,
+            subjectUserId,
+            createdByUserId: principal.id,
+            checklistId,
+            context: requestContextToPrisma[input.context],
+            department: DepartmentCode.PERSONNEL_DEPARTMENT,
+            status: PrismaDocumentRequestStatus.PENDING_UPLOAD,
+            deadline: input.deadline ? new Date(input.deadline) : null,
+            notes: input.notes?.trim() || null,
+            commandId,
+            items: {
+              create: applicableTypes.map(
+                ({ documentType, checklistItem }, index) => {
+                  const eligibleDependents = eligibleDependentsForDocument(
+                    documentType.code,
+                    dependents,
+                  );
+                  return {
+                    company: { connect: { id: principal.companyId } },
+                    documentType: {
+                      connect: {
+                        id_companyId: {
+                          id: documentType.id,
+                          companyId: principal.companyId,
+                        },
+                      },
+                    },
+                    requirement: PrismaDocumentRequirement.REQUIRED,
+                    position: index + 1,
+                    instructions: checklistItem?.instructions ?? null,
+                    dueAt: input.deadline ? new Date(input.deadline) : null,
+                    configSnapshot: {
+                      code: documentType.code,
+                      name: documentType.name,
+                      acceptedMimeTypes: documentType.acceptedMimeTypes,
+                      maxFileSizeBytes: documentType.maxFileSizeBytes,
+                      minFiles: documentType.minFiles,
+                      maxFiles: documentType.maxFiles,
+                      allowsMultiplePages: documentType.allowsMultiplePages,
+                      requiresFrontBack: documentType.requiresFrontBack,
+                      expires: documentType.expires,
+                      defaultValidityDays: documentType.defaultValidityDays,
+                      renewalLeadDays: documentType.renewalLeadDays,
+                      requiresOriginal: documentType.requiresOriginal,
+                      extractionSchema: documentType.extractionSchema,
+                      batchCommandId: input.commandId,
+                      selectedInBatch: true,
+                      ...(eligibleDependents.length
+                        ? { dependents: eligibleDependents }
+                        : {}),
+                      ...(documentType.code === 'cnh' && ruleContext.isDriver
+                        ? {
+                            driverRequirements: {
+                              category: 'D',
+                              earRequired: true,
+                              validityRequired: true,
+                            },
+                          }
+                        : {}),
+                      ...jsonRecord(checklistItem?.configOverrides),
+                    } as unknown as Prisma.InputJsonValue,
+                  };
+                },
+              ),
+            },
+          },
+          select: { id: true, items: { select: { id: true } } },
+        });
+        await transaction.documentStatusHistory.create({
+          data: {
+            companyId: principal.companyId,
+            requestId: request.id,
+            actorUserId: principal.id,
+            action: 'request.batch-created',
+            toStatus: 'pending-upload',
+            metadata: {
+              batchCommandId: input.commandId,
+              context: input.context,
+              selectedDocumentTypeIds: input.documentTypeIds,
+            },
+          },
+        });
+        requests.push({
+          id: request.id,
+          subjectUserId,
+          itemCount: request.items.length,
+          idempotent: false,
+        });
+      }
+
+      await transaction.tenantAuditLog.create({
+        data: {
+          companyId: principal.companyId,
+          actorUserId: principal.id,
+          action: 'document.request.batch-create',
+          targetType: 'document-request-batch',
+          targetId: input.commandId,
+          metadata: {
+            subjectCount: input.subjectUserIds.length,
+            selectedDocumentCount: input.documentTypeIds.length,
+            requestCount: requests.length,
+            skippedDocumentCount: skippedDocuments.length,
+          },
+        },
+      });
+      return { requests, skippedDocuments };
+    });
+    return {
+      ...result,
+      createdCount: result.requests.filter((request) => !request.idempotent)
+        .length,
+      idempotentCount: result.requests.filter((request) => request.idempotent)
+        .length,
+    };
+  }
+
   async createAdmissionRequest(
     principal: AuthenticatedPrincipal,
     input: {
@@ -779,15 +1114,21 @@ export class DocumentManagementUseCase {
         'Somente administradores, RH e Departamento Pessoal podem iniciar a admissão documental.',
       );
     }
-    const checklist = await this.prisma.documentChecklistTemplate.findFirst({
-      where: {
-        companyId: principal.companyId,
-        code: input.checklistCode,
-        active: true,
-      },
-      orderBy: { version: 'desc' },
-      select: { id: true },
-    });
+    const checklist =
+      input.checklistCode === 'employee-documents-dynamic'
+        ? {
+            id: (await this.ensureInitialDocumentCatalog(principal))
+              .checklistId,
+          }
+        : await this.prisma.documentChecklistTemplate.findFirst({
+            where: {
+              companyId: principal.companyId,
+              code: input.checklistCode,
+              active: true,
+            },
+            orderBy: { version: 'desc' },
+            select: { id: true },
+          });
     if (!checklist) throw notFound('Checklist de admissão ativo');
     return this.createRequest(
       principal,

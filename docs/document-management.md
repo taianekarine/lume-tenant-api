@@ -35,6 +35,17 @@ demais acessos.
 7. documentos aprovados podem registrar validade e originar renovação;
 8. `DocumentStatusHistory` e `TenantAuditLog` registram ações e transições.
 
+Solicitações avulsas aceitam vários titulares e vários tipos documentais em um
+único comando. A API cria uma solicitação independente por titular, mantendo
+extração, revisão, histórico, XLSX e ZIP individualizados. A operação é atômica:
+uma falha de validação impede a criação parcial do lote.
+
+Documentos de cônjuge, dependentes e situação militar são filtrados pelo perfil
+de cada titular. Há um item por tipo documental, não uma cópia do item por filho;
+o snapshot registra os dependentes elegíveis e o item aceita os vários arquivos
+necessários. Carteira de vacinação considera menores de 7 anos e atestado
+escolar considera maiores de 7 até 16 anos.
+
 O backend valida a máquina de estados. OCR/IA nunca aprova, recusa ou atualiza o
 cadastro oficial automaticamente.
 
@@ -71,7 +82,7 @@ Prefixo `/api/v1/document-management`:
 
 - `GET|POST /document-types`;
 - `GET|POST /checklists`;
-- `GET|POST /requests` e `GET /requests/:id`;
+- `GET|POST /requests`, `POST /requests/batch` e `GET /requests/:id`;
 - `GET /requests/:id/history`;
 - `POST /requests/:id/items` (inclusão manual);
 - `POST /items/:id/policy` (obrigatório, opcional ou dispensado, com motivo);

@@ -414,6 +414,16 @@ export const INITIAL_DOCUMENT_CHECKLISTS: readonly InitialChecklist[] = [
         configOverrides: { repeatableByDependent: true },
       },
       {
+        documentTypeCode: 'child-identification',
+        requirement: 'conditional',
+        condition: {
+          field: 'dependentCount',
+          operator: 'greater-than',
+          value: 0,
+        },
+        configOverrides: { repeatableByDependent: true },
+      },
+      {
         documentTypeCode: 'child-vaccination-card',
         requirement: 'conditional',
         condition: {
