@@ -196,6 +196,23 @@ describe('validateEnvironment', () => {
     });
   });
 
+  it('requires the OpenAI key only when document review is enabled and limits retries', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        DOCUMENT_REVIEW_ENABLED: 'true',
+        DOCUMENT_REVIEW_PROVIDER: 'openai',
+      }),
+    ).toThrow('OPENAI_API_KEY');
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        OPENAI_DOCUMENT_MAX_ATTEMPTS: '4',
+      }),
+    ).toThrow('no máximo 3');
+  });
+
   it('exige HTTPS do n8n em produção salvo opt-in para rede privada', () => {
     const productionWhatsApp = {
       ...validEnvironment,

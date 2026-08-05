@@ -207,6 +207,31 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     throw new Error('Substitua JWT_ACCESS_SECRET em produção.');
   }
   const whatsappEnabled = booleanValue(config, 'WHATSAPP_ENABLED', false);
+  const documentReviewEnabled = booleanValue(
+    config,
+    'DOCUMENT_REVIEW_ENABLED',
+    false,
+  );
+  const documentReviewProvider = optionalString(
+    config,
+    'DOCUMENT_REVIEW_PROVIDER',
+    'local',
+  );
+  if (!['local', 'openai'].includes(documentReviewProvider)) {
+    throw new Error('DOCUMENT_REVIEW_PROVIDER deve ser local ou openai.');
+  }
+  const openAiApiKey =
+    documentReviewEnabled && documentReviewProvider === 'openai'
+      ? requiredString(config, 'OPENAI_API_KEY', 20)
+      : optionalString(config, 'OPENAI_API_KEY');
+  const openAiDocumentMaxAttempts = positiveInteger(
+    config,
+    'OPENAI_DOCUMENT_MAX_ATTEMPTS',
+    3,
+  );
+  if (openAiDocumentMaxAttempts > 3) {
+    throw new Error('OPENAI_DOCUMENT_MAX_ATTEMPTS deve ser no máximo 3.');
+  }
   const dataExchangeMaxFileBytes = positiveInteger(
     config,
     'DATA_EXCHANGE_MAX_FILE_BYTES',
@@ -444,6 +469,29 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
       config,
       'HTTP_MAX_JSON_BODY_BYTES',
       1_048_576,
+    ),
+    DOCUMENT_REVIEW_ENABLED: documentReviewEnabled,
+    DOCUMENT_REVIEW_PROVIDER: documentReviewProvider,
+    OPENAI_API_KEY: openAiApiKey,
+    OPENAI_DOCUMENT_MODEL: optionalString(
+      config,
+      'OPENAI_DOCUMENT_MODEL',
+      'gpt-5.6-terra',
+    ),
+    OPENAI_DOCUMENT_TIMEOUT_MS: positiveInteger(
+      config,
+      'OPENAI_DOCUMENT_TIMEOUT_MS',
+      90_000,
+    ),
+    OPENAI_DOCUMENT_MAX_ATTEMPTS: openAiDocumentMaxAttempts,
+    OPENAI_API_BASE_URL: httpUrl(
+      {
+        ...config,
+        OPENAI_API_BASE_URL:
+          config.OPENAI_API_BASE_URL ?? 'https://api.openai.com/v1',
+      },
+      'OPENAI_API_BASE_URL',
+      true,
     ),
     WHATSAPP_ENABLED: whatsappEnabled,
     WHATSAPP_CHANNEL_ID: uuidString(

@@ -8,6 +8,7 @@ import type { UserDepartment } from '../../../domain/access/access.constants';
 import {
   DepartmentCode,
   DocumentAccessMode,
+  Prisma,
   UserAccountStatus,
 } from '../prisma/generated/client';
 import { rethrowKnownPrismaConflict } from '../prisma/prisma-errors';
@@ -58,6 +59,8 @@ export class PrismaTenantBootstrapRepository implements TenantBootstrapRepositor
             documentAccessMode: DocumentAccessMode.STANDARD,
             departments: [...input.administrator.props.departments],
             permissionCodes: [...input.administrator.props.permissionCodes],
+            dependents: input.administrator.props
+              .dependents as unknown as Prisma.InputJsonValue,
             status: UserAccountStatus.ACTIVE,
           },
         });

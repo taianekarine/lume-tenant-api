@@ -169,12 +169,12 @@ enum DocumentAccessMode {
 }
 
 enum DocumentRequestContext {
-  ADMISSION       @map("admission")
-  DOCUMENT_UPDATE @map("document-update")
+  ADMISSION        @map("admission")
+  DOCUMENT_UPDATE  @map("document-update")
   DOCUMENT_RENEWAL @map("document-renewal")
-  REGULARIZATION  @map("regularization")
-  OFFBOARDING     @map("offboarding")
-  OTHER           @map("other")
+  REGULARIZATION   @map("regularization")
+  OFFBOARDING      @map("offboarding")
+  OTHER            @map("other")
 }
 
 enum DocumentRequestStatus {
@@ -200,6 +200,7 @@ enum DocumentItemStatus {
   APPROVED              @map("approved")
   REJECTED              @map("rejected")
   EXPIRED               @map("expired")
+  WAIVED                @map("waived")
   CANCELLED             @map("cancelled")
 }
 
@@ -217,10 +218,10 @@ enum DocumentFileSide {
 }
 
 enum DocumentValidationStatus {
-  PENDING   @map("pending")
+  PENDING    @map("pending")
   PROCESSING @map("processing")
-  COMPLETED @map("completed")
-  FAILED    @map("failed")
+  COMPLETED  @map("completed")
+  FAILED     @map("failed")
 }
 
 enum DocumentReviewDecision {
@@ -282,30 +283,34 @@ model Company {
 }
 
 model User {
-  id                 String            @id @default(uuid()) @db.Uuid
-  companyId          String            @map("company_id") @db.Uuid
-  name               String            @db.VarChar(120)
-  username           String            @db.VarChar(40)
-  usernameNormalized String            @unique @map("username_normalized") @db.VarChar(40)
-  email              String            @db.VarChar(254)
-  emailNormalized    String            @unique @map("email_normalized") @db.VarChar(254)
-  cpfNormalized      String?           @unique @map("cpf_normalized") @db.VarChar(11)
-  passwordHash       String            @map("password_hash") @db.VarChar(100)
-  mustChangePassword Boolean           @default(false) @map("must_change_password")
-  profilePicture     Bytes?            @map("profile_picture")
-  profilePictureMime String?           @map("profile_picture_mime") @db.VarChar(40)
-  isAdministrator    Boolean           @default(false) @map("is_administrator")
-  documentAccessMode DocumentAccessMode @default(STANDARD) @map("document_access_mode")
-  departments        String[]          @default([])
-  permissionCodes    String[]          @default([]) @map("permission_codes")
-  status             UserAccountStatus @default(ACTIVE)
-  suspendedUntil     DateTime?         @map("suspended_until")
-  suspensionReason   String?           @map("suspension_reason") @db.VarChar(500)
-  isActive           Boolean           @default(true) @map("is_active")
-  tokenVersion       Int               @default(1) @map("token_version")
-  lastLoginAt        DateTime?         @map("last_login_at")
-  createdAt          DateTime          @default(now()) @map("created_at")
-  updatedAt          DateTime          @updatedAt @map("updated_at")
+  id                     String             @id @default(uuid()) @db.Uuid
+  companyId              String             @map("company_id") @db.Uuid
+  name                   String             @db.VarChar(120)
+  username               String             @db.VarChar(40)
+  usernameNormalized     String             @unique @map("username_normalized") @db.VarChar(40)
+  email                  String             @db.VarChar(254)
+  emailNormalized        String             @unique @map("email_normalized") @db.VarChar(254)
+  cpfNormalized          String?            @unique @map("cpf_normalized") @db.VarChar(11)
+  passwordHash           String             @map("password_hash") @db.VarChar(100)
+  mustChangePassword     Boolean            @default(false) @map("must_change_password")
+  profilePicture         Bytes?             @map("profile_picture")
+  profilePictureMime     String?            @map("profile_picture_mime") @db.VarChar(40)
+  isAdministrator        Boolean            @default(false) @map("is_administrator")
+  documentAccessMode     DocumentAccessMode @default(STANDARD) @map("document_access_mode")
+  jobTitle               String?            @map("job_title") @db.VarChar(120)
+  maritalStatus          String?            @map("marital_status") @db.VarChar(30)
+  militaryDocumentStatus String             @default("pending-confirmation") @map("military_document_status") @db.VarChar(30)
+  dependents             Json               @default("[]") @db.JsonB
+  departments            String[]           @default([])
+  permissionCodes        String[]           @default([]) @map("permission_codes")
+  status                 UserAccountStatus  @default(ACTIVE)
+  suspendedUntil         DateTime?          @map("suspended_until")
+  suspensionReason       String?            @map("suspension_reason") @db.VarChar(500)
+  isActive               Boolean            @default(true) @map("is_active")
+  tokenVersion           Int                @default(1) @map("token_version")
+  lastLoginAt            DateTime?          @map("last_login_at")
+  createdAt              DateTime           @default(now()) @map("created_at")
+  updatedAt              DateTime           @updatedAt @map("updated_at")
 
   company                       Company                          @relation(fields: [companyId], references: [id], onDelete: Cascade)
   refreshTokens                 RefreshToken[]
@@ -321,14 +326,14 @@ model User {
   passwordChangeChallenges      PasswordChangeChallenge[]
   passwordHistory               UserPasswordHistory[]
   whatsappImportBatches         WhatsAppImportBatch[]            @relation("WhatsAppImportActor")
-  dataExchangeArtifacts         DataExchangeArtifact[]            @relation("DataExchangeArtifactUploader")
-  subjectDocumentRequests       DocumentRequest[]                  @relation("DocumentRequestSubject")
-  createdDocumentRequests       DocumentRequest[]                  @relation("DocumentRequestCreator")
-  createdChecklistTemplates     DocumentChecklistTemplate[]        @relation("DocumentChecklistCreator")
-  submittedDocuments            DocumentSubmission[]               @relation("DocumentSubmissionAuthor")
-  uploadedDocumentFiles         DocumentFile[]                     @relation("DocumentFileUploader")
-  documentReviews               DocumentReview[]                   @relation("DocumentReviewer")
-  documentStatusChanges         DocumentStatusHistory[]            @relation("DocumentStatusActor")
+  dataExchangeArtifacts         DataExchangeArtifact[]           @relation("DataExchangeArtifactUploader")
+  subjectDocumentRequests       DocumentRequest[]                @relation("DocumentRequestSubject")
+  createdDocumentRequests       DocumentRequest[]                @relation("DocumentRequestCreator")
+  createdChecklistTemplates     DocumentChecklistTemplate[]      @relation("DocumentChecklistCreator")
+  submittedDocuments            DocumentSubmission[]             @relation("DocumentSubmissionAuthor")
+  uploadedDocumentFiles         DocumentFile[]                   @relation("DocumentFileUploader")
+  documentReviews               DocumentReview[]                 @relation("DocumentReviewer")
+  documentStatusChanges         DocumentStatusHistory[]          @relation("DocumentStatusActor")
 
   @@unique([id, companyId])
   @@index([companyId])
@@ -779,25 +784,25 @@ model DataExchangeArtifact {
 }
 
 model DocumentType {
-  id                    String   @id @default(uuid()) @db.Uuid
-  companyId             String   @map("company_id") @db.Uuid
-  code                  String   @db.VarChar(80)
-  name                  String   @db.VarChar(160)
-  description           String?  @db.VarChar(1000)
-  acceptedMimeTypes     String[] @default(["application/pdf", "image/jpeg", "image/png"]) @map("accepted_mime_types")
-  maxFileSizeBytes      Int      @default(10485760) @map("max_file_size_bytes")
-  minFiles              Int      @default(1) @map("min_files")
-  maxFiles              Int      @default(1) @map("max_files")
-  allowsMultiplePages   Boolean  @default(false) @map("allows_multiple_pages")
-  requiresFrontBack     Boolean  @default(false) @map("requires_front_back")
-  expires               Boolean  @default(false)
-  defaultValidityDays   Int?     @map("default_validity_days")
-  renewalLeadDays       Int?     @map("renewal_lead_days")
-  requiresOriginal      Boolean  @default(false) @map("requires_original")
-  extractionSchema      Json     @default("{}") @map("extraction_schema") @db.JsonB
-  active                Boolean  @default(true)
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt             DateTime @updatedAt @map("updated_at")
+  id                  String   @id @default(uuid()) @db.Uuid
+  companyId           String   @map("company_id") @db.Uuid
+  code                String   @db.VarChar(80)
+  name                String   @db.VarChar(160)
+  description         String?  @db.VarChar(1000)
+  acceptedMimeTypes   String[] @default(["application/pdf", "image/jpeg", "image/png"]) @map("accepted_mime_types")
+  maxFileSizeBytes    Int      @default(10485760) @map("max_file_size_bytes")
+  minFiles            Int      @default(1) @map("min_files")
+  maxFiles            Int      @default(1) @map("max_files")
+  allowsMultiplePages Boolean  @default(false) @map("allows_multiple_pages")
+  requiresFrontBack   Boolean  @default(false) @map("requires_front_back")
+  expires             Boolean  @default(false)
+  defaultValidityDays Int?     @map("default_validity_days")
+  renewalLeadDays     Int?     @map("renewal_lead_days")
+  requiresOriginal    Boolean  @default(false) @map("requires_original")
+  extractionSchema    Json     @default("{}") @map("extraction_schema") @db.JsonB
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
   company        Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
   checklistItems DocumentChecklistItem[]
@@ -834,18 +839,18 @@ model DocumentChecklistTemplate {
 }
 
 model DocumentChecklistItem {
-  id               String              @id @default(uuid()) @db.Uuid
-  companyId        String              @map("company_id") @db.Uuid
-  checklistId      String              @map("checklist_id") @db.Uuid
-  documentTypeId   String              @map("document_type_id") @db.Uuid
-  requirement      DocumentRequirement @default(REQUIRED)
-  position         Int
-  instructions     String?             @db.VarChar(2000)
-  condition        Json                @default("{}") @db.JsonB
-  configOverrides  Json                @default("{}") @map("config_overrides") @db.JsonB
-  active           Boolean             @default(true)
-  createdAt        DateTime            @default(now()) @map("created_at")
-  updatedAt        DateTime            @updatedAt @map("updated_at")
+  id              String              @id @default(uuid()) @db.Uuid
+  companyId       String              @map("company_id") @db.Uuid
+  checklistId     String              @map("checklist_id") @db.Uuid
+  documentTypeId  String              @map("document_type_id") @db.Uuid
+  requirement     DocumentRequirement @default(REQUIRED)
+  position        Int
+  instructions    String?             @db.VarChar(2000)
+  condition       Json                @default("{}") @db.JsonB
+  configOverrides Json                @default("{}") @map("config_overrides") @db.JsonB
+  active          Boolean             @default(true)
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
 
   company      Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   checklist    DocumentChecklistTemplate @relation(fields: [checklistId, companyId], references: [id, companyId], onDelete: Cascade)
@@ -858,26 +863,26 @@ model DocumentChecklistItem {
 }
 
 model DocumentRequest {
-  id              String                @id @default(uuid()) @db.Uuid
-  companyId       String                @map("company_id") @db.Uuid
-  subjectUserId   String                @map("subject_user_id") @db.Uuid
-  createdByUserId String                @map("created_by_user_id") @db.Uuid
-  checklistId     String                @map("checklist_id") @db.Uuid
+  id              String                 @id @default(uuid()) @db.Uuid
+  companyId       String                 @map("company_id") @db.Uuid
+  subjectUserId   String                 @map("subject_user_id") @db.Uuid
+  createdByUserId String                 @map("created_by_user_id") @db.Uuid
+  checklistId     String                 @map("checklist_id") @db.Uuid
   context         DocumentRequestContext
-  department      DepartmentCode        @default(PERSONNEL_DEPARTMENT)
-  status          DocumentRequestStatus @default(DRAFT)
+  department      DepartmentCode         @default(PERSONNEL_DEPARTMENT)
+  status          DocumentRequestStatus  @default(DRAFT)
   deadline        DateTime?
-  notes           String?               @db.VarChar(2000)
-  commandId       String                @map("command_id") @db.Uuid
-  version         Int                   @default(1)
-  completedAt     DateTime?             @map("completed_at")
-  createdAt       DateTime              @default(now()) @map("created_at")
-  updatedAt       DateTime              @updatedAt @map("updated_at")
+  notes           String?                @db.VarChar(2000)
+  commandId       String                 @map("command_id") @db.Uuid
+  version         Int                    @default(1)
+  completedAt     DateTime?              @map("completed_at")
+  createdAt       DateTime               @default(now()) @map("created_at")
+  updatedAt       DateTime               @updatedAt @map("updated_at")
 
-  company   Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  subject   User                       @relation("DocumentRequestSubject", fields: [subjectUserId, companyId], references: [id, companyId], onDelete: Restrict)
-  createdBy User                       @relation("DocumentRequestCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: Restrict)
-  checklist DocumentChecklistTemplate  @relation(fields: [checklistId, companyId], references: [id, companyId], onDelete: Restrict)
+  company   Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  subject   User                      @relation("DocumentRequestSubject", fields: [subjectUserId, companyId], references: [id, companyId], onDelete: Restrict)
+  createdBy User                      @relation("DocumentRequestCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: Restrict)
+  checklist DocumentChecklistTemplate @relation(fields: [checklistId, companyId], references: [id, companyId], onDelete: Restrict)
   items     DocumentRequestItem[]
   history   DocumentStatusHistory[]
 
@@ -889,27 +894,27 @@ model DocumentRequest {
 }
 
 model DocumentRequestItem {
-  id                 String              @id @default(uuid()) @db.Uuid
-  companyId          String              @map("company_id") @db.Uuid
-  requestId          String              @map("request_id") @db.Uuid
-  documentTypeId     String              @map("document_type_id") @db.Uuid
-  renewedFromItemId  String?             @map("renewed_from_item_id") @db.Uuid
-  requirement        DocumentRequirement
-  status             DocumentItemStatus  @default(PENDING_UPLOAD)
-  position           Int
-  instructions       String?             @db.VarChar(2000)
-  configSnapshot     Json                @map("config_snapshot") @db.JsonB
-  dueAt              DateTime?           @map("due_at")
-  validUntil         DateTime?           @map("valid_until")
-  currentVersion     Int                 @default(0) @map("current_version")
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @updatedAt @map("updated_at")
+  id                String              @id @default(uuid()) @db.Uuid
+  companyId         String              @map("company_id") @db.Uuid
+  requestId         String              @map("request_id") @db.Uuid
+  documentTypeId    String              @map("document_type_id") @db.Uuid
+  renewedFromItemId String?             @map("renewed_from_item_id") @db.Uuid
+  requirement       DocumentRequirement
+  status            DocumentItemStatus  @default(PENDING_UPLOAD)
+  position          Int
+  instructions      String?             @db.VarChar(2000)
+  configSnapshot    Json                @map("config_snapshot") @db.JsonB
+  dueAt             DateTime?           @map("due_at")
+  validUntil        DateTime?           @map("valid_until")
+  currentVersion    Int                 @default(0) @map("current_version")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
 
-  company         Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  request         DocumentRequest            @relation(fields: [requestId, companyId], references: [id, companyId], onDelete: Cascade)
-  documentType    DocumentType               @relation(fields: [documentTypeId, companyId], references: [id, companyId], onDelete: Restrict)
-  renewedFromItem DocumentRequestItem?       @relation("DocumentItemRenewals", fields: [renewedFromItemId, companyId], references: [id, companyId], onDelete: Restrict)
-  renewals        DocumentRequestItem[]      @relation("DocumentItemRenewals")
+  company         Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  request         DocumentRequest         @relation(fields: [requestId, companyId], references: [id, companyId], onDelete: Cascade)
+  documentType    DocumentType            @relation(fields: [documentTypeId, companyId], references: [id, companyId], onDelete: Restrict)
+  renewedFromItem DocumentRequestItem?    @relation("DocumentItemRenewals", fields: [renewedFromItemId, companyId], references: [id, companyId], onDelete: Restrict)
+  renewals        DocumentRequestItem[]   @relation("DocumentItemRenewals")
   submissions     DocumentSubmission[]
   history         DocumentStatusHistory[]
 
@@ -934,9 +939,9 @@ model DocumentSubmission {
   createdAt         DateTime           @default(now()) @map("created_at")
   updatedAt         DateTime           @updatedAt @map("updated_at")
 
-  company     Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  requestItem DocumentRequestItem   @relation(fields: [requestItemId, companyId], references: [id, companyId], onDelete: Cascade)
-  submittedBy User                  @relation("DocumentSubmissionAuthor", fields: [submittedByUserId, companyId], references: [id, companyId], onDelete: Restrict)
+  company     Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  requestItem DocumentRequestItem     @relation(fields: [requestItemId, companyId], references: [id, companyId], onDelete: Cascade)
+  submittedBy User                    @relation("DocumentSubmissionAuthor", fields: [submittedByUserId, companyId], references: [id, companyId], onDelete: Restrict)
   files       DocumentFile[]
   validation  DocumentValidation?
   reviews     DocumentReview[]
@@ -964,9 +969,9 @@ model DocumentFile {
   deletedAt        DateTime?        @map("deleted_at")
   createdAt        DateTime         @default(now()) @map("created_at")
 
-  company    Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  submission DocumentSubmission   @relation(fields: [submissionId, companyId], references: [id, companyId], onDelete: Cascade)
-  uploadedBy User                 @relation("DocumentFileUploader", fields: [uploadedByUserId, companyId], references: [id, companyId], onDelete: Restrict)
+  company    Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  submission DocumentSubmission @relation(fields: [submissionId, companyId], references: [id, companyId], onDelete: Cascade)
+  uploadedBy User               @relation("DocumentFileUploader", fields: [uploadedByUserId, companyId], references: [id, companyId], onDelete: Restrict)
 
   @@unique([id, companyId])
   @@unique([companyId, submissionId, side, pageNumber])
@@ -1002,20 +1007,20 @@ model DocumentValidation {
 }
 
 model DocumentReview {
-  id                    String                      @id @default(uuid()) @db.Uuid
-  companyId             String                      @map("company_id") @db.Uuid
-  submissionId          String                      @map("submission_id") @db.Uuid
-  reviewedByUserId      String                      @map("reviewed_by_user_id") @db.Uuid
-  commandId             String                      @map("command_id") @db.Uuid
-  decision              DocumentReviewDecision
-  reason                String?                     @db.VarChar(1000)
-  notes                 String?                     @db.VarChar(2000)
-  correctedFields       Json                        @default("{}") @map("corrected_fields") @db.JsonB
-  confirmedFields       Json                        @default("{}") @map("confirmed_fields") @db.JsonB
-  originalCheckStatus   DocumentOriginalCheckStatus @default(NOT_REQUIRED) @map("original_check_status")
-  originalCheckedAt     DateTime?                   @map("original_checked_at")
-  originalObservation   String?                     @map("original_observation") @db.VarChar(1000)
-  createdAt             DateTime                    @default(now()) @map("created_at")
+  id                  String                      @id @default(uuid()) @db.Uuid
+  companyId           String                      @map("company_id") @db.Uuid
+  submissionId        String                      @map("submission_id") @db.Uuid
+  reviewedByUserId    String                      @map("reviewed_by_user_id") @db.Uuid
+  commandId           String                      @map("command_id") @db.Uuid
+  decision            DocumentReviewDecision
+  reason              String?                     @db.VarChar(1000)
+  notes               String?                     @db.VarChar(2000)
+  correctedFields     Json                        @default("{}") @map("corrected_fields") @db.JsonB
+  confirmedFields     Json                        @default("{}") @map("confirmed_fields") @db.JsonB
+  originalCheckStatus DocumentOriginalCheckStatus @default(NOT_REQUIRED) @map("original_check_status")
+  originalCheckedAt   DateTime?                   @map("original_checked_at")
+  originalObservation String?                     @map("original_observation") @db.VarChar(1000)
+  createdAt           DateTime                    @default(now()) @map("created_at")
 
   company    Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
   submission DocumentSubmission @relation(fields: [submissionId, companyId], references: [id, companyId], onDelete: Cascade)
@@ -1027,24 +1032,24 @@ model DocumentReview {
 }
 
 model DocumentStatusHistory {
-  id           String   @id @default(uuid()) @db.Uuid
-  companyId    String   @map("company_id") @db.Uuid
-  requestId    String?  @map("request_id") @db.Uuid
-  requestItemId String? @map("request_item_id") @db.Uuid
-  submissionId String?  @map("submission_id") @db.Uuid
-  actorUserId  String?  @map("actor_user_id") @db.Uuid
-  action       String   @db.VarChar(100)
-  fromStatus   String?  @map("from_status") @db.VarChar(60)
-  toStatus     String   @map("to_status") @db.VarChar(60)
-  reason       String?  @db.VarChar(1000)
-  metadata     Json     @default("{}") @db.JsonB
-  createdAt    DateTime @default(now()) @map("created_at")
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  requestId     String?  @map("request_id") @db.Uuid
+  requestItemId String?  @map("request_item_id") @db.Uuid
+  submissionId  String?  @map("submission_id") @db.Uuid
+  actorUserId   String?  @map("actor_user_id") @db.Uuid
+  action        String   @db.VarChar(100)
+  fromStatus    String?  @map("from_status") @db.VarChar(60)
+  toStatus      String   @map("to_status") @db.VarChar(60)
+  reason        String?  @db.VarChar(1000)
+  metadata      Json     @default("{}") @db.JsonB
+  createdAt     DateTime @default(now()) @map("created_at")
 
-  company    Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  request    DocumentRequest?    @relation(fields: [requestId, companyId], references: [id, companyId], onDelete: Cascade)
+  company     Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  request     DocumentRequest?     @relation(fields: [requestId, companyId], references: [id, companyId], onDelete: Cascade)
   requestItem DocumentRequestItem? @relation(fields: [requestItemId, companyId], references: [id, companyId], onDelete: Cascade)
-  submission DocumentSubmission? @relation(fields: [submissionId, companyId], references: [id, companyId], onDelete: Cascade)
-  actor      User?               @relation("DocumentStatusActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  submission  DocumentSubmission?  @relation(fields: [submissionId, companyId], references: [id, companyId], onDelete: Cascade)
+  actor       User?                @relation("DocumentStatusActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([companyId, requestId, createdAt])
   @@index([companyId, requestItemId, createdAt])

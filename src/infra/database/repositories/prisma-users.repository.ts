@@ -66,6 +66,16 @@ function userUpdateData(
               ? PrismaDocumentAccessMode.DOCUMENT_PORTAL
               : PrismaDocumentAccessMode.STANDARD,
         }),
+    ...(input.jobTitle === undefined ? {} : { jobTitle: input.jobTitle }),
+    ...(input.maritalStatus === undefined
+      ? {}
+      : { maritalStatus: input.maritalStatus }),
+    ...(input.militaryDocumentStatus === undefined
+      ? {}
+      : { militaryDocumentStatus: input.militaryDocumentStatus }),
+    ...(input.dependents === undefined
+      ? {}
+      : { dependents: input.dependents as unknown as Prisma.InputJsonValue }),
     ...(input.departments === undefined
       ? {}
       : { departments: [...input.departments] }),
@@ -235,6 +245,8 @@ export class PrismaUsersRepository extends UsersRepository {
               user.props.documentAccessMode === 'document-portal'
                 ? PrismaDocumentAccessMode.DOCUMENT_PORTAL
                 : PrismaDocumentAccessMode.STANDARD,
+            dependents: user.props
+              .dependents as unknown as Prisma.InputJsonValue,
             suspendedUntil: null,
             suspensionReason: null,
           },

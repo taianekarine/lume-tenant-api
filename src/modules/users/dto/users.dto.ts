@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayUnique,
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -16,6 +17,7 @@ import {
   Min,
   MinLength,
   IsUUID,
+  ValidateNested,
 } from 'class-validator';
 
 import {
@@ -25,6 +27,39 @@ import {
   type PermissionCode,
 } from '../../../domain/access/access.constants';
 import { USERNAME_PATTERN } from '../../../domain/entities/user';
+
+export class UserDependentDto {
+  @ApiProperty({ example: 'Maria Oliveira' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  name!: string;
+
+  @ApiProperty({ format: 'date', example: '2018-04-20' })
+  @IsDateString()
+  birthDate!: string;
+
+  @ApiPropertyOptional({ example: 'filho(a)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  relationship?: string;
+}
+
+const maritalStatuses = [
+  'single',
+  'married',
+  'stable-union',
+  'divorced',
+  'widowed',
+  'not-informed',
+] as const;
+const militaryDocumentStatuses = [
+  'applicable',
+  'not-applicable',
+  'pending-confirmation',
+] as const;
+
 export class CreateUserDto {
   @ApiProperty({ example: 'Carlos Oliveira' })
   @IsString()
@@ -79,6 +114,33 @@ export class CreateUserDto {
   @IsOptional()
   @IsIn(['standard', 'document-portal'])
   documentAccessMode: 'standard' | 'document-portal' = 'standard';
+
+  @ApiPropertyOptional({ example: 'Motorista' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  jobTitle?: string;
+
+  @ApiPropertyOptional({ enum: maritalStatuses, default: 'not-informed' })
+  @IsOptional()
+  @IsIn(maritalStatuses)
+  maritalStatus?: (typeof maritalStatuses)[number];
+
+  @ApiPropertyOptional({
+    enum: militaryDocumentStatuses,
+    default: 'pending-confirmation',
+  })
+  @IsOptional()
+  @IsIn(militaryDocumentStatuses)
+  militaryDocumentStatus?: (typeof militaryDocumentStatuses)[number];
+
+  @ApiPropertyOptional({ type: [UserDependentDto], default: [] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => UserDependentDto)
+  dependents?: UserDependentDto[];
 
   @ApiPropertyOptional({
     enum: ['admission-general', 'admission-administrative', 'admission-driver'],
@@ -135,6 +197,30 @@ export class UpdateUserDto {
   @IsOptional()
   @IsIn(['standard', 'document-portal'])
   documentAccessMode?: 'standard' | 'document-portal';
+
+  @ApiPropertyOptional({ example: 'Motorista' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  jobTitle?: string | null;
+
+  @ApiPropertyOptional({ enum: maritalStatuses, nullable: true })
+  @IsOptional()
+  @IsIn(maritalStatuses)
+  maritalStatus?: (typeof maritalStatuses)[number] | null;
+
+  @ApiPropertyOptional({ enum: militaryDocumentStatuses })
+  @IsOptional()
+  @IsIn(militaryDocumentStatuses)
+  militaryDocumentStatus?: (typeof militaryDocumentStatuses)[number];
+
+  @ApiPropertyOptional({ type: [UserDependentDto] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => UserDependentDto)
+  dependents?: UserDependentDto[];
 }
 
 export class ListUsersQueryDto {

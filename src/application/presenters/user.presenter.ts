@@ -10,6 +10,11 @@ import {
   resolveEffectivePermissions,
 } from '../../domain/access/resolve-permissions';
 import type { UserAccountStatus } from '../../domain/entities/user';
+import type {
+  MaritalStatus,
+  MilitaryDocumentStatus,
+  UserDependent,
+} from '../../domain/entities/user';
 import type { UserRecord } from '../contracts/repositories';
 
 export interface UserOutput {
@@ -21,6 +26,10 @@ export interface UserOutput {
   type: 'employee';
   isAdministrator: boolean;
   documentAccessMode?: 'standard' | 'document-portal';
+  jobTitle: string | null;
+  maritalStatus: MaritalStatus | null;
+  militaryDocumentStatus: MilitaryDocumentStatus;
+  dependents: UserDependent[];
   departments: PresentedUserDepartment[];
   permissionCodes: PermissionCode[];
   permissions: PermissionCode[];
@@ -58,6 +67,10 @@ export function presentUser(record: UserRecord): UserOutput {
     type: 'employee',
     isAdministrator: user.props.isAdministrator,
     documentAccessMode: user.props.documentAccessMode ?? 'standard',
+    jobTitle: user.props.jobTitle,
+    maritalStatus: user.props.maritalStatus,
+    militaryDocumentStatus: user.props.militaryDocumentStatus,
+    dependents: user.props.dependents,
     departments: user.props.isAdministrator
       ? [...ASSIGNABLE_DEPARTMENTS]
       : user.props.departments.map(presentUserDepartment),

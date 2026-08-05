@@ -25,6 +25,7 @@ import {
 import {
   DepartmentCode,
   DocumentAccessMode,
+  Prisma,
   ServiceIdentityType,
   UserAccountStatus,
   WhatsAppProviderType,
@@ -162,6 +163,8 @@ export class ProductionBootstrapService {
             isAdministrator: true,
             departments: [],
             permissionCodes: [],
+            dependents: newAdministrator.props
+              .dependents as unknown as Prisma.InputJsonValue,
             status: UserAccountStatus.ACTIVE,
           },
         });

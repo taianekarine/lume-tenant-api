@@ -376,6 +376,95 @@ const commonItems: readonly InitialChecklistItem[] = [
 
 export const INITIAL_DOCUMENT_CHECKLISTS: readonly InitialChecklist[] = [
   {
+    code: 'employee-documents-dynamic',
+    name: 'Documentação personalizada do funcionário',
+    context: 'admission',
+    items: [
+      {
+        documentTypeCode: 'photo-3x4',
+        configOverrides: { minFiles: 1, maxFiles: 1 },
+      },
+      { documentTypeCode: 'cpf' },
+      { documentTypeCode: 'rg' },
+      { documentTypeCode: 'ctps' },
+      { documentTypeCode: 'cnh' },
+      { documentTypeCode: 'proof-of-address' },
+      { documentTypeCode: 'pis-card' },
+      { documentTypeCode: 'voter-registration' },
+      { documentTypeCode: 'state-criminal-clearance' },
+      { documentTypeCode: 'civil-clearance' },
+      {
+        documentTypeCode: 'marriage-certificate',
+        requirement: 'conditional',
+        condition: { field: 'hasSpouse', operator: 'equals', value: true },
+      },
+      {
+        documentTypeCode: 'spouse-identification',
+        requirement: 'conditional',
+        condition: { field: 'hasSpouse', operator: 'equals', value: true },
+      },
+      {
+        documentTypeCode: 'child-birth-certificate',
+        requirement: 'conditional',
+        condition: {
+          field: 'dependentCount',
+          operator: 'greater-than',
+          value: 0,
+        },
+        configOverrides: { repeatableByDependent: true },
+      },
+      {
+        documentTypeCode: 'child-vaccination-card',
+        requirement: 'conditional',
+        condition: {
+          field: 'hasDependentUnder7',
+          operator: 'equals',
+          value: true,
+        },
+        configOverrides: { repeatableByDependent: true },
+      },
+      {
+        documentTypeCode: 'child-school-statement',
+        requirement: 'conditional',
+        condition: {
+          field: 'hasDependentSchoolAge',
+          operator: 'equals',
+          value: true,
+        },
+        configOverrides: { repeatableByDependent: true },
+      },
+      {
+        documentTypeCode: 'military-certificate',
+        requirement: 'conditional',
+        condition: {
+          field: 'militaryDocumentStatus',
+          operator: 'in',
+          value: ['applicable', 'pending-confirmation'],
+        },
+      },
+      {
+        documentTypeCode: 'vaccination-card',
+        requirement: 'conditional',
+        condition: { field: 'isDriver', operator: 'equals', value: true },
+      },
+      {
+        documentTypeCode: 'passenger-transport-course',
+        requirement: 'conditional',
+        condition: { field: 'isDriver', operator: 'equals', value: true },
+      },
+      {
+        documentTypeCode: 'driver-license-record',
+        requirement: 'conditional',
+        condition: { field: 'isDriver', operator: 'equals', value: true },
+      },
+      {
+        documentTypeCode: 'municipal-debt-clearance',
+        requirement: 'conditional',
+        condition: { field: 'isDriver', operator: 'equals', value: true },
+      },
+    ],
+  },
+  {
     code: 'admission-general',
     name: 'Documentação geral para registro',
     context: 'admission',

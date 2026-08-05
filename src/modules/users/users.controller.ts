@@ -96,19 +96,15 @@ export class UsersController {
   ) {
     assertPeopleOperationsCreationAccess(current);
     const {
-      initialDocumentChecklistCode,
+      initialDocumentChecklistCode: legacyChecklistCode,
       initialDocumentRequestCommandId,
       ...userInput
     } = body;
+    void legacyChecklistCode;
     if (
       body.documentAccessMode === 'document-portal' &&
-      !initialDocumentChecklistCode
+      !initialDocumentRequestCommandId
     ) {
-      throw validationError(
-        'Selecione a lista de documentos para o novo usuário.',
-      );
-    }
-    if (initialDocumentChecklistCode && !initialDocumentRequestCommandId) {
       throw validationError(
         'Identificador da solicitação documental não informado.',
       );
@@ -118,11 +114,11 @@ export class UsersController {
       companyId: current.companyId,
       actorUserId: current.id,
     });
-    const initialDocumentRequest = initialDocumentChecklistCode
+    const initialDocumentRequest = initialDocumentRequestCommandId
       ? await this.documents.createAdmissionRequest(current, {
-          commandId: initialDocumentRequestCommandId!,
+          commandId: initialDocumentRequestCommandId,
           subjectUserId: user.id,
-          checklistCode: initialDocumentChecklistCode,
+          checklistCode: 'employee-documents-dynamic',
         })
       : null;
     return { ...user, initialDocumentRequest };
@@ -205,21 +201,40 @@ export class UsersController {
   }
 
   @Patch(':id')
-  @RequireAnyPermission('users:update')
+  @RequireAnyPermission('users:update', 'users:create')
   @ApiOkResponse({ description: 'Usuário e vínculos atualizados.' })
-  update(
+  async update(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
     @Body() body: UpdateUserDto,
   ) {
-    assertAdministratorAccess(current);
-    return this.updateUser.execute({
-      ...body,
+    assertPeopleOperationsCreationAccess(current);
+    const permittedBody = current.isAdministrator
+      ? body
+      : {
+          name: body.name,
+          email: body.email,
+          jobTitle: body.jobTitle,
+          maritalStatus: body.maritalStatus,
+          militaryDocumentStatus: body.militaryDocumentStatus,
+          dependents: body.dependents,
+        };
+    const user = await this.updateUser.execute({
+      ...permittedBody,
       companyId: current.companyId,
       currentUserId: current.id,
       actorUserId: current.id,
       userId,
     });
+    if (
+      body.jobTitle !== undefined ||
+      body.maritalStatus !== undefined ||
+      body.militaryDocumentStatus !== undefined ||
+      body.dependents !== undefined
+    ) {
+      await this.documents.synchronizeEmployeeDocuments(current, userId);
+    }
+    return user;
   }
 
   @Patch(':id/status')

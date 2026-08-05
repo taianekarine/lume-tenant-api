@@ -29,12 +29,14 @@ import type { DocumentFileSide } from '../../domain/documents/document-workflow'
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
+  AddDocumentRequestItemDto,
   CreateChecklistDto,
   CreateDocumentRequestDto,
   CreateDocumentTypeDto,
   ExpiringDocumentsQueryDto,
   ListDocumentRequestsQueryDto,
   RenewDocumentDto,
+  SetDocumentRequestItemPolicyDto,
   ReviewDocumentSubmissionDto,
   UpdateExtractedFieldsDto,
   UploadDocumentSubmissionDto,
@@ -157,6 +159,27 @@ export class DocumentManagementController {
     @Param('requestId', new ParseUUIDPipe({ version: '4' })) requestId: string,
   ) {
     return this.documents.history(current, requestId);
+  }
+
+  @Post('requests/:requestId/items')
+  @RequireAnyPermission('documents:manage')
+  addRequestItem(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('requestId', new ParseUUIDPipe({ version: '4' })) requestId: string,
+    @Body() body: AddDocumentRequestItemDto,
+  ) {
+    return this.documents.addRequestItem(current, requestId, body);
+  }
+
+  @Post('items/:requestItemId/policy')
+  @RequireAnyPermission('documents:manage')
+  setRequestItemPolicy(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('requestItemId', new ParseUUIDPipe({ version: '4' }))
+    requestItemId: string,
+    @Body() body: SetDocumentRequestItemPolicyDto,
+  ) {
+    return this.documents.setRequestItemPolicy(current, requestItemId, body);
   }
 
   @Post('items/:requestItemId/submissions')

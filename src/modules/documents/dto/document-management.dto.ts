@@ -216,6 +216,38 @@ export class UploadDocumentSubmissionDto {
   pageNumbers?: string;
 }
 
+export class AddDocumentRequestItemDto {
+  @IsUUID('4')
+  documentTypeId!: string;
+
+  @IsIn(['required', 'optional'])
+  requirement!: 'required' | 'optional';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  instructions?: string;
+
+  @IsOptional()
+  @IsDateString()
+  dueAt?: string;
+
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  reason!: string;
+}
+
+export class SetDocumentRequestItemPolicyDto {
+  @IsIn(['required', 'optional', 'waived'])
+  policy!: 'required' | 'optional' | 'waived';
+
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  reason!: string;
+}
+
 export class ReviewDocumentSubmissionDto {
   @IsUUID('4')
   commandId!: string;

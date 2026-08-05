@@ -14,7 +14,7 @@ function permissionsFor(method: keyof UsersController): readonly string[] {
 describe('UsersController permissions', () => {
   it('separates user creation, access editing and status management', () => {
     expect(permissionsFor('create')).toEqual(['users:create']);
-    expect(permissionsFor('update')).toEqual(['users:update']);
+    expect(permissionsFor('update')).toEqual(['users:update', 'users:create']);
     expect(permissionsFor('resetPassword')).toEqual(['users:update']);
     expect(permissionsFor('status')).toEqual(['users:manage']);
   });

@@ -12,7 +12,12 @@ import {
   type SupportedUserDepartment,
 } from '../../../domain/access/access.constants';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
-import type { DocumentAccessMode } from '../../../domain/entities/user';
+import type {
+  DocumentAccessMode,
+  MaritalStatus,
+  MilitaryDocumentStatus,
+  UserDependent,
+} from '../../../domain/entities/user';
 import {
   normalizeCpf,
   normalizeEmail,
@@ -33,6 +38,10 @@ export interface UpdateUserInput {
   cpf?: string | null;
   isAdministrator?: boolean;
   documentAccessMode?: DocumentAccessMode;
+  jobTitle?: string | null;
+  maritalStatus?: MaritalStatus | null;
+  militaryDocumentStatus?: MilitaryDocumentStatus;
+  dependents?: UserDependent[];
   departments?: SupportedUserDepartment[];
   permissionCodes?: PermissionCode[];
 }
@@ -150,6 +159,13 @@ export class UpdateUserUseCase {
       isAdministrator:
         input.isAdministrator === undefined ? undefined : finalIsAdministrator,
       documentAccessMode: input.documentAccessMode,
+      jobTitle:
+        input.jobTitle === undefined
+          ? undefined
+          : input.jobTitle?.trim() || null,
+      maritalStatus: input.maritalStatus,
+      militaryDocumentStatus: input.militaryDocumentStatus,
+      dependents: input.dependents,
       departments: finalIsAdministrator ? [] : departments,
       permissionCodes: finalIsAdministrator ? [] : permissionCodes,
     };
@@ -182,6 +198,10 @@ export class UpdateUserUseCase {
             'cpf',
             'isAdministrator',
             'documentAccessMode',
+            'jobTitle',
+            'maritalStatus',
+            'militaryDocumentStatus',
+            'dependents',
             'departments',
             'permissionCodes',
           ].filter(

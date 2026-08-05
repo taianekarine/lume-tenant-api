@@ -5,6 +5,11 @@ import type {
   UserDepartment,
 } from '../../../domain/access/access.constants';
 import { User } from '../../../domain/entities/user';
+import type {
+  MaritalStatus,
+  MilitaryDocumentStatus,
+  UserDependent,
+} from '../../../domain/entities/user';
 import type { UserRecord } from '../../../application/contracts/repositories';
 
 export const userRecordSelect = {
@@ -21,6 +26,10 @@ export const userRecordSelect = {
   profilePictureMime: true,
   isAdministrator: true,
   documentAccessMode: true,
+  jobTitle: true,
+  maritalStatus: true,
+  militaryDocumentStatus: true,
+  dependents: true,
   departments: true,
   permissionCodes: true,
   status: true,
@@ -58,6 +67,13 @@ export function mapUserRecord(row: PrismaUserRecord): UserRecord {
         row.documentAccessMode === 'DOCUMENT_PORTAL'
           ? 'document-portal'
           : 'standard',
+      jobTitle: row.jobTitle,
+      maritalStatus: row.maritalStatus as MaritalStatus | null,
+      militaryDocumentStatus:
+        row.militaryDocumentStatus as MilitaryDocumentStatus,
+      dependents: Array.isArray(row.dependents)
+        ? (row.dependents as unknown as UserDependent[])
+        : [],
       departments: row.departments as UserDepartment[],
       permissionCodes: row.permissionCodes as PermissionCode[],
       status: row.status.toLowerCase() as 'active' | 'inactive' | 'suspended',

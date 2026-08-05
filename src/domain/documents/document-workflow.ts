@@ -36,6 +36,7 @@ export const DOCUMENT_ITEM_STATUSES = [
   'approved',
   'rejected',
   'expired',
+  'waived',
   'cancelled',
 ] as const;
 export type DocumentItemStatus = (typeof DOCUMENT_ITEM_STATUSES)[number];
@@ -46,14 +47,15 @@ export type DocumentFileSide = 'single' | 'front' | 'back' | 'page';
 const itemTransitions: Readonly<
   Record<DocumentItemStatus, readonly DocumentItemStatus[]>
 > = {
-  'pending-upload': ['submitted', 'cancelled'],
+  'pending-upload': ['submitted', 'waived', 'cancelled'],
   submitted: ['automatic-validation', 'pending-human-review', 'cancelled'],
   'automatic-validation': ['pending-human-review', 'resubmission-required'],
   'pending-human-review': ['approved', 'rejected', 'resubmission-required'],
-  'resubmission-required': ['submitted', 'cancelled'],
-  approved: ['expired'],
-  rejected: ['submitted', 'cancelled'],
-  expired: ['submitted', 'cancelled'],
+  'resubmission-required': ['submitted', 'waived', 'cancelled'],
+  approved: ['expired', 'waived'],
+  rejected: ['submitted', 'waived', 'cancelled'],
+  expired: ['submitted', 'waived', 'cancelled'],
+  waived: ['pending-upload'],
   cancelled: [],
 };
 
@@ -75,13 +77,19 @@ export function deriveDocumentRequestStatus(
   const relevant = items.filter((item) => item.requirement !== 'optional');
   const source = relevant.length > 0 ? relevant : items;
   if (source.length === 0) return 'draft';
-  if (source.every((item) => item.status === 'cancelled')) return 'cancelled';
+  if (source.every((item) => ['cancelled', 'waived'].includes(item.status))) {
+    return source.every((item) => item.status === 'cancelled')
+      ? 'cancelled'
+      : 'approved';
+  }
   if (source.some((item) => item.status === 'resubmission-required')) {
     return 'resubmission-required';
   }
   if (source.some((item) => item.status === 'rejected')) return 'rejected';
   if (source.some((item) => item.status === 'expired')) return 'expired';
-  if (source.every((item) => item.status === 'approved')) return 'approved';
+  if (source.every((item) => ['approved', 'waived'].includes(item.status))) {
+    return 'approved';
+  }
   if (source.some((item) => item.status === 'pending-human-review')) {
     return 'pending-human-review';
   }

@@ -14,6 +14,9 @@ import {
   isValidUsername,
   User,
   type DocumentAccessMode,
+  type MaritalStatus,
+  type MilitaryDocumentStatus,
+  type UserDependent,
 } from '../../../domain/entities/user';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
 import {
@@ -38,6 +41,10 @@ export interface CreateUserInput {
   password: string;
   isAdministrator?: boolean;
   documentAccessMode?: DocumentAccessMode;
+  jobTitle?: string;
+  maritalStatus?: MaritalStatus;
+  militaryDocumentStatus?: MilitaryDocumentStatus;
+  dependents?: UserDependent[];
   departments: SupportedUserDepartment[];
   permissionCodes: PermissionCode[];
 }
@@ -155,6 +162,11 @@ export class CreateUserUseCase {
       mustChangePassword: true,
       isAdministrator,
       documentAccessMode,
+      jobTitle: input.jobTitle?.trim() || null,
+      maritalStatus: input.maritalStatus ?? null,
+      militaryDocumentStatus:
+        input.militaryDocumentStatus ?? 'pending-confirmation',
+      dependents: input.dependents ?? [],
       departments,
       permissionCodes,
     });
@@ -170,6 +182,11 @@ export class CreateUserUseCase {
         metadata: {
           isAdministrator,
           documentAccessMode,
+          jobTitle: input.jobTitle?.trim() || null,
+          maritalStatus: input.maritalStatus ?? null,
+          militaryDocumentStatus:
+            input.militaryDocumentStatus ?? 'pending-confirmation',
+          dependentCount: input.dependents?.length ?? 0,
           departments,
           permissionCodes,
         },

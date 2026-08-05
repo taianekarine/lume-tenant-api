@@ -7,6 +7,20 @@ import type {
 
 export type UserAccountStatus = 'active' | 'inactive' | 'suspended';
 export type DocumentAccessMode = 'standard' | 'document-portal';
+export type MaritalStatus =
+  | 'single'
+  | 'married'
+  | 'stable-union'
+  | 'divorced'
+  | 'widowed'
+  | 'not-informed';
+export type MilitaryDocumentStatus =
+  'applicable' | 'not-applicable' | 'pending-confirmation';
+export interface UserDependent {
+  readonly name: string;
+  readonly birthDate: string;
+  readonly relationship?: string;
+}
 export const USERNAME_PATTERN = /^(?=.*[A-Za-z])[A-Za-z0-9._-]{3,40}$/;
 
 export function isValidUsername(value: string): boolean {
@@ -28,6 +42,10 @@ export interface UserProps {
   profilePictureMime: string | null;
   isAdministrator: boolean;
   documentAccessMode: DocumentAccessMode;
+  jobTitle: string | null;
+  maritalStatus: MaritalStatus | null;
+  militaryDocumentStatus: MilitaryDocumentStatus;
+  dependents: UserDependent[];
   departments: UserDepartment[];
   permissionCodes: PermissionCode[];
   status: UserAccountStatus;
@@ -55,6 +73,10 @@ export class User {
       | 'profilePictureMime'
       | 'isAdministrator'
       | 'documentAccessMode'
+      | 'jobTitle'
+      | 'maritalStatus'
+      | 'militaryDocumentStatus'
+      | 'dependents'
       | 'permissionCodes'
       | 'status'
       | 'suspendedUntil'
@@ -65,6 +87,10 @@ export class User {
       mustChangePassword?: boolean;
       isAdministrator?: boolean;
       documentAccessMode?: DocumentAccessMode;
+      jobTitle?: string | null;
+      maritalStatus?: MaritalStatus | null;
+      militaryDocumentStatus?: MilitaryDocumentStatus;
+      dependents?: UserDependent[];
       permissionCodes?: PermissionCode[];
     },
   ): User {
@@ -85,6 +111,11 @@ export class User {
       profilePictureMime: null,
       isAdministrator: input.isAdministrator ?? false,
       documentAccessMode: input.documentAccessMode ?? 'standard',
+      jobTitle: input.jobTitle ?? null,
+      maritalStatus: input.maritalStatus ?? null,
+      militaryDocumentStatus:
+        input.militaryDocumentStatus ?? 'pending-confirmation',
+      dependents: input.dependents ?? [],
       permissionCodes: input.permissionCodes ?? [],
       status: 'active',
       suspendedUntil: null,
@@ -96,13 +127,29 @@ export class User {
   }
 
   static restore(
-    props: Omit<UserProps, 'documentAccessMode'> & {
+    props: Omit<
+      UserProps,
+      | 'documentAccessMode'
+      | 'jobTitle'
+      | 'maritalStatus'
+      | 'militaryDocumentStatus'
+      | 'dependents'
+    > & {
       documentAccessMode?: DocumentAccessMode;
+      jobTitle?: string | null;
+      maritalStatus?: MaritalStatus | null;
+      militaryDocumentStatus?: MilitaryDocumentStatus;
+      dependents?: UserDependent[];
     },
   ): User {
     return new User({
       ...props,
       documentAccessMode: props.documentAccessMode ?? 'standard',
+      jobTitle: props.jobTitle ?? null,
+      maritalStatus: props.maritalStatus ?? null,
+      militaryDocumentStatus:
+        props.militaryDocumentStatus ?? 'pending-confirmation',
+      dependents: props.dependents ?? [],
     });
   }
 
