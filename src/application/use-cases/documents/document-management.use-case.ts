@@ -604,7 +604,6 @@ export class DocumentManagementUseCase {
           commandId: input.commandId,
           items: {
             create: checklist.items.map((item) => ({
-              companyId: principal.companyId,
               documentTypeId: item.documentTypeId,
               requirement: item.requirement,
               position: item.position,
