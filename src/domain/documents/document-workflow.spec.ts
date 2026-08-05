@@ -17,6 +17,9 @@ describe('document workflow', () => {
     expect(() =>
       assertDocumentItemTransition('automatic-validation', 'approved'),
     ).toThrow();
+    expect(() =>
+      assertDocumentItemTransition('pending-human-review', 'submitted'),
+    ).not.toThrow();
   });
 
   it('never derives approval while a required item awaits human review', () => {

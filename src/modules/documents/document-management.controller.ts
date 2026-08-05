@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   Param,
@@ -34,6 +35,7 @@ import {
   CreateBatchDocumentRequestsDto,
   CreateDocumentRequestDto,
   CreateDocumentTypeDto,
+  DeleteDocumentSubmissionDto,
   ExpiringDocumentsQueryDto,
   ListDocumentRequestsQueryDto,
   RenewDocumentDto,
@@ -250,6 +252,21 @@ export class DocumentManagementController {
     submissionId: string,
   ) {
     return this.documents.completeSubmission(current, submissionId);
+  }
+
+  @Delete('submissions/:submissionId')
+  @RequireAnyPermission(
+    'documents:create',
+    'documents:update',
+    'documents:manage',
+  )
+  deleteSubmission(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('submissionId', new ParseUUIDPipe({ version: '4' }))
+    submissionId: string,
+    @Body() body: DeleteDocumentSubmissionDto,
+  ) {
+    return this.documents.deleteSubmission(current, submissionId, body);
   }
 
   @Post('submissions/:submissionId/extracted-data')

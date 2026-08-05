@@ -50,7 +50,12 @@ const itemTransitions: Readonly<
   'pending-upload': ['submitted', 'waived', 'cancelled'],
   submitted: ['automatic-validation', 'pending-human-review', 'cancelled'],
   'automatic-validation': ['pending-human-review', 'resubmission-required'],
-  'pending-human-review': ['approved', 'rejected', 'resubmission-required'],
+  'pending-human-review': [
+    'submitted',
+    'approved',
+    'rejected',
+    'resubmission-required',
+  ],
   'resubmission-required': ['submitted', 'waived', 'cancelled'],
   approved: ['expired', 'waived'],
   rejected: ['submitted', 'waived', 'cancelled'],

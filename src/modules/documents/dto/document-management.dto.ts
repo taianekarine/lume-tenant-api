@@ -247,6 +247,14 @@ export class UploadDocumentSubmissionDto {
   pageNumbers?: string;
 }
 
+export class DeleteDocumentSubmissionDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  reason?: string;
+}
+
 export class AddDocumentRequestItemDto {
   @IsUUID('4')
   documentTypeId!: string;

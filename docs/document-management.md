@@ -35,10 +35,18 @@ demais acessos.
 7. documentos aprovados podem registrar validade e originar renovação;
 8. `DocumentStatusHistory` e `TenantAuditLog` registram ações e transições.
 
+O titular pode substituir um envio ainda em revisão ou removê-lo para voltar ao
+estado `pending-upload`. A remoção é lógica, preserva versões e auditoria. Depois
+da aprovação, somente administrador ou operador com `documents:manage` pode
+remover o arquivo, sempre informando o motivo.
+
 Solicitações avulsas aceitam vários titulares e vários tipos documentais em um
-único comando. A API cria uma solicitação independente por titular, mantendo
-extração, revisão, histórico, XLSX e ZIP individualizados. A operação é atômica:
-uma falha de validação impede a criação parcial do lote.
+único comando. Para cada titular, a API reutiliza o dossiê documental original
+não cancelado, inclui somente tipos ausentes e reabre o item quando é solicitada
+uma atualização de documento já aprovado. Um dossiê novo só é criado quando o
+titular ainda não possui nenhum. Extração, revisão, histórico, XLSX e ZIP
+continuam individualizados. A operação é atômica: uma falha de validação impede
+a alteração parcial do lote.
 
 Documentos de cônjuge, dependentes e situação militar são filtrados pelo perfil
 de cada titular. Há um item por tipo documental, não uma cópia do item por filho;
@@ -88,6 +96,7 @@ Prefixo `/api/v1/document-management`:
 - `POST /items/:id/policy` (obrigatório, opcional ou dispensado, com motivo);
 - `POST /items/:id/submissions` (multipart);
 - `POST /submissions/:id/complete`;
+- `DELETE /submissions/:id` (remoção lógica e auditada);
 - `POST /submissions/:id/reviews`;
 - `GET /files/:id/content`;
 - `GET /expiring`;
@@ -108,8 +117,10 @@ npx.cmd prisma migrate deploy
 npm.cmd run tenant:bootstrap
 ```
 
-Para habilitar OpenAI, defina `DOCUMENT_REVIEW_ENABLED=true`,
-`DOCUMENT_REVIEW_PROVIDER=openai` e `OPENAI_API_KEY` no ambiente da API. Sem
-essas variáveis o fluxo continua pelo validador estrutural local.
+Para habilitar OpenAI, as três configurações são obrigatórias e independentes:
+`DOCUMENT_REVIEW_ENABLED=true`, `DOCUMENT_REVIEW_PROVIDER=openai` e
+`OPENAI_API_KEY`. Definir apenas a chave não muda o provedor; se
+`DOCUMENT_REVIEW_PROVIDER=local`, o comportamento correto é continuar no
+validador estrutural local. Reinicie a API depois de alterar o ambiente.
 
 O bootstrap pode ser repetido e cria somente registros iniciais ausentes.

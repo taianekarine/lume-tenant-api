@@ -974,6 +974,186 @@ export class DocumentManagementUseCase {
         );
         if (applicableTypes.length === 0) continue;
 
+        const configSnapshotFor = (
+          documentType: (typeof documentTypes)[number],
+          checklistItem: (typeof checklist.items)[number] | undefined,
+        ) => {
+          const eligibleDependents = eligibleDependentsForDocument(
+            documentType.code,
+            dependents,
+          );
+          return {
+            code: documentType.code,
+            name: documentType.name,
+            acceptedMimeTypes: documentType.acceptedMimeTypes,
+            maxFileSizeBytes: documentType.maxFileSizeBytes,
+            minFiles: documentType.minFiles,
+            maxFiles: documentType.maxFiles,
+            allowsMultiplePages: documentType.allowsMultiplePages,
+            requiresFrontBack: documentType.requiresFrontBack,
+            expires: documentType.expires,
+            defaultValidityDays: documentType.defaultValidityDays,
+            renewalLeadDays: documentType.renewalLeadDays,
+            requiresOriginal: documentType.requiresOriginal,
+            extractionSchema: documentType.extractionSchema,
+            batchCommandId: input.commandId,
+            selectedInBatch: true,
+            ...(eligibleDependents.length
+              ? { dependents: eligibleDependents }
+              : {}),
+            ...(documentType.code === 'cnh' && ruleContext.isDriver
+              ? {
+                  driverRequirements: {
+                    category: 'D',
+                    earRequired: true,
+                    validityRequired: true,
+                  },
+                }
+              : {}),
+            ...jsonRecord(checklistItem?.configOverrides),
+          } as unknown as Prisma.InputJsonValue;
+        };
+
+        const existingRequest = await transaction.documentRequest.findFirst({
+          where: {
+            companyId: principal.companyId,
+            subjectUserId,
+            status: { not: PrismaDocumentRequestStatus.CANCELLED },
+          },
+          orderBy: { createdAt: 'asc' },
+          include: {
+            items: {
+              select: {
+                id: true,
+                documentTypeId: true,
+                status: true,
+                position: true,
+              },
+            },
+          },
+        });
+
+        if (existingRequest) {
+          const existingByType = new Map(
+            existingRequest.items.map((item) => [item.documentTypeId, item]),
+          );
+          let nextPosition = existingRequest.items.reduce(
+            (highest, item) => Math.max(highest, item.position),
+            0,
+          );
+          let changed = false;
+
+          for (const { documentType, checklistItem } of applicableTypes) {
+            const current = existingByType.get(documentType.id);
+            if (current) {
+              if (
+                current.status === PrismaDocumentItemStatus.APPROVED ||
+                current.status === PrismaDocumentItemStatus.WAIVED ||
+                current.status === PrismaDocumentItemStatus.CANCELLED
+              ) {
+                await transaction.documentRequestItem.update({
+                  where: {
+                    id_companyId: {
+                      id: current.id,
+                      companyId: principal.companyId,
+                    },
+                  },
+                  data: {
+                    status: PrismaDocumentItemStatus.PENDING_UPLOAD,
+                    requirement: PrismaDocumentRequirement.REQUIRED,
+                    dueAt: input.deadline ? new Date(input.deadline) : null,
+                    instructions: checklistItem?.instructions ?? null,
+                    configSnapshot: configSnapshotFor(
+                      documentType,
+                      checklistItem,
+                    ),
+                  },
+                });
+                await transaction.documentStatusHistory.create({
+                  data: {
+                    companyId: principal.companyId,
+                    requestId: existingRequest.id,
+                    requestItemId: current.id,
+                    actorUserId: principal.id,
+                    action: 'item.reopened-by-batch-request',
+                    fromStatus: itemStatusFromPrisma[current.status],
+                    toStatus: 'pending-upload',
+                    reason: input.notes?.trim() || null,
+                    metadata: { batchCommandId: input.commandId },
+                  },
+                });
+                changed = true;
+              }
+              continue;
+            }
+
+            nextPosition += 1;
+            await transaction.documentRequestItem.create({
+              data: {
+                companyId: principal.companyId,
+                requestId: existingRequest.id,
+                documentTypeId: documentType.id,
+                requirement: PrismaDocumentRequirement.REQUIRED,
+                position: nextPosition,
+                instructions: checklistItem?.instructions ?? null,
+                dueAt: input.deadline ? new Date(input.deadline) : null,
+                configSnapshot: configSnapshotFor(documentType, checklistItem),
+              },
+            });
+            changed = true;
+          }
+
+          const allItems = await transaction.documentRequestItem.findMany({
+            where: {
+              companyId: principal.companyId,
+              requestId: existingRequest.id,
+            },
+            select: { status: true, requirement: true },
+          });
+          await transaction.documentRequest.update({
+            where: {
+              id_companyId: {
+                id: existingRequest.id,
+                companyId: principal.companyId,
+              },
+            },
+            data: {
+              context: requestContextToPrisma[input.context],
+              deadline: input.deadline
+                ? new Date(input.deadline)
+                : existingRequest.deadline,
+              notes: input.notes?.trim() || existingRequest.notes,
+              status: requestStatusForItems(allItems),
+              completedAt: null,
+              ...(changed ? { version: { increment: 1 } } : {}),
+            },
+          });
+          await transaction.documentStatusHistory.create({
+            data: {
+              companyId: principal.companyId,
+              requestId: existingRequest.id,
+              actorUserId: principal.id,
+              action: changed
+                ? 'request.batch-merged'
+                : 'request.batch-already-covered',
+              fromStatus: requestStatusFromPrisma[existingRequest.status],
+              toStatus:
+                requestStatusFromPrisma[requestStatusForItems(allItems)],
+              metadata: {
+                batchCommandId: input.commandId,
+                selectedDocumentTypeIds: input.documentTypeIds,
+              },
+            },
+          });
+          requests.push({
+            id: existingRequest.id,
+            subjectUserId,
+            itemCount: applicableTypes.length,
+            idempotent: !changed,
+          });
+          continue;
+        }
+
         const request = await transaction.documentRequest.create({
           data: {
             companyId: principal.companyId,
@@ -989,10 +1169,6 @@ export class DocumentManagementUseCase {
             items: {
               create: applicableTypes.map(
                 ({ documentType, checklistItem }, index) => {
-                  const eligibleDependents = eligibleDependentsForDocument(
-                    documentType.code,
-                    dependents,
-                  );
                   return {
                     company: { connect: { id: principal.companyId } },
                     documentType: {
@@ -1007,36 +1183,10 @@ export class DocumentManagementUseCase {
                     position: index + 1,
                     instructions: checklistItem?.instructions ?? null,
                     dueAt: input.deadline ? new Date(input.deadline) : null,
-                    configSnapshot: {
-                      code: documentType.code,
-                      name: documentType.name,
-                      acceptedMimeTypes: documentType.acceptedMimeTypes,
-                      maxFileSizeBytes: documentType.maxFileSizeBytes,
-                      minFiles: documentType.minFiles,
-                      maxFiles: documentType.maxFiles,
-                      allowsMultiplePages: documentType.allowsMultiplePages,
-                      requiresFrontBack: documentType.requiresFrontBack,
-                      expires: documentType.expires,
-                      defaultValidityDays: documentType.defaultValidityDays,
-                      renewalLeadDays: documentType.renewalLeadDays,
-                      requiresOriginal: documentType.requiresOriginal,
-                      extractionSchema: documentType.extractionSchema,
-                      batchCommandId: input.commandId,
-                      selectedInBatch: true,
-                      ...(eligibleDependents.length
-                        ? { dependents: eligibleDependents }
-                        : {}),
-                      ...(documentType.code === 'cnh' && ruleContext.isDriver
-                        ? {
-                            driverRequirements: {
-                              category: 'D',
-                              earRequired: true,
-                              validityRequired: true,
-                            },
-                          }
-                        : {}),
-                      ...jsonRecord(checklistItem?.configOverrides),
-                    } as unknown as Prisma.InputJsonValue,
+                    configSnapshot: configSnapshotFor(
+                      documentType,
+                      checklistItem,
+                    ),
                   };
                 },
               ),
@@ -1686,6 +1836,7 @@ export class DocumentManagementUseCase {
     if (
       ![
         'pending-upload',
+        'pending-human-review',
         'resubmission-required',
         'rejected',
         'expired',
@@ -1739,6 +1890,17 @@ export class DocumentManagementUseCase {
       });
       if (changed.count !== 1)
         throw conflict('O item foi alterado; recarregue e tente novamente.');
+      if (currentStatus === 'pending-human-review') {
+        await transaction.documentSubmission.updateMany({
+          where: {
+            companyId: principal.companyId,
+            requestItemId: item.id,
+            version: item.currentVersion,
+            status: PrismaDocumentItemStatus.PENDING_HUMAN_REVIEW,
+          },
+          data: { status: PrismaDocumentItemStatus.CANCELLED },
+        });
+      }
       const submission = await transaction.documentSubmission.create({
         data: {
           companyId: principal.companyId,
@@ -2064,6 +2226,137 @@ export class DocumentManagementUseCase {
       ),
       validation,
       idempotent: false,
+    };
+  }
+
+  async deleteSubmission(
+    principal: AuthenticatedPrincipal,
+    submissionId: string,
+    input: { reason?: string },
+  ) {
+    const submission = await this.prisma.documentSubmission.findUnique({
+      where: {
+        id_companyId: { id: submissionId, companyId: principal.companyId },
+      },
+      include: {
+        files: { where: { deletedAt: null }, select: { id: true } },
+        requestItem: { include: { request: true } },
+      },
+    });
+    if (!submission) throw notFound('Envio documental');
+    this.assertOwnOrManage(
+      principal,
+      submission.requestItem.request.subjectUserId,
+    );
+    if (submission.version !== submission.requestItem.currentVersion) {
+      throw conflict('Somente o envio atual pode ser removido.');
+    }
+    const canManage =
+      hasPeopleOperationsScope(principal) &&
+      (principal.isAdministrator ||
+        principal.permissions.includes('documents:manage'));
+    const current = itemStatusFromPrisma[submission.status];
+    if (current === 'approved' && !canManage) {
+      throw forbidden(
+        'Documento aprovado só pode ser removido por quem gerencia documentos.',
+      );
+    }
+    if (current === 'approved' && !input.reason?.trim()) {
+      throw validationError(
+        'Informe o motivo para remover um documento aprovado.',
+      );
+    }
+    if (['cancelled', 'waived'].includes(current)) {
+      throw conflict('Este envio já foi removido ou dispensado.');
+    }
+
+    await this.prisma.$transaction(async (transaction) => {
+      const deletedAt = new Date();
+      await transaction.documentFile.updateMany({
+        where: {
+          companyId: principal.companyId,
+          submissionId: submission.id,
+          deletedAt: null,
+        },
+        data: { deletedAt },
+      });
+      await transaction.documentSubmission.update({
+        where: {
+          id_companyId: { id: submission.id, companyId: principal.companyId },
+        },
+        data: { status: PrismaDocumentItemStatus.CANCELLED },
+      });
+      await transaction.documentRequestItem.update({
+        where: {
+          id_companyId: {
+            id: submission.requestItemId,
+            companyId: principal.companyId,
+          },
+        },
+        data: {
+          status: PrismaDocumentItemStatus.PENDING_UPLOAD,
+          validUntil: null,
+        },
+      });
+      const allItems = await transaction.documentRequestItem.findMany({
+        where: {
+          companyId: principal.companyId,
+          requestId: submission.requestItem.requestId,
+        },
+        select: { status: true, requirement: true },
+      });
+      const requestStatus = requestStatusForItems(allItems);
+      await transaction.documentRequest.update({
+        where: {
+          id_companyId: {
+            id: submission.requestItem.requestId,
+            companyId: principal.companyId,
+          },
+        },
+        data: {
+          status: requestStatus,
+          completedAt: null,
+          version: { increment: 1 },
+        },
+      });
+      await transaction.documentStatusHistory.create({
+        data: {
+          companyId: principal.companyId,
+          requestId: submission.requestItem.requestId,
+          requestItemId: submission.requestItemId,
+          submissionId: submission.id,
+          actorUserId: principal.id,
+          action: 'submission.removed',
+          fromStatus: current,
+          toStatus: 'pending-upload',
+          reason: input.reason?.trim() || 'Arquivo substituído pelo titular.',
+          metadata: {
+            version: submission.version,
+            fileIds: submission.files.map((file) => file.id),
+          },
+        },
+      });
+      await transaction.tenantAuditLog.create({
+        data: {
+          companyId: principal.companyId,
+          actorUserId: principal.id,
+          action: 'document.submission.remove',
+          targetType: 'document-submission',
+          targetId: submission.id,
+          metadata: {
+            requestId: submission.requestItem.requestId,
+            previousStatus: current,
+            approvedRemoval: current === 'approved',
+            reason: input.reason?.trim() || null,
+          },
+        },
+      });
+    });
+    return {
+      request: await this.getRequestById(
+        principal,
+        submission.requestItem.requestId,
+      ),
     };
   }
 

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { Logger } from '@nestjs/common';
+
 import {
   DocumentReviewAgent,
   type DocumentReviewInput,
@@ -212,7 +214,10 @@ export class OpenAiDocumentReviewAgent extends DocumentReviewAgent {
           },
         );
         if (!response.ok) {
-          throw new Error(`OpenAI respondeu HTTP ${response.status}.`);
+          const requestId = response.headers.get('x-request-id');
+          throw new Error(
+            `OpenAI respondeu HTTP ${response.status}${requestId ? ` (request ${requestId})` : ''}.`,
+          );
         }
         const parsed = JSON.parse(responseText(await response.json())) as Omit<
           DocumentReviewResult,
@@ -238,6 +243,8 @@ export class OpenAiDocumentReviewAgent extends DocumentReviewAgent {
 }
 
 export class FallbackDocumentReviewAgent extends DocumentReviewAgent {
+  private readonly logger = new Logger(FallbackDocumentReviewAgent.name);
+
   constructor(
     private readonly primary: DocumentReviewAgent,
     private readonly fallback = new LocalStructuralReviewAgent(),
@@ -253,6 +260,9 @@ export class FallbackDocumentReviewAgent extends DocumentReviewAgent {
         .update(error instanceof Error ? error.message : 'unknown')
         .digest('hex')
         .slice(0, 12);
+      this.logger.error(
+        `Revisão OpenAI indisponível (${fingerprint}): ${error instanceof Error ? error.message : 'falha desconhecida'}`,
+      );
       return localResult(input, [
         `Revisão OpenAI indisponível; fallback local aplicado (${fingerprint}).`,
       ]);
