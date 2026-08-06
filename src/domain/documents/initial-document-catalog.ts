@@ -241,7 +241,7 @@ export const INITIAL_DOCUMENT_TYPES: readonly InitialDocumentType[] = [
   },
   {
     code: 'spouse-identification',
-    name: 'Documentos pessoais do cônjuge',
+    name: 'Documentos pessoais do cônjuge — RG e CPF',
     requiresFrontBack: true,
     allowsMultiplePages: true,
     maxFiles: 4,

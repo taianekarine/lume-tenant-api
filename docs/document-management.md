@@ -20,8 +20,9 @@ podem editar departamentos, permissões, estado ou recuperação de acesso. RH e
 Departamento Pessoal possuem apenas `users:view` e `users:create`; ao criarem
 uma conta, a API exige `documentAccessMode=document-portal`, sem departamento
 ou permissão adicional. O administrador completa os acessos posteriormente.
-RH e DP podem manter o perfil documental (cargo, estado civil, decisão sobre
-documento militar e dependentes), mas essa autorização não permite alterar os
+RH e DP podem manter o perfil documental (classificação Administrativo, Geral ou
+Motorista, estado civil, decisão sobre documento militar e dependentes), mas essa
+autorização não permite alterar os
 demais acessos.
 
 ## Fluxo
@@ -46,7 +47,11 @@ não cancelado, inclui somente tipos ausentes e reabre o item quando é solicita
 uma atualização de documento já aprovado. Um dossiê novo só é criado quando o
 titular ainda não possui nenhum. Extração, revisão, histórico, XLSX e ZIP
 continuam individualizados. A operação é atômica: uma falha de validação impede
-a alteração parcial do lote.
+a alteração parcial do lote. Ao aprovar um documento, exigências abertas do
+mesmo tipo que ainda existam em solicitações legadas duplicadas são dispensadas
+com referência ao envio aprovado, histórico e recálculo de todos os dossiês
+afetados. A migration `20260805000400_reconcile_duplicate_document_requirements`
+aplica a mesma conciliação aos dados existentes.
 
 Documentos de cônjuge, dependentes e situação militar são filtrados pelo perfil
 de cada titular. Há um item por tipo documental, não uma cópia do item por filho;
@@ -79,7 +84,7 @@ observabilidade, idempotência e reprocessamento.
 
 `tenant:bootstrap` executa seed idempotente. Novas admissões usam
 `employee-documents-dynamic`: uma base geral sem duplicidades e condições por
-cônjuge, dependentes, decisão militar e cargo. A CNH permanece um único item;
+cônjuge, dependentes, decisão militar e classificação. A CNH permanece um único item;
 para motorista, seu snapshot acrescenta categoria D, EAR e validade. As três
 listas antigas continuam disponíveis somente para preservar solicitações já
 materializadas.

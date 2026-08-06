@@ -2474,6 +2474,96 @@ export class DocumentManagementUseCase {
           validUntil: input.validUntil ? new Date(input.validUntil) : undefined,
         },
       });
+      const affectedRequestIds = new Set<string>([
+        submission.requestItem.requestId,
+      ]);
+      if (input.decision === 'approved') {
+        const duplicatedRequirements =
+          await transaction.documentRequestItem.findMany({
+            where: {
+              companyId: principal.companyId,
+              id: { not: submission.requestItemId },
+              documentTypeId: submission.requestItem.documentTypeId,
+              status: {
+                in: [
+                  PrismaDocumentItemStatus.PENDING_UPLOAD,
+                  PrismaDocumentItemStatus.SUBMITTED,
+                  PrismaDocumentItemStatus.AUTOMATIC_VALIDATION,
+                  PrismaDocumentItemStatus.PENDING_HUMAN_REVIEW,
+                  PrismaDocumentItemStatus.RESUBMISSION_REQUIRED,
+                  PrismaDocumentItemStatus.REJECTED,
+                  PrismaDocumentItemStatus.EXPIRED,
+                ],
+              },
+              request: {
+                subjectUserId: submission.requestItem.request.subjectUserId,
+                status: { not: PrismaDocumentRequestStatus.CANCELLED },
+              },
+            },
+            select: {
+              id: true,
+              requestId: true,
+              status: true,
+              currentVersion: true,
+              configSnapshot: true,
+            },
+          });
+
+        for (const duplicate of duplicatedRequirements) {
+          await transaction.documentSubmission.updateMany({
+            where: {
+              companyId: principal.companyId,
+              requestItemId: duplicate.id,
+              status: {
+                in: [
+                  PrismaDocumentItemStatus.SUBMITTED,
+                  PrismaDocumentItemStatus.AUTOMATIC_VALIDATION,
+                  PrismaDocumentItemStatus.PENDING_HUMAN_REVIEW,
+                  PrismaDocumentItemStatus.RESUBMISSION_REQUIRED,
+                  PrismaDocumentItemStatus.REJECTED,
+                  PrismaDocumentItemStatus.EXPIRED,
+                ],
+              },
+            },
+            data: { status: PrismaDocumentItemStatus.CANCELLED },
+          });
+          await transaction.documentRequestItem.update({
+            where: {
+              id_companyId: {
+                id: duplicate.id,
+                companyId: principal.companyId,
+              },
+            },
+            data: {
+              status: PrismaDocumentItemStatus.WAIVED,
+              configSnapshot: {
+                ...jsonRecord(duplicate.configSnapshot),
+                satisfiedBySubmissionId: submission.id,
+                satisfiedByRequestItemId: submission.requestItemId,
+                satisfiedAt: confirmedAt.toISOString(),
+              },
+            },
+          });
+          await transaction.documentStatusHistory.create({
+            data: {
+              companyId: principal.companyId,
+              requestId: duplicate.requestId,
+              requestItemId: duplicate.id,
+              actorUserId: principal.id,
+              action: 'item.satisfied-by-dossier-document',
+              fromStatus: itemStatusFromPrisma[duplicate.status],
+              toStatus: 'waived',
+              reason:
+                'Exigência atendida por documento do mesmo tipo aprovado no dossiê do funcionário.',
+              metadata: {
+                sourceSubmissionId: submission.id,
+                sourceRequestItemId: submission.requestItemId,
+              },
+            },
+          });
+          affectedRequestIds.add(duplicate.requestId);
+        }
+      }
       const review = await transaction.documentReview.create({
         data: {
           companyId: principal.companyId,
@@ -2506,30 +2596,26 @@ export class DocumentManagementUseCase {
           originalObservation: input.originalObservation?.trim() || null,
         },
       });
-      const allItems = await transaction.documentRequestItem.findMany({
-        where: {
-          companyId: principal.companyId,
-          requestId: submission.requestItem.requestId,
-        },
-        select: { status: true, requirement: true },
-      });
-      const requestStatus = requestStatusForItems(allItems);
-      await transaction.documentRequest.update({
-        where: {
-          id_companyId: {
-            id: submission.requestItem.requestId,
-            companyId: principal.companyId,
+      for (const requestId of affectedRequestIds) {
+        const allItems = await transaction.documentRequestItem.findMany({
+          where: { companyId: principal.companyId, requestId },
+          select: { status: true, requirement: true },
+        });
+        const requestStatus = requestStatusForItems(allItems);
+        await transaction.documentRequest.update({
+          where: {
+            id_companyId: { id: requestId, companyId: principal.companyId },
           },
-        },
-        data: {
-          status: requestStatus,
-          version: { increment: 1 },
-          completedAt:
-            requestStatus === PrismaDocumentRequestStatus.APPROVED
-              ? new Date()
-              : null,
-        },
-      });
+          data: {
+            status: requestStatus,
+            version: { increment: 1 },
+            completedAt:
+              requestStatus === PrismaDocumentRequestStatus.APPROVED
+                ? confirmedAt
+                : null,
+          },
+        });
+      }
       await transaction.documentStatusHistory.create({
         data: {
           companyId: principal.companyId,
@@ -2957,7 +3043,7 @@ export class DocumentManagementUseCase {
       { field: 'E-mail', value: subject.email, source: 'Cadastro' },
       { field: 'CPF', value: subject.cpfNormalized ?? '', source: 'Cadastro' },
       {
-        field: 'Cargo ou função',
+        field: 'Classificação do usuário',
         value: subject.jobTitle ?? '',
         source: 'Cadastro',
       },

@@ -59,6 +59,7 @@ const militaryDocumentStatuses = [
   'not-applicable',
   'pending-confirmation',
 ] as const;
+const userClassifications = ['Administrativo', 'Geral', 'Motorista'] as const;
 
 export class CreateUserDto {
   @ApiProperty({ example: 'Carlos Oliveira' })
@@ -115,11 +116,13 @@ export class CreateUserDto {
   @IsIn(['standard', 'document-portal'])
   documentAccessMode: 'standard' | 'document-portal' = 'standard';
 
-  @ApiPropertyOptional({ example: 'Motorista' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(120)
-  jobTitle?: string;
+  @ApiProperty({
+    enum: userClassifications,
+    default: 'Geral',
+    description: 'Classificação usada para calcular as exigências documentais.',
+  })
+  @IsIn(userClassifications)
+  jobTitle: (typeof userClassifications)[number] = 'Geral';
 
   @ApiPropertyOptional({ enum: maritalStatuses, default: 'not-informed' })
   @IsOptional()
@@ -198,11 +201,10 @@ export class UpdateUserDto {
   @IsIn(['standard', 'document-portal'])
   documentAccessMode?: 'standard' | 'document-portal';
 
-  @ApiPropertyOptional({ example: 'Motorista' })
+  @ApiPropertyOptional({ enum: userClassifications })
   @IsOptional()
-  @IsString()
-  @MaxLength(120)
-  jobTitle?: string | null;
+  @IsIn(userClassifications)
+  jobTitle?: (typeof userClassifications)[number];
 
   @ApiPropertyOptional({ enum: maritalStatuses, nullable: true })
   @IsOptional()

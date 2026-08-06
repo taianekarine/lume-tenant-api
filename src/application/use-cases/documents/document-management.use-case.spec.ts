@@ -220,3 +220,132 @@ describe('DocumentManagementUseCase.upload', () => {
     expect(data.files.create[0]).not.toHaveProperty('companyId');
   });
 });
+
+describe('DocumentManagementUseCase.review', () => {
+  it('satisfies an open duplicate requirement after the same document is approved in the dossier', async () => {
+    const createdAt = new Date('2026-08-05T12:00:00.000Z');
+    const requestDetail = {
+      id: 'source-request-id',
+      context: 'ADMISSION',
+      department: 'PERSONNEL_DEPARTMENT',
+      status: 'APPROVED',
+      deadline: null,
+      notes: null,
+      version: 3,
+      completedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+      subject: {
+        id: 'subject-id',
+        name: 'Pessoa Teste',
+        email: 'pessoa@example.com',
+        documentAccessMode: 'STANDARD',
+      },
+      createdBy: { id: 'admin-id', name: 'Admin' },
+      checklist: {
+        id: 'checklist-id',
+        code: 'employee-documents-dynamic',
+        name: 'Documentos do funcionário',
+        version: 1,
+      },
+      items: [],
+    };
+    const updateItem = vi.fn().mockResolvedValue({});
+    const updateRequest = vi.fn().mockResolvedValue({});
+    const transaction = {
+      documentSubmission: {
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      documentRequestItem: {
+        update: updateItem,
+        findMany: vi.fn().mockImplementation(({ where }) => {
+          if (where.documentTypeId) {
+            return [
+              {
+                id: 'duplicate-item-id',
+                requestId: 'duplicate-request-id',
+                status: 'PENDING_UPLOAD',
+                currentVersion: 0,
+                configSnapshot: {},
+              },
+            ];
+          }
+          return [{ status: 'APPROVED', requirement: 'REQUIRED' }];
+        }),
+      },
+      documentReview: {
+        create: vi.fn().mockResolvedValue({ id: 'review-id' }),
+      },
+      documentRequest: { update: updateRequest },
+      documentStatusHistory: { create: vi.fn().mockResolvedValue({}) },
+      tenantAuditLog: { create: vi.fn().mockResolvedValue({}) },
+    };
+    const prisma = {
+      documentReview: { findUnique: vi.fn().mockResolvedValue(null) },
+      documentSubmission: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'submission-id',
+          requestItemId: 'source-item-id',
+          status: 'PENDING_HUMAN_REVIEW',
+          version: 1,
+          files: [{ id: 'file-id' }],
+          requestItem: {
+            id: 'source-item-id',
+            requestId: 'source-request-id',
+            documentTypeId: 'military-document-type-id',
+            configSnapshot: {},
+            request: { subjectUserId: 'subject-id' },
+            documentType: { code: 'military-certificate' },
+          },
+        }),
+      },
+      documentRequest: { findUnique: vi.fn().mockResolvedValue(requestDetail) },
+      $transaction: vi.fn(
+        async (callback: (client: typeof transaction) => unknown) =>
+          callback(transaction),
+      ),
+    };
+    const principal = {
+      id: 'admin-id',
+      companyId: 'company-id',
+      isAdministrator: true,
+      departments: ['management'],
+      permissions: ['documents:manage', 'documents:approve'],
+    } as AuthenticatedPrincipal;
+
+    await new DocumentManagementUseCase(prisma as never).review(
+      principal,
+      'submission-id',
+      { commandId: 'command-id', decision: 'approved' },
+    );
+
+    expect(updateItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id_companyId: {
+            id: 'duplicate-item-id',
+            companyId: 'company-id',
+          },
+        },
+        data: expect.objectContaining({
+          status: 'WAIVED',
+          configSnapshot: expect.objectContaining({
+            satisfiedBySubmissionId: 'submission-id',
+            satisfiedByRequestItemId: 'source-item-id',
+          }),
+        }),
+      }),
+    );
+    expect(updateRequest).toHaveBeenCalledTimes(2);
+    expect(transaction.documentStatusHistory.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          requestId: 'duplicate-request-id',
+          action: 'item.satisfied-by-dossier-document',
+          toStatus: 'waived',
+        }),
+      }),
+    );
+  });
+});
