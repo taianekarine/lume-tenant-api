@@ -1255,16 +1255,6 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           }
         }
         if (
-          input.name === 'return-to-bot' &&
-          conversation.conversationState ===
-            ConversationState.WAITING_FOR_CUSTOMER &&
-          conversation.assignedToUserId
-        ) {
-          throw validationError(
-            'A proposta aprovada em espera só pode ser devolvida diretamente ao bot quando não houver atendente responsável.',
-          );
-        }
-        if (
           [
             'take-over',
             'return-to-bot',
@@ -1509,6 +1499,17 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             'return-to-bot',
             'forward',
           ].includes(input.name) || closing;
+        const nextAssignedToUserId =
+          to.conversationState === 'human-active'
+            ? input.name === 'take-over'
+              ? input.actorUserId
+              : conversation.assignedToUserId
+            : null;
+        if (to.conversationState === 'human-active' && !nextAssignedToUserId) {
+          throw validationError(
+            'Assuma a conversa antes de executar esta ação.',
+          );
+        }
         const update = await transaction.whatsAppConversation.updateMany({
           where: {
             id: input.conversationId,
@@ -1552,12 +1553,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                     : input.name === 'resume-contextual-contact'
                       ? null
                       : conversation.contextualFollowUpAt,
-            assignedToUserId:
-              input.name === 'take-over'
-                ? input.actorUserId
-                : ['return-to-bot', 'forward'].includes(input.name) || closing
-                  ? null
-                  : conversation.assignedToUserId,
+            assignedToUserId: nextAssignedToUserId,
             unreadCount:
               input.name === 'mark-read' ||
               closing ||
@@ -3632,11 +3628,11 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             version: input.expectedVersion,
           },
           data: {
-            conversationState: ConversationState.BOT_ACTIVE,
+            conversationState: ConversationState.HUMAN_ACTIVE,
             flowStep: FlowStep.QUOTE_SEND_PENDING,
             requestStatus: RequestStatus.UNDER_REVIEW,
             resumeState: null,
-            resumeFlowStep: null,
+            resumeFlowStep: FlowStep.COMMERCIAL_FOLLOW_UP_MENU,
             assignedToUserId: actor.id,
             contextualFollowUpAt: null,
             lastMessagePreview: `Nova solicitação de orçamento #${nextSequence}.`,
@@ -3661,6 +3657,40 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           input.companyId,
           conversation.id,
         );
+        if (
+          conversation.conversationState !== ConversationState.HUMAN_ACTIVE ||
+          conversation.assignedToUserId !== actor.id
+        ) {
+          await transaction.whatsAppConversationTransition.create({
+            data: {
+              companyId: input.companyId,
+              conversationId: conversation.id,
+              commandId: correlation(
+                'quote-proposal-create-human-take-over',
+                input.commandId,
+              ),
+              commandFingerprint: fingerprint,
+              name: 'take-over',
+              expectedVersion: conversation.version,
+              resultingVersion: updatedConversation.version,
+              actorType: TransitionActorType.USER,
+              actorUserId: actor.id,
+              fromDepartment: conversation.department,
+              toDepartment: conversation.department,
+              fromState: conversation.conversationState,
+              toState: ConversationState.HUMAN_ACTIVE,
+              fromFlowStep: conversation.flowStep,
+              toFlowStep: FlowStep.QUOTE_SEND_PENDING,
+              fromRequestStatus: conversation.requestStatus,
+              toRequestStatus: RequestStatus.UNDER_REVIEW,
+              metadata: payload({
+                source: 'quote-proposal-create',
+                quoteRequestId: quote.id,
+              }),
+              resultSnapshot: payload(presentConversation(updatedConversation)),
+            },
+          });
+        }
         await transaction.tenantAuditLog.create({
           data: {
             companyId: input.companyId,
@@ -4817,10 +4847,12 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             version: input.expectedVersion,
           },
           data: {
-            conversationState: ConversationState.BOT_ACTIVE,
+            conversationState: ConversationState.HUMAN_ACTIVE,
             flowStep: FlowStep.QUOTE_SEND_PENDING,
             requestStatus: RequestStatus.UNDER_REVIEW,
             assignedToUserId: input.actorUserId,
+            resumeState: null,
+            resumeFlowStep: FlowStep.COMMERCIAL_FOLLOW_UP_MENU,
             lastMessagePreview: 'Orçamento em PDF aguardando envio.',
             version: { increment: 1 },
           },
@@ -4843,6 +4875,41 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           input.companyId,
           conversation.id,
         );
+        if (
+          conversation.conversationState !== ConversationState.HUMAN_ACTIVE ||
+          conversation.assignedToUserId !== input.actorUserId
+        ) {
+          await transaction.whatsAppConversationTransition.create({
+            data: {
+              companyId: input.companyId,
+              conversationId: conversation.id,
+              commandId: correlation(
+                'quote-proposal-human-take-over',
+                input.commandId,
+              ),
+              commandFingerprint: fingerprint,
+              name: 'take-over',
+              expectedVersion: conversation.version,
+              resultingVersion: updatedConversation.version,
+              actorType: TransitionActorType.USER,
+              actorUserId: input.actorUserId,
+              fromDepartment: conversation.department,
+              toDepartment: conversation.department,
+              fromState: conversation.conversationState,
+              toState: ConversationState.HUMAN_ACTIVE,
+              fromFlowStep: conversation.flowStep,
+              toFlowStep: FlowStep.QUOTE_SEND_PENDING,
+              fromRequestStatus: conversation.requestStatus,
+              toRequestStatus: RequestStatus.UNDER_REVIEW,
+              metadata: payload({
+                source: 'quote-proposal-send',
+                quoteRequestId: quote.id,
+                proposalDocumentId: document.id,
+              }),
+              resultSnapshot: payload(presentConversation(updatedConversation)),
+            },
+          });
+        }
         await this.createOrderedOutbox(transaction, {
           companyId: input.companyId,
           topic: 'whatsapp.outbound.requested',
@@ -5371,6 +5438,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         requestStatus: requestToPrisma[next.requestStatus],
         resumeState: null,
         resumeFlowStep: null,
+        assignedToUserId: null,
         contextualFollowUpAt: null,
         lastOutboundAt: completedAt,
         lastMessagePreview:

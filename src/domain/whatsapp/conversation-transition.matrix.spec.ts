@@ -407,8 +407,8 @@ describe('matriz MVP de conversas WhatsApp', () => {
     ]);
   });
 
-  it('devolve proposta aprovada sem atendente ao menu de acompanhamento', () => {
-    expect(
+  it('exige atendimento humano ativo para devolver a conversa ao bot', () => {
+    expect(() =>
       transition(
         {
           ...initial,
@@ -420,18 +420,9 @@ describe('matriz MVP de conversas WhatsApp', () => {
         },
         'return-to-bot',
       ),
-    ).toMatchObject({
-      department: 'commercial',
-      conversationState: 'bot-active',
-      flowStep: 'commercial-follow-up-menu',
-      requestStatus: 'approved',
-      resumeState: null,
-      resumeFlowStep: null,
-    });
-  });
+    ).toThrow('sent-to-human');
 
-  it('devolve proposta aprovada em espera e não amplia outros estados de espera', () => {
-    expect(
+    expect(() =>
       transition(
         {
           ...initial,
@@ -442,23 +433,7 @@ describe('matriz MVP de conversas WhatsApp', () => {
         },
         'return-to-bot',
       ),
-    ).toMatchObject({
-      conversationState: 'bot-active',
-      flowStep: 'commercial-follow-up-menu',
-      requestStatus: 'approved',
-    });
-
-    expect(() =>
-      transition(
-        {
-          ...initial,
-          conversationState: 'waiting-for-customer',
-          flowStep: 'quote-send-pending',
-          requestStatus: 'waiting-for-customer',
-        },
-        'return-to-bot',
-      ),
-    ).toThrow('proposta aprovada');
+    ).toThrow('waiting-for-customer');
   });
 
   it('separa transições internas reservadas das ações humanas', () => {

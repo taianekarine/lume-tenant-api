@@ -2122,8 +2122,8 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         },
       },
       data: {
-        conversationState: 'WAITING_FOR_CUSTOMER',
-        flowStep: 'QUOTE_SEND_PENDING',
+        conversationState: 'HUMAN_ACTIVE',
+        flowStep: 'HUMAN_SERVICE',
         requestStatus: 'APPROVED',
         assignedToUserId: (
           await prisma.user.findFirstOrThrow({
@@ -2135,25 +2135,6 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
           })
         ).id,
       },
-    });
-    await request(app.getHttpServer())
-      .post(
-        `/api/v1/whatsapp/conversations/${followUpConversationId}/actions/return-to-bot`,
-      )
-      .set('authorization', `Bearer ${accessToken}`)
-      .send({
-        commandId: randomUUID(),
-        expectedVersion: forwarded.body.version,
-      })
-      .expect(400);
-    await prisma.whatsAppConversation.update({
-      where: {
-        id_companyId: {
-          id: followUpConversationId,
-          companyId: tenantId,
-        },
-      },
-      data: { assignedToUserId: null },
     });
     const approvedReturn = await request(app.getHttpServer())
       .post(
@@ -3430,7 +3411,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       },
       conversation: {
         id: proposalConversation.id,
-        conversationState: 'bot-active',
+        conversationState: 'human-active',
         assignedTo: { id: actor.id, name: actor.name },
         requestStatus: 'under-review',
         version: 2,
@@ -3463,6 +3444,25 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         where: { id: messageId, companyId: tenantId },
       }),
     ).toBe(1);
+    expect(
+      await prisma.whatsAppConversationTransition.findFirstOrThrow({
+        where: {
+          companyId: tenantId,
+          conversationId: proposalConversation.id,
+          name: 'take-over',
+          actorUserId: actor.id,
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ).toMatchObject({
+      fromState: 'BOT_ACTIVE',
+      toState: 'HUMAN_ACTIVE',
+      metadata: {
+        source: 'quote-proposal-send',
+        quoteRequestId: proposalQuote.id,
+        proposalDocumentId: documentId,
+      },
+    });
 
     const outbound = await prisma.integrationOutbox.findFirstOrThrow({
       where: {
@@ -3556,7 +3556,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         },
       }),
     ).toMatchObject({
-      conversationState: 'BOT_ACTIVE',
+      conversationState: 'HUMAN_ACTIVE',
       requestStatus: 'UNDER_REVIEW',
       assignedToUserId: actor.id,
       version: 2,
@@ -3623,7 +3623,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       conversationState: 'WAITING_FOR_CUSTOMER',
       flowStep: 'QUOTE_SEND_PENDING',
       requestStatus: 'WAITING_FOR_CUSTOMER',
-      assignedToUserId: actor.id,
+      assignedToUserId: null,
       version: 3,
     });
     expect(
@@ -4686,7 +4686,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     const firstSend = await sendDocument(firstDocument.id as string, 1);
     expect(firstSend.body).toMatchObject({
       conversation: {
-        conversationState: 'bot-active',
+        conversationState: 'human-active',
         assignedTo: { id: actor.id, name: actor.name },
         version: 2,
       },
@@ -4727,14 +4727,14 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         },
       }),
     ).resolves.toMatchObject({
-      conversationState: 'BOT_ACTIVE',
+      conversationState: 'HUMAN_ACTIVE',
       requestStatus: 'UNDER_REVIEW',
       assignedToUserId: actor.id,
       version: 2,
     });
     const secondSend = await sendDocument(secondDocument.id as string, 2);
     expect(secondSend.body.conversation).toMatchObject({
-      conversationState: 'bot-active',
+      conversationState: 'human-active',
       assignedTo: { id: actor.id, name: actor.name },
       version: 3,
     });
@@ -4746,7 +4746,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         },
       }),
     ).resolves.toMatchObject({
-      conversationState: 'BOT_ACTIVE',
+      conversationState: 'HUMAN_ACTIVE',
       requestStatus: 'UNDER_REVIEW',
       assignedToUserId: actor.id,
       version: 3,
@@ -4763,7 +4763,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     ).resolves.toMatchObject({
       conversationState: 'WAITING_FOR_CUSTOMER',
       requestStatus: 'WAITING_FOR_CUSTOMER',
-      assignedToUserId: actor.id,
+      assignedToUserId: null,
       version: 5,
     });
     await request(app.getHttpServer())

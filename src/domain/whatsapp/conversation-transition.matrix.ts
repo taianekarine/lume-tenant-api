@@ -326,19 +326,7 @@ export function resolveConversationTransition(
       };
 
     case 'return-to-bot':
-      assertState(
-        current,
-        ['human-active', 'sent-to-human', 'waiting-for-customer'],
-        name,
-      );
-      if (
-        current.conversationState === 'waiting-for-customer' &&
-        current.requestStatus !== 'approved'
-      ) {
-        throw validationError(
-          'Somente uma proposta aprovada sem atendente pode sair da espera diretamente para o bot.',
-        );
-      }
+      assertState(current, ['human-active'], name);
       return {
         ...current,
         conversationState: 'bot-active',
