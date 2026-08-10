@@ -20,30 +20,31 @@ export interface ResolveTransitionInput {
   };
 }
 
-export type TransitionActor = 'user' | 'n8n' | 'webhook' | 'system';
+export type TransitionActor = 'user' | 'webhook' | 'system';
 
 const actorsByTransition: Readonly<
   Record<TransitionName, readonly TransitionActor[]>
 > = {
-  'present-main-menu': ['n8n'],
-  'select-commercial': ['n8n'],
-  'start-department-contact': ['n8n'],
-  'start-quote': ['n8n'],
-  'new-quote-request': ['n8n'],
-  'present-quote-summary': ['n8n'],
-  'correct-quote': ['n8n'],
-  'confirm-quote': ['n8n'],
-  'proposal-delivery-confirmed': ['n8n', 'system'],
+  'present-main-menu': ['system'],
+  'select-commercial': ['system'],
+  'start-department-contact': ['system'],
+  'start-quote': ['system'],
+  'new-quote-request': ['system'],
+  'present-quote-summary': ['system'],
+  'correct-quote': ['system'],
+  'confirm-quote': ['system'],
+  'proposal-delivery-confirmed': ['system'],
   'proposal-response-received': ['webhook', 'system'],
-  'return-to-main-menu': ['n8n'],
+  'return-to-main-menu': ['system'],
   'take-over': ['user'],
   'return-to-bot': ['user'],
-  forward: ['user', 'n8n'],
+  forward: ['user', 'system'],
   'mark-read': ['user'],
   close: ['user'],
   'close-after-rejection': ['user'],
   'resume-awaited-reply': ['webhook', 'system'],
   'resume-contextual-contact': ['webhook', 'system'],
+  'reopen-after-customer-message': ['webhook'],
 };
 
 export function assertTransitionActor(
@@ -384,6 +385,22 @@ export function resolveConversationTransition(
         ...current,
         conversationState: 'closed',
         flowStep: 'closed',
+        resumeState: null,
+        resumeFlowStep: null,
+      };
+
+    case 'reopen-after-customer-message':
+      assertState(current, ['closed'], name);
+      if (current.flowStep !== 'closed') {
+        throw validationError(
+          'A reabertura exige uma conversa previamente encerrada.',
+        );
+      }
+      return {
+        ...current,
+        department: 'commercial',
+        conversationState: 'bot-active',
+        flowStep: 'main-menu',
         resumeState: null,
         resumeFlowStep: null,
       };

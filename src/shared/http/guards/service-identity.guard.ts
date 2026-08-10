@@ -53,7 +53,7 @@ export class ServiceIdentityGuard implements CanActivate {
     request.serviceIdentity = {
       id: identity.id,
       companyId: identity.companyId,
-      type: 'n8n',
+      type: 'internal-automation',
       name: identity.name,
     };
     await this.prisma.serviceIdentity.update({

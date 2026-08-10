@@ -4,7 +4,7 @@ import type { Request } from 'express';
 export interface ServicePrincipal {
   id: string;
   companyId: string;
-  type: 'n8n';
+  type: 'internal-automation';
   name: string;
 }
 

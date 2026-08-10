@@ -5,6 +5,7 @@ export type AppErrorCode =
   | 'CONFLICT'
   | 'CONVERSION_NOT_SUPPORTED'
   | 'EMAIL_DELIVERY_UNAVAILABLE'
+  | 'EXTERNAL_SERVICE_UNAVAILABLE'
   | 'FORBIDDEN'
   | 'INVALID_CREDENTIALS'
   | 'INVALID_PASSWORD_CHANGE_TOKEN'
@@ -35,6 +36,13 @@ export function forbidden(
   message = 'Você não possui permissão para esta operação.',
 ): AppError {
   return new AppError('FORBIDDEN', message);
+}
+
+export function externalServiceUnavailable(
+  message: string,
+  details?: Readonly<Record<string, unknown>>,
+): AppError {
+  return new AppError('EXTERNAL_SERVICE_UNAVAILABLE', message, details);
 }
 
 export function notFound(resource: string): AppError {

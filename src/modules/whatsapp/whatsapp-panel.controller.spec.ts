@@ -36,6 +36,7 @@ function setup() {
     queryUseCase as unknown as QueryWhatsAppUseCase,
     {} as never,
     {} as never,
+    {} as never,
   );
 
   return { controller, listConversations };

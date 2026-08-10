@@ -12,6 +12,7 @@ import type {
   PersistInboundInput,
   QuoteProposalListQuery,
   QuoteRequestPatch,
+  ReconcileAutomationOutboxInput,
   SendQuoteProposalInput,
   TransitionCommand,
   TransitionListQuery,
@@ -72,6 +73,13 @@ export class CompleteOutboxExecutionUseCase {
   constructor(private readonly repository: WhatsAppRepository) {}
   execute(input: CompleteOutboxExecutionInput) {
     return this.repository.completeOutboxExecution(input);
+  }
+}
+
+export class ReconcileAutomationOutboxUseCase {
+  constructor(private readonly repository: WhatsAppRepository) {}
+  execute(input: ReconcileAutomationOutboxInput) {
+    return this.repository.reconcileAutomationOutbox(input);
   }
 }
 

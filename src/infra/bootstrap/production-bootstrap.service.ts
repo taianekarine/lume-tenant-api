@@ -26,7 +26,6 @@ import {
   DepartmentCode,
   DocumentAccessMode,
   Prisma,
-  ServiceIdentityType,
   UserAccountStatus,
   WhatsAppProviderType,
 } from '../database/prisma/generated/client';
@@ -219,7 +218,6 @@ export class ProductionBootstrapService {
 
       let providerId: string | null = null;
       let channelId: string | null = null;
-      let serviceIdentityId: string | null = null;
       if (whatsappEnabled) {
         const provider = await transaction.whatsAppProvider.upsert({
           where: {
@@ -305,27 +303,6 @@ export class ProductionBootstrapService {
           },
         });
         channelId = channel.id;
-
-        const keyId = this.config.getOrThrow<string>('N8N_SERVICE_KEY_ID');
-        const fullServiceToken = `${keyId}.${this.config.getOrThrow<string>(
-          'N8N_SERVICE_SECRET',
-        )}`;
-        const identity = await transaction.serviceIdentity.upsert({
-          where: { keyId },
-          create: {
-            companyId: licensedTenantId,
-            type: ServiceIdentityType.N8N,
-            name: this.config.getOrThrow<string>('N8N_SERVICE_NAME'),
-            keyId,
-            secretHash: hashSecret(fullServiceToken),
-          },
-          update: {
-            name: this.config.getOrThrow<string>('N8N_SERVICE_NAME'),
-            secretHash: hashSecret(fullServiceToken),
-            enabled: true,
-          },
-        });
-        serviceIdentityId = identity.id;
       }
 
       await seedInitialDocumentCatalog(
@@ -345,7 +322,6 @@ export class ProductionBootstrapService {
             whatsappEnabled,
             channelId,
             providerId,
-            serviceIdentityId,
             synchronizedAt: now.toISOString(),
           },
         },
@@ -357,7 +333,6 @@ export class ProductionBootstrapService {
         departmentId: defaultDepartmentId,
         providerId,
         channelId,
-        serviceIdentityId,
         whatsappEnabled,
       };
     });

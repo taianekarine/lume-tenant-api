@@ -3,8 +3,6 @@ import 'dotenv/config';
 import { execFileSync } from 'node:child_process';
 import { createHmac, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,7 +12,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import ExcelJS, { type Worksheet } from 'exceljs';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { UsersRepository } from '../src/application/contracts/repositories';
 import { UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT } from '../src/domain/whatsapp/whatsapp.constants';
@@ -171,7 +169,7 @@ async function createLegacyImportPackage(options: {
   return packagePath;
 }
 
-function configureEnvironment(): string {
+function configureEnvironment(mediaStoragePath: string): string {
   const databaseUrl = process.env.TEST_DATABASE_URL;
   if (!databaseUrl) {
     throw new Error(
@@ -226,6 +224,8 @@ function configureEnvironment(): string {
     EVOLUTION_WEBHOOK_SECRET: webhookSecret,
     WHATSAPP_ALLOWED_MIME_TYPES:
       'image/jpeg,image/png,image/webp,image/gif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/octet-stream,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/wav,video/mp4,video/webm,video/quicktime',
+    WHATSAPP_MEDIA_STORAGE_DRIVER: 'filesystem',
+    WHATSAPP_MEDIA_STORAGE_PATH: mediaStoragePath,
     N8N_SERVICE_KEY_ID: serviceKeyId,
     N8N_SERVICE_SECRET: serviceSecret,
     N8N_DISPATCH_ENABLED: 'false',
@@ -276,6 +276,42 @@ function signedWebhook(
     .send(raw);
 }
 
+async function signedMediaWebhook(
+  app: INestApplication,
+  payload: ReturnType<typeof webhookPayload>,
+) {
+  const originalFetch = globalThis.fetch;
+  const providerContent = Buffer.from(
+    `retained:${payload.data.key.id}`,
+    'utf8',
+  );
+  const fetchSpy = vi
+    .spyOn(globalThis, 'fetch')
+    .mockImplementation(async (input, init) => {
+      const url =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      if (url.includes('/chat/getBase64FromMediaMessage/')) {
+        return new Response(
+          JSON.stringify({ base64: providerContent.toString('base64') }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+      return originalFetch(input, init);
+    });
+  try {
+    return await signedWebhook(app, payload);
+  } finally {
+    fetchSpy.mockRestore();
+  }
+}
+
 function tokenWebhook(
   app: INestApplication,
   payload: ReturnType<typeof webhookPayload>,
@@ -295,9 +331,13 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
   let conversationId: string;
   let quoteRequestId: string;
   let selectedCommandId: string;
+  let mediaStoragePath: string;
 
   beforeAll(async () => {
-    const databaseUrl = configureEnvironment();
+    mediaStoragePath = await mkdtemp(
+      join(tmpdir(), 'lume-whatsapp-media-e2e-'),
+    );
+    const databaseUrl = configureEnvironment(mediaStoragePath);
     execFileSync(
       process.execPath,
       [
@@ -392,6 +432,9 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
 
   afterAll(async () => {
     await app?.close();
+    if (mediaStoragePath) {
+      await rm(mediaStoragePath, { recursive: true, force: true });
+    }
   });
 
   it('aceita corpos JSON normais e rejeita payloads acima de 1 MB', async () => {
@@ -648,7 +691,8 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         url: 'https://evolution.example.test/media/image.jpg',
       },
     } as unknown as typeof unsupportedPayload.data.message;
-    const inbound = await signedWebhook(app, unsupportedPayload).expect(202);
+    const inbound = await signedMediaWebhook(app, unsupportedPayload);
+    expect(inbound.status, JSON.stringify(inbound.body)).toBe(202);
     const unsupportedConversationId = inbound.body.conversationId as string;
     const inboundMessageId = inbound.body.messageId as string;
 
@@ -781,7 +825,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         },
       } as unknown as typeof mediaPayload.data.message;
 
-      const inbound = await signedWebhook(app, mediaPayload);
+      const inbound = await signedMediaWebhook(app, mediaPayload);
       expect(inbound.status, JSON.stringify(inbound.body)).toBe(202);
       const persisted = await prisma.whatsAppMessage.findUniqueOrThrow({
         where: {
@@ -796,6 +840,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       expect(inbound.body).toMatchObject({
         messageId: persisted.id,
         automationAllowed: true,
+        mediaRetention: 'stored',
       });
       expect(persisted.kind.toLowerCase()).toBe(expectedKind);
       expect(persisted.text).toBeNull();
@@ -803,7 +848,33 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         mimeType,
         size: 256,
         fileName,
-        url: `https://evolution.example.test/media/${fileName}`,
+      });
+      expect(persisted.media).not.toHaveProperty('url');
+      expect(persisted).toMatchObject({
+        mediaStorageKey: expect.any(String),
+        mediaMimeType: mimeType,
+        mediaSizeBytes: expect.any(Number),
+        mediaOriginalName: fileName,
+        mediaSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        mediaStoredAt: expect.any(Date),
+      });
+
+      const durableContent = await request(app.getHttpServer())
+        .get(
+          `/api/v1/whatsapp/conversations/${inbound.body.conversationId}/messages/${persisted.id}/content`,
+        )
+        .set('authorization', `Bearer ${accessToken}`)
+        .expect(200);
+      expect(durableContent.headers['content-type']).toContain(mimeType);
+      expect(Buffer.from(durableContent.body as Buffer).toString('utf8')).toBe(
+        `retained:${providerMessageId}`,
+      );
+
+      const duplicate = await signedWebhook(app, mediaPayload).expect(202);
+      expect(duplicate.body).toMatchObject({
+        duplicate: true,
+        mediaRetention: 'already-stored',
+        messageId: persisted.id,
       });
 
       const history = await request(app.getHttpServer())
@@ -822,13 +893,69 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
               mimeType,
               size: 256,
               fileName,
-              url: `https://evolution.example.test/media/${fileName}`,
             }),
           }),
         ]),
       );
     },
   );
+
+  it('reprocessa uma falha transitória de retenção sem duplicar mensagem ou evento', async () => {
+    const providerMessageId = `provider-media-retry-${randomUUID()}`;
+    const mediaPayload = webhookPayload(
+      providerMessageId,
+      '5511988776602',
+      'placeholder',
+    );
+    mediaPayload.data.message = {
+      imageMessage: {
+        mimetype: 'image/jpeg',
+        fileLength: 128,
+        fileName: 'imagem-reprocessada.jpg',
+        url: 'https://evolution.example.test/media/imagem-reprocessada.jpg',
+      },
+    } as unknown as typeof mediaPayload.data.message;
+
+    const unavailableFetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 503 }));
+    try {
+      await signedWebhook(app, mediaPayload)
+        .expect(503)
+        .expect(({ body }) =>
+          expect(body).toMatchObject({
+            code: 'EXTERNAL_SERVICE_UNAVAILABLE',
+          }),
+        );
+    } finally {
+      unavailableFetch.mockRestore();
+    }
+
+    const retried = await signedMediaWebhook(app, mediaPayload);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(202);
+    expect(retried.body).toMatchObject({
+      duplicate: true,
+      mediaRetention: 'stored',
+    });
+
+    const messages = await prisma.whatsAppMessage.findMany({
+      where: { companyId: tenantId, channelId, providerMessageId },
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      mediaStorageKey: expect.any(String),
+      mediaStoredAt: expect.any(Date),
+    });
+    expect(
+      await prisma.integrationInbox.count({
+        where: {
+          companyId: tenantId,
+          source: 'evolution',
+          externalEventId: providerMessageId,
+        },
+      }),
+    ).toBe(1);
+  });
 
   it.each([
     'ephemeralMessage',
@@ -856,7 +983,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       },
     } as unknown as typeof mediaPayload.data.message;
 
-    const inbound = await signedWebhook(app, mediaPayload);
+    const inbound = await signedMediaWebhook(app, mediaPayload);
     expect(inbound.status, JSON.stringify(inbound.body)).toBe(202);
     const persisted = await prisma.whatsAppMessage.findUniqueOrThrow({
       where: {
@@ -875,6 +1002,100 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       fileName: 'imagem-encapsulada.jpg',
     });
   });
+
+  it('reabre a conversa canônica e agenda o menu inicial quando a primeira mensagem após o encerramento é mídia', async () => {
+    const phone = '5511988776601';
+    const first = await signedWebhook(
+      app,
+      webhookPayload(`provider-before-close-${randomUUID()}`, phone, 'Olá'),
+    ).expect(202);
+    const canonicalConversationId = first.body.conversationId as string;
+
+    const closed = await request(app.getHttpServer())
+      .post(
+        `/api/v1/whatsapp/conversations/${canonicalConversationId}/actions/close`,
+      )
+      .set('authorization', `Bearer ${accessToken}`)
+      .send({
+        commandId: randomUUID(),
+        expectedVersion: 1,
+        reason: 'Encerramento de teste',
+      })
+      .expect(201);
+    expect(closed.body).toMatchObject({
+      conversationState: 'closed',
+      flowStep: 'closed',
+    });
+
+    const mediaPayload = webhookPayload(
+      `provider-reopen-media-${randomUUID()}`,
+      phone,
+      'placeholder',
+    );
+    mediaPayload.data.message = {
+      imageMessage: {
+        mimetype: 'image/jpeg',
+        fileLength: 128,
+        fileName: 'primeiro-contato.jpg',
+        url: 'https://evolution.example.test/media/primeiro-contato.jpg',
+      },
+    } as unknown as typeof mediaPayload.data.message;
+
+    const reopened = await signedMediaWebhook(app, mediaPayload);
+    expect(reopened.status, JSON.stringify(reopened.body)).toBe(202);
+    expect(reopened.body).toMatchObject({
+      conversationId: canonicalConversationId,
+      isFirstContact: false,
+      reopenedAfterClosure: true,
+      mediaRetention: 'stored',
+    });
+
+    const conversation = await prisma.whatsAppConversation.findUniqueOrThrow({
+      where: {
+        id_companyId: {
+          id: canonicalConversationId,
+          companyId: tenantId,
+        },
+      },
+    });
+    expect(conversation).toMatchObject({
+      conversationState: 'BOT_ACTIVE',
+      flowStep: 'MAIN_MENU',
+      closedAt: null,
+    });
+    expect(
+      await prisma.whatsAppConversation.count({
+        where: { companyId: tenantId, contactId: conversation.contactId },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.integrationOutbox.findFirstOrThrow({
+        where: {
+          companyId: tenantId,
+          topic: 'whatsapp.inbound.persisted',
+          correlationId: (
+            await prisma.whatsAppMessage.findUniqueOrThrow({
+              where: {
+                id_companyId_conversationId: {
+                  id: reopened.body.messageId as string,
+                  companyId: tenantId,
+                  conversationId: canonicalConversationId,
+                },
+              },
+              select: { correlationId: true },
+            })
+          ).correlationId,
+        },
+      }),
+    ).toMatchObject({
+      payload: expect.objectContaining({
+        reopenedAfterClosure: true,
+        isFirstContact: false,
+        message: expect.objectContaining({ kind: 'image', text: null }),
+      }),
+    });
+  });
+
   it('persiste a coleta departamental, notifica o telefone interno e mantém a mensagem fora do painel', async () => {
     const inbound = await signedWebhook(
       app,
@@ -2220,399 +2441,6 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       executionId: null,
       acceptedAt: null,
     });
-  });
-
-  it('mantém ordem estrita até completion n8n e recupera retry/timeout entre réplicas', async () => {
-    await prisma.integrationOutbox.updateMany({
-      where: { status: { in: ['PENDING', 'PROCESSING'] } },
-      data: {
-        status: 'DELIVERED',
-        deliveredAt: new Date(),
-        lockedAt: null,
-        lockId: null,
-        executionLeaseUntil: null,
-      },
-    });
-    const received: Array<{
-      eventId: string;
-      executionId: string;
-      aggregateSequence: number;
-      authorization: string | undefined;
-      executionHeader: string | undefined;
-    }> = [];
-    const statuses = [500];
-    let completeBeforeAck = false;
-    let raceCommandId = randomUUID();
-    let raceCallbackStatus: number | undefined;
-    const fakeN8n = createServer((incoming, response) => {
-      const chunks: Buffer[] = [];
-      incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
-      incoming.on('end', () => {
-        const envelope = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
-          id: string;
-          executionId: string;
-          aggregateSequence: number;
-          aggregateType: string;
-          aggregateId: string;
-        };
-        received.push({
-          eventId: envelope.id,
-          executionId: envelope.executionId,
-          aggregateSequence: envelope.aggregateSequence,
-          authorization: incoming.headers.authorization,
-          executionHeader: incoming.headers['x-lume-execution-id'] as
-            string | undefined,
-        });
-        void (async () => {
-          if (completeBeforeAck) {
-            const callback = await request(app.getHttpServer())
-              .post(
-                `/api/v1/internal/whatsapp/outbox-events/${envelope.id}/completions`,
-              )
-              .set('authorization', `Bearer ${serviceToken}`)
-              .send({
-                commandId: raceCommandId,
-                executionId: envelope.executionId,
-                aggregateType: envelope.aggregateType,
-                aggregateId: envelope.aggregateId,
-                outcome: 'succeeded',
-              });
-            raceCallbackStatus = callback.status;
-          }
-          response.statusCode = statuses.shift() ?? 202;
-          response.end();
-        })();
-      });
-    });
-    await new Promise<void>((resolve) =>
-      fakeN8n.listen(0, '127.0.0.1', resolve),
-    );
-
-    try {
-      const address = fakeN8n.address() as AddressInfo;
-      const values: Record<string, unknown> = {
-        N8N_DISPATCH_ENABLED: true,
-        N8N_WEBHOOK_URL: `http://127.0.0.1:${address.port}/webhook/lume`,
-        N8N_OUTBOUND_SECRET: 'fake-n8n-secret',
-        N8N_DISPATCH_INTERVAL_MS: 60_000,
-        N8N_REQUEST_TIMEOUT_MS: 2_000,
-        N8N_EXECUTION_TIMEOUT_MS: 60_000,
-        N8N_RETRY_BASE_DELAY_MS: 1,
-        N8N_RETRY_MAX_DELAY_MS: 10,
-        N8N_DISPATCH_BATCH_SIZE: 20,
-      };
-      const dispatcherModule =
-        await import('../src/infra/integrations/n8n/integration-outbox.dispatcher');
-      const buildDispatcher = () =>
-        new dispatcherModule.IntegrationOutboxDispatcher(prisma, {
-          get: <T>(key: string) => values[key] as T | undefined,
-        } as ConfigService);
-      const aggregateId = randomUUID();
-      const [firstEvent, secondEvent] = await prisma.$transaction([
-        prisma.integrationOutbox.create({
-          data: {
-            companyId: tenantId,
-            topic: 'whatsapp.inbound.persisted',
-            aggregateType: 'whatsapp-conversation',
-            aggregateId,
-            aggregateSequence: 1,
-            correlationId: `dispatcher:${randomUUID()}`,
-            payload: { order: 1 },
-          },
-        }),
-        prisma.integrationOutbox.create({
-          data: {
-            companyId: tenantId,
-            topic: 'whatsapp.inbound.persisted',
-            aggregateType: 'whatsapp-conversation',
-            aggregateId,
-            aggregateSequence: 2,
-            correlationId: `dispatcher:${randomUUID()}`,
-            payload: { order: 2 },
-          },
-        }),
-      ]);
-      const completion = (
-        eventId: string,
-        executionId: string,
-        targetAggregateId: string,
-        outcome: 'succeeded' | 'retryable-failure' | 'terminal-failure',
-        commandId = randomUUID(),
-      ) => {
-        const body = {
-          commandId,
-          executionId,
-          aggregateType: 'whatsapp-conversation',
-          aggregateId: targetAggregateId,
-          outcome,
-          ...(outcome === 'succeeded'
-            ? {}
-            : { errorCode: 'E2E_FAILURE', errorMessage: 'falha controlada' }),
-        };
-        return {
-          commandId,
-          body,
-          request: request(app.getHttpServer())
-            .post(
-              `/api/v1/internal/whatsapp/outbox-events/${eventId}/completions`,
-            )
-            .set('authorization', `Bearer ${serviceToken}`)
-            .send(body),
-        };
-      };
-
-      await Promise.all([buildDispatcher().tick(), buildDispatcher().tick()]);
-      expect(received.map((item) => item.eventId)).toEqual([firstEvent.id]);
-      expect(received[0]).toMatchObject({
-        aggregateSequence: 1,
-        authorization: 'Bearer fake-n8n-secret',
-      });
-      expect(received[0].executionHeader).toBe(received[0].executionId);
-      const firstAfterFailure =
-        await prisma.integrationOutbox.findUniqueOrThrow({
-          where: { id: firstEvent.id },
-        });
-      expect(firstAfterFailure).toMatchObject({
-        status: 'PENDING',
-        attempts: 1,
-      });
-      expect(
-        await prisma.integrationOutbox.findUniqueOrThrow({
-          where: { id: secondEvent.id },
-        }),
-      ).toMatchObject({ status: 'PENDING', attempts: 0 });
-
-      await prisma.integrationOutbox.update({
-        where: { id: firstAfterFailure.id },
-        data: { availableAt: new Date(Date.now() - 1_000) },
-      });
-      await buildDispatcher().tick();
-      const acceptedFirst = await prisma.integrationOutbox.findUniqueOrThrow({
-        where: { id: firstEvent.id },
-      });
-      expect(acceptedFirst).toMatchObject({
-        status: 'PROCESSING',
-        attempts: 2,
-      });
-      expect(acceptedFirst.executionLeaseUntil).toBeInstanceOf(Date);
-
-      await buildDispatcher().tick();
-      expect(received.map((item) => item.eventId)).toEqual([
-        firstEvent.id,
-        firstEvent.id,
-      ]);
-      expect(
-        await prisma.integrationOutbox.findUniqueOrThrow({
-          where: { id: secondEvent.id },
-        }),
-      ).toMatchObject({
-        status: 'PENDING',
-        attempts: 0,
-        executionId: null,
-      });
-
-      const firstCompletion = completion(
-        firstEvent.id,
-        acceptedFirst.executionId!,
-        aggregateId,
-        'succeeded',
-      );
-      const completed = await firstCompletion.request.expect(201);
-      expect(completed.body).toMatchObject({
-        eventId: firstEvent.id,
-        status: 'delivered',
-        idempotent: false,
-      });
-      await request(app.getHttpServer())
-        .post(
-          `/api/v1/internal/whatsapp/outbox-events/${firstEvent.id}/completions`,
-        )
-        .set('authorization', `Bearer ${serviceToken}`)
-        .send(firstCompletion.body)
-        .expect(201)
-        .expect(({ body }) => {
-          expect(body).toMatchObject({
-            status: 'delivered',
-            idempotent: true,
-          });
-        });
-      await request(app.getHttpServer())
-        .post(
-          `/api/v1/internal/whatsapp/outbox-events/${firstEvent.id}/completions`,
-        )
-        .set('authorization', `Bearer ${serviceToken}`)
-        .send({
-          ...firstCompletion.body,
-          outcome: 'terminal-failure',
-        })
-        .expect(409);
-
-      await buildDispatcher().tick();
-      const acceptedSecond = await prisma.integrationOutbox.findUniqueOrThrow({
-        where: { id: secondEvent.id },
-      });
-      expect(acceptedSecond.status).toBe('PROCESSING');
-      const retryable = completion(
-        secondEvent.id,
-        acceptedSecond.executionId!,
-        aggregateId,
-        'retryable-failure',
-      );
-      await retryable.request.expect(201).expect(({ body }) => {
-        expect(body).toMatchObject({ status: 'pending' });
-      });
-      await prisma.integrationOutbox.update({
-        where: { id: secondEvent.id },
-        data: { availableAt: new Date(Date.now() - 1_000) },
-      });
-      await buildDispatcher().tick();
-      const secondRetry = await prisma.integrationOutbox.findUniqueOrThrow({
-        where: { id: secondEvent.id },
-      });
-      expect(secondRetry.executionId).not.toBe(acceptedSecond.executionId);
-      await completion(
-        secondEvent.id,
-        secondRetry.executionId!,
-        aggregateId,
-        'succeeded',
-      ).request.expect(201);
-
-      const exhaustedAggregateId = randomUUID();
-      const exhaustedEvent = await prisma.integrationOutbox.create({
-        data: {
-          companyId: tenantId,
-          topic: 'whatsapp.inbound.persisted',
-          aggregateType: 'whatsapp-conversation',
-          aggregateId: exhaustedAggregateId,
-          aggregateSequence: 1,
-          correlationId: `dispatcher:${randomUUID()}`,
-          payload: { retryableFailureExhaustion: true },
-          maxAttempts: 1,
-        },
-      });
-      await buildDispatcher().tick();
-      const acceptedExhausted =
-        await prisma.integrationOutbox.findUniqueOrThrow({
-          where: { id: exhaustedEvent.id },
-        });
-      expect(acceptedExhausted).toMatchObject({
-        status: 'PROCESSING',
-        attempts: 1,
-      });
-
-      await completion(
-        exhaustedEvent.id,
-        acceptedExhausted.executionId!,
-        exhaustedAggregateId,
-        'retryable-failure',
-      )
-        .request.expect(201)
-        .expect(({ body }) => {
-          expect(body).toMatchObject({
-            eventId: exhaustedEvent.id,
-            outcome: 'retryable-failure',
-            status: 'dead',
-            attempts: 1,
-          });
-        });
-
-      const exhaustedAfterCompletion =
-        await prisma.integrationOutbox.findUniqueOrThrow({
-          where: { id: exhaustedEvent.id },
-        });
-      expect(exhaustedAfterCompletion).toMatchObject({
-        status: 'DEAD',
-        attempts: 1,
-        executionId: null,
-        acceptedAt: null,
-        executionLeaseUntil: null,
-        lockId: null,
-        lastError: 'E2E_FAILURE: falha controlada',
-      });
-
-      await buildDispatcher().tick();
-      expect(
-        await prisma.integrationOutbox.findUniqueOrThrow({
-          where: { id: exhaustedEvent.id },
-        }),
-      ).toMatchObject({
-        status: 'DEAD',
-        attempts: 1,
-        lastError: 'E2E_FAILURE: falha controlada',
-      });
-
-      const timeoutAggregateId = randomUUID();
-      const timeoutEvent = await prisma.integrationOutbox.create({
-        data: {
-          companyId: tenantId,
-          topic: 'whatsapp.inbound.persisted',
-          aggregateType: 'whatsapp-conversation',
-          aggregateId: timeoutAggregateId,
-          aggregateSequence: 1,
-          correlationId: `dispatcher:${randomUUID()}`,
-          payload: { timeout: true },
-        },
-      });
-      await buildDispatcher().tick();
-      const acceptedTimeout = await prisma.integrationOutbox.findUniqueOrThrow({
-        where: { id: timeoutEvent.id },
-      });
-      const oldExecutionId = acceptedTimeout.executionId!;
-      await prisma.integrationOutbox.update({
-        where: { id: timeoutEvent.id },
-        data: { executionLeaseUntil: new Date(Date.now() - 1_000) },
-      });
-      await buildDispatcher().tick();
-      const redispatched = await prisma.integrationOutbox.findUniqueOrThrow({
-        where: { id: timeoutEvent.id },
-      });
-      expect(redispatched.executionId).not.toBe(oldExecutionId);
-      expect(
-        received.filter((item) => item.eventId === timeoutEvent.id),
-      ).toHaveLength(2);
-      await completion(
-        timeoutEvent.id,
-        oldExecutionId,
-        timeoutAggregateId,
-        'succeeded',
-      ).request.expect(409);
-      await completion(
-        timeoutEvent.id,
-        redispatched.executionId!,
-        timeoutAggregateId,
-        'succeeded',
-      ).request.expect(201);
-
-      const raceAggregateId = randomUUID();
-      const raceEvent = await prisma.integrationOutbox.create({
-        data: {
-          companyId: tenantId,
-          topic: 'whatsapp.inbound.persisted',
-          aggregateType: 'whatsapp-conversation',
-          aggregateId: raceAggregateId,
-          aggregateSequence: 1,
-          correlationId: `dispatcher:${randomUUID()}`,
-          payload: { callbackBeforeAck: true },
-        },
-      });
-      completeBeforeAck = true;
-      raceCommandId = randomUUID();
-      await buildDispatcher().tick();
-      completeBeforeAck = false;
-      expect(raceCallbackStatus).toBe(201);
-      expect(
-        await prisma.integrationOutbox.findUniqueOrThrow({
-          where: { id: raceEvent.id },
-        }),
-      ).toMatchObject({
-        status: 'DELIVERED',
-        attempts: 1,
-      });
-    } finally {
-      await new Promise<void>((resolve, reject) =>
-        fakeN8n.close((error) => (error ? reject(error) : resolve())),
-      );
-    }
   });
 
   it('cancela e audita o ciclo under-review substituído sem deixá-lo na fila ou notificação', async () => {
@@ -4319,7 +4147,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     });
   });
 
-  it('encerra uma proposta recusada e o próximo inbound abre atendimento novo para o bot', async () => {
+  it('encerra uma proposta recusada e o próximo inbound reabre a conversa canônica pelo menu inicial', async () => {
     const phone = '5511988877700';
     const firstInbound = await signedWebhook(
       app,
@@ -4493,12 +4321,13 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       webhookPayload('close-rejected-next-contact', phone, 'Novo contato'),
     ).expect(202);
     expect(nextInbound.body).toMatchObject({
-      isFirstContact: true,
+      isFirstContact: false,
+      reopenedAfterClosure: true,
       automationAllowed: true,
       canGenerateReply: true,
       canSendReply: true,
     });
-    expect(nextInbound.body.conversationId).not.toBe(rejectedConversationId);
+    expect(nextInbound.body.conversationId).toBe(rejectedConversationId);
 
     const reopened = await prisma.whatsAppConversation.findUniqueOrThrow({
       where: {
@@ -4511,65 +4340,35 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     expect(reopened).toMatchObject({
       conversationState: 'BOT_ACTIVE',
       flowStep: 'MAIN_MENU',
-      requestStatus: 'NOT_STARTED',
+      requestStatus: 'REJECTED',
       closedAt: null,
     });
 
-    const reopenedConversationId = reopened.id;
-    const transitionReopened = (name: string, expectedVersion: number) =>
-      request(app.getHttpServer())
-        .post(
-          `/api/v1/internal/whatsapp/conversations/${reopenedConversationId}/transitions`,
-        )
-        .set('authorization', `Bearer ${serviceToken}`)
-        .send({ commandId: randomUUID(), expectedVersion, name })
-        .expect(201);
-    await transitionReopened('select-commercial', 1);
-    await transitionReopened('start-quote', 2);
-    const reopenedQuote = await prisma.quoteRequest.findFirstOrThrow({
-      where: {
-        companyId: tenantId,
-        conversationId: reopenedConversationId,
-      },
-      orderBy: { sequence: 'desc' },
+    expect(
+      await prisma.whatsAppConversation.count({
+        where: {
+          companyId: tenantId,
+          channelId,
+          contactId: reopened.contactId,
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.whatsAppConversationTransition.findFirst({
+        where: {
+          companyId: tenantId,
+          conversationId: rejectedConversationId,
+          name: 'reopen-after-customer-message',
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ).toMatchObject({
+      actorType: 'WEBHOOK',
+      fromState: 'CLOSED',
+      fromFlowStep: 'CLOSED',
+      toState: 'BOT_ACTIVE',
+      toFlowStep: 'MAIN_MENU',
     });
-    await request(app.getHttpServer())
-      .patch(`/api/v1/internal/whatsapp/quote-requests/${reopenedQuote.id}`)
-      .set('authorization', `Bearer ${serviceToken}`)
-      .send({
-        commandId: randomUUID(),
-        expectedVersion: reopenedQuote.version,
-        contactName: 'Cliente reaberto',
-        serviceType: 'Fretamento eventual',
-        origin: 'Uberlândia',
-        destination: 'Goiânia',
-        departureAt: '2026-11-10T12:00:00.000Z',
-        passengerCount: 20,
-      })
-      .expect(200);
-    await transitionReopened('present-quote-summary', 3);
-    const reopenedConfirmed = await transitionReopened('confirm-quote', 4);
-    expect(reopenedConfirmed.body).toMatchObject({
-      conversationState: 'bot-active',
-      flowStep: 'commercial-follow-up-menu',
-      requestStatus: 'under-review',
-    });
-    await request(app.getHttpServer())
-      .get('/api/v1/whatsapp/quote-proposals?page=1&pageSize=100')
-      .set('authorization', `Bearer ${accessToken}`)
-      .expect(200)
-      .expect(({ body }) =>
-        expect(body.items).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              id: reopenedQuote.id,
-              conversation: expect.objectContaining({
-                id: reopenedConversationId,
-              }),
-            }),
-          ]),
-        ),
-      );
   });
 
   it('mantém múltiplos PDFs no ciclo, atribui o remetente, confirma o lote e abre novo ciclo para o mesmo contato', async () => {

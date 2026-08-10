@@ -1,3 +1,5 @@
+import { isAbsolute, resolve } from 'node:path';
+
 type RawEnvironment = Record<string, unknown>;
 
 function requiredString(
@@ -59,6 +61,23 @@ function optionalString(
     throw new Error(`${key} deve ser uma string.`);
   }
   return value.trim();
+}
+
+function commaSeparatedValues(
+  config: RawEnvironment,
+  key: string,
+  fallback: string,
+): string[] {
+  const values = optionalString(config, key, fallback)
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (values.length === 0 || new Set(values).size !== values.length) {
+    throw new Error(
+      `${key} deve possuir valores únicos separados por vírgula.`,
+    );
+  }
+  return values;
 }
 
 function emailAddress(
@@ -146,24 +165,6 @@ function uuidString(
   return value;
 }
 
-function isPrivateHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  if (
-    normalized === 'localhost' ||
-    normalized === '::1' ||
-    normalized.startsWith('127.') ||
-    normalized.startsWith('10.') ||
-    normalized.startsWith('192.168.') ||
-    normalized.endsWith('.internal') ||
-    normalized.endsWith('.local') ||
-    !normalized.includes('.')
-  ) {
-    return true;
-  }
-  const match = /^172\.(\d{1,2})\./.exec(normalized);
-  return Boolean(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
-}
-
 export function parseCorsOrigins(value: string): string[] {
   return value
     .split(',')
@@ -207,6 +208,40 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     throw new Error('Substitua JWT_ACCESS_SECRET em produção.');
   }
   const whatsappEnabled = booleanValue(config, 'WHATSAPP_ENABLED', false);
+  const whatsappMediaStorageDriver = optionalString(
+    config,
+    'WHATSAPP_MEDIA_STORAGE_DRIVER',
+    'filesystem',
+  ).toLowerCase();
+  if (whatsappMediaStorageDriver !== 'filesystem') {
+    throw new Error(
+      'WHATSAPP_MEDIA_STORAGE_DRIVER aceita somente filesystem nesta versão.',
+    );
+  }
+  const configuredWhatsappMediaStoragePath = optionalString(
+    config,
+    'WHATSAPP_MEDIA_STORAGE_PATH',
+  );
+  if (
+    nodeEnv === 'production' &&
+    whatsappEnabled &&
+    !configuredWhatsappMediaStoragePath
+  ) {
+    throw new Error(
+      'WHATSAPP_MEDIA_STORAGE_PATH é obrigatório em produção quando o WhatsApp está habilitado.',
+    );
+  }
+  if (
+    configuredWhatsappMediaStoragePath &&
+    !isAbsolute(configuredWhatsappMediaStoragePath)
+  ) {
+    throw new Error(
+      'WHATSAPP_MEDIA_STORAGE_PATH deve ser um caminho absoluto.',
+    );
+  }
+  const whatsappMediaStoragePath = resolve(
+    configuredWhatsappMediaStoragePath || './var/whatsapp-media',
+  );
   const documentReviewEnabled = booleanValue(
     config,
     'DOCUMENT_REVIEW_ENABLED',
@@ -257,26 +292,161 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
       'DATA_EXCHANGE_MAX_TENANT_BYTES não pode ultrapassar 2147483648 bytes.',
     );
   }
-  const n8nDispatchEnabled = booleanValue(
+  const apiAutomationEnabled = whatsappEnabled;
+  const whatsappAiProviderOrder = commaSeparatedValues(
     config,
-    'N8N_DISPATCH_ENABLED',
-    whatsappEnabled,
+    'WHATSAPP_AI_PROVIDER_ORDER',
+    'openai,cerebras,gemini,groq',
   );
+  const supportedWhatsappAiProviders = new Set([
+    'openai',
+    'cerebras',
+    'gemini',
+    'groq',
+  ]);
+  if (
+    whatsappAiProviderOrder.some(
+      (provider) => !supportedWhatsappAiProviders.has(provider),
+    )
+  ) {
+    throw new Error(
+      'WHATSAPP_AI_PROVIDER_ORDER aceita apenas openai, cerebras, gemini e groq.',
+    );
+  }
+  const whatsappAiOpenAiApiKey = optionalString(
+    {
+      ...config,
+      WHATSAPP_AI_OPENAI_API_KEY:
+        config.WHATSAPP_AI_OPENAI_API_KEY ?? config.OPENAI_API_KEY ?? '',
+    },
+    'WHATSAPP_AI_OPENAI_API_KEY',
+  );
+  const whatsappAiProviderKeys = {
+    openai: whatsappAiOpenAiApiKey,
+    cerebras: optionalString(config, 'WHATSAPP_AI_CEREBRAS_API_KEY'),
+    gemini: optionalString(config, 'WHATSAPP_AI_GEMINI_API_KEY'),
+    groq: optionalString(config, 'WHATSAPP_AI_GROQ_API_KEY'),
+  };
+  if (
+    apiAutomationEnabled &&
+    !whatsappAiProviderOrder.some(
+      (provider) =>
+        whatsappAiProviderKeys[provider as keyof typeof whatsappAiProviderKeys],
+    )
+  ) {
+    throw new Error(
+      'WHATSAPP_ENABLED=true exige a chave de ao menos um provedor em WHATSAPP_AI_PROVIDER_ORDER.',
+    );
+  }
   const evolutionWebhookSecret = whatsappEnabled
     ? requiredString(config, 'EVOLUTION_WEBHOOK_SECRET', 32)
     : optionalString(config, 'EVOLUTION_WEBHOOK_SECRET');
-  const n8nServiceSecret = whatsappEnabled
-    ? requiredString(config, 'N8N_SERVICE_SECRET', 32)
-    : optionalString(config, 'N8N_SERVICE_SECRET');
-  const n8nOutboundSecret = n8nDispatchEnabled
-    ? requiredString(config, 'N8N_OUTBOUND_SECRET', 32)
-    : optionalString(config, 'N8N_OUTBOUND_SECRET');
-  const allowInsecurePrivateN8n = booleanValue(
+  const evolutionBaseUrl = httpUrl(
     config,
-    'N8N_ALLOW_INSECURE_PRIVATE_URL',
-    false,
+    'EVOLUTION_BASE_URL',
+    whatsappEnabled,
   );
-  const n8nWebhookUrl = httpUrl(config, 'N8N_WEBHOOK_URL', n8nDispatchEnabled);
+  if (
+    nodeEnv === 'production' &&
+    whatsappEnabled &&
+    new URL(evolutionBaseUrl).protocol !== 'https:'
+  ) {
+    throw new Error('EVOLUTION_BASE_URL deve usar HTTPS em produção.');
+  }
+  const evolutionSendTextPayloadMode = optionalString(
+    config,
+    'EVOLUTION_SEND_TEXT_PAYLOAD_MODE',
+    'number-text',
+  );
+  if (
+    !['number-text', 'legacy-text', 'textMessage'].includes(
+      evolutionSendTextPayloadMode,
+    )
+  ) {
+    throw new Error(
+      'EVOLUTION_SEND_TEXT_PAYLOAD_MODE deve ser number-text, legacy-text ou textMessage.',
+    );
+  }
+  const whatsappAiRequestTimeoutMs = positiveInteger(
+    config,
+    'WHATSAPP_AI_REQUEST_TIMEOUT_MS',
+    90_000,
+  );
+  const evolutionSendTextTimeoutMs = positiveInteger(
+    config,
+    'EVOLUTION_SEND_TEXT_TIMEOUT_MS',
+    10_000,
+  );
+  const evolutionSendMediaTimeoutMs = positiveInteger(
+    config,
+    'EVOLUTION_SEND_MEDIA_TIMEOUT_MS',
+    30_000,
+  );
+  const whatsappApiExecutionTimeoutMs = positiveInteger(
+    config,
+    'WHATSAPP_API_EXECUTION_TIMEOUT_MS',
+    480_000,
+  );
+  const whatsappApiDebounceMs = positiveInteger(
+    config,
+    'WHATSAPP_API_DEBOUNCE_MS',
+    2_000,
+  );
+  const whatsappApiDepartmentCollectionMs = positiveInteger(
+    config,
+    'WHATSAPP_API_DEPARTMENT_COLLECTION_MS',
+    120_000,
+  );
+  if (
+    whatsappApiDebounceMs > 300_000 ||
+    whatsappApiDepartmentCollectionMs > 300_000
+  ) {
+    throw new Error(
+      'As janelas WHATSAPP_API_*_MS devem ser de no máximo 300000 milissegundos.',
+    );
+  }
+  const configuredAiProviderCount = whatsappAiProviderOrder.filter(
+    (provider) =>
+      whatsappAiProviderKeys[provider as keyof typeof whatsappAiProviderKeys],
+  ).length;
+  const minimumApiExecutionTimeoutMs =
+    whatsappAiRequestTimeoutMs * configuredAiProviderCount +
+    Math.max(evolutionSendTextTimeoutMs, evolutionSendMediaTimeoutMs) +
+    30_000;
+  if (
+    apiAutomationEnabled &&
+    whatsappApiExecutionTimeoutMs < minimumApiExecutionTimeoutMs
+  ) {
+    throw new Error(
+      `WHATSAPP_API_EXECUTION_TIMEOUT_MS deve ser ao menos ${minimumApiExecutionTimeoutMs} para cobrir os provedores de IA configurados e o envio.`,
+    );
+  }
+  const departmentPhoneKeys = [
+    'MILENIUM_DEPARTMENT_PURCHASES_PHONE',
+    'MILENIUM_DEPARTMENT_CONTROLLING_PHONE',
+    'MILENIUM_DEPARTMENT_DP_PHONE',
+    'MILENIUM_DEPARTMENT_FINANCE_PHONE',
+    'MILENIUM_DEPARTMENT_MANAGEMENT_PHONE',
+    'MILENIUM_DEPARTMENT_MAINTENANCE_PHONE',
+    'MILENIUM_DEPARTMENT_MONITORING_PHONE',
+    'MILENIUM_DEPARTMENT_OPERATIONAL_PHONE',
+  ] as const;
+  const departmentPhones = Object.fromEntries(
+    departmentPhoneKeys.map((key) => [
+      key,
+      optionalString(config, key).replace(/\D/g, ''),
+    ]),
+  ) as Record<(typeof departmentPhoneKeys)[number], string>;
+  if (
+    apiAutomationEnabled &&
+    departmentPhoneKeys.some(
+      (key) => !/^\d{10,15}$/.test(departmentPhones[key]),
+    )
+  ) {
+    throw new Error(
+      'WHATSAPP_ENABLED=true exige telefones válidos nas oito variáveis MILENIUM_DEPARTMENT_*_PHONE.',
+    );
+  }
   const emailDeliveryEnabled = booleanValue(
     config,
     'EMAIL_DELIVERY_ENABLED',
@@ -375,26 +545,21 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
   }
   if (
     nodeEnv === 'production' &&
-    n8nDispatchEnabled &&
-    new URL(n8nWebhookUrl).protocol !== 'https:' &&
-    (!allowInsecurePrivateN8n ||
-      !isPrivateHostname(new URL(n8nWebhookUrl).hostname))
+    whatsappEnabled &&
+    [evolutionWebhookSecret, optionalString(config, 'EVOLUTION_API_KEY')].some(
+      (secret) => secret.toLowerCase().includes('replace-with'),
+    )
   ) {
-    throw new Error(
-      'N8N_WEBHOOK_URL deve usar HTTPS em produção; HTTP exige N8N_ALLOW_INSECURE_PRIVATE_URL=true e host privado.',
-    );
+    throw new Error('Substitua os segredos de WhatsApp em produção.');
   }
   if (
     nodeEnv === 'production' &&
-    whatsappEnabled &&
-    [
-      evolutionWebhookSecret,
-      n8nServiceSecret,
-      n8nOutboundSecret,
-      optionalString(config, 'EVOLUTION_API_KEY'),
-    ].some((secret) => secret.toLowerCase().includes('replace-with'))
+    apiAutomationEnabled &&
+    Object.values(whatsappAiProviderKeys).some((secret) =>
+      secret.toLowerCase().includes('replace-with'),
+    )
   ) {
-    throw new Error('Substitua os segredos de WhatsApp em produção.');
+    throw new Error('Substitua os segredos da IA do WhatsApp em produção.');
   }
 
   return {
@@ -494,6 +659,36 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
       true,
     ),
     WHATSAPP_ENABLED: whatsappEnabled,
+    WHATSAPP_MEDIA_STORAGE_DRIVER: whatsappMediaStorageDriver,
+    WHATSAPP_MEDIA_STORAGE_PATH: whatsappMediaStoragePath,
+    WHATSAPP_API_DISPATCH_INTERVAL_MS: positiveInteger(
+      config,
+      'WHATSAPP_API_DISPATCH_INTERVAL_MS',
+      500,
+    ),
+    WHATSAPP_API_REQUEST_TIMEOUT_MS: positiveInteger(
+      config,
+      'WHATSAPP_API_REQUEST_TIMEOUT_MS',
+      10_000,
+    ),
+    WHATSAPP_API_EXECUTION_TIMEOUT_MS: whatsappApiExecutionTimeoutMs,
+    WHATSAPP_API_DISPATCH_BATCH_SIZE: positiveInteger(
+      config,
+      'WHATSAPP_API_DISPATCH_BATCH_SIZE',
+      20,
+    ),
+    WHATSAPP_API_RETRY_BASE_DELAY_MS: positiveInteger(
+      config,
+      'WHATSAPP_API_RETRY_BASE_DELAY_MS',
+      500,
+    ),
+    WHATSAPP_API_RETRY_MAX_DELAY_MS: positiveInteger(
+      config,
+      'WHATSAPP_API_RETRY_MAX_DELAY_MS',
+      300_000,
+    ),
+    WHATSAPP_API_DEBOUNCE_MS: whatsappApiDebounceMs,
+    WHATSAPP_API_DEPARTMENT_COLLECTION_MS: whatsappApiDepartmentCollectionMs,
     WHATSAPP_CHANNEL_ID: uuidString(
       config,
       'WHATSAPP_CHANNEL_ID',
@@ -548,13 +743,21 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     EVOLUTION_PROVIDER_NAME: whatsappEnabled
       ? requiredString(config, 'EVOLUTION_PROVIDER_NAME', 2)
       : optionalString(config, 'EVOLUTION_PROVIDER_NAME', 'Evolution API'),
-    EVOLUTION_BASE_URL: httpUrl(config, 'EVOLUTION_BASE_URL', whatsappEnabled),
+    EVOLUTION_BASE_URL: evolutionBaseUrl,
     EVOLUTION_INSTANCE_NAME: whatsappEnabled
       ? requiredString(config, 'EVOLUTION_INSTANCE_NAME', 2)
       : optionalString(config, 'EVOLUTION_INSTANCE_NAME'),
     EVOLUTION_API_KEY: whatsappEnabled
       ? requiredString(config, 'EVOLUTION_API_KEY', 16)
       : optionalString(config, 'EVOLUTION_API_KEY'),
+    EVOLUTION_SEND_TEXT_PAYLOAD_MODE: evolutionSendTextPayloadMode,
+    EVOLUTION_SEND_TEXT_TIMEOUT_MS: evolutionSendTextTimeoutMs,
+    EVOLUTION_SEND_MEDIA_TIMEOUT_MS: evolutionSendMediaTimeoutMs,
+    EVOLUTION_MEDIA_CONTENT_TIMEOUT_MS: positiveInteger(
+      config,
+      'EVOLUTION_MEDIA_CONTENT_TIMEOUT_MS',
+      30_000,
+    ),
     EVOLUTION_WEBHOOK_SECRET: evolutionWebhookSecret,
     WEBHOOK_MAX_SKEW_MS: positiveInteger(
       config,
@@ -581,57 +784,76 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
       'WHATSAPP_PREVENT_CLOSE_WITH_APPROVED_QUOTE',
       false,
     ),
+    WHATSAPP_AI_PROVIDER_ORDER: whatsappAiProviderOrder.join(','),
+    WHATSAPP_AI_REQUEST_TIMEOUT_MS: whatsappAiRequestTimeoutMs,
+    WHATSAPP_AI_OPENAI_API_KEY: whatsappAiProviderKeys.openai,
+    WHATSAPP_AI_OPENAI_BASE_URL: httpUrl(
+      {
+        ...config,
+        WHATSAPP_AI_OPENAI_BASE_URL:
+          config.WHATSAPP_AI_OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
+      },
+      'WHATSAPP_AI_OPENAI_BASE_URL',
+      true,
+    ),
+    WHATSAPP_AI_OPENAI_MODEL: optionalString(
+      config,
+      'WHATSAPP_AI_OPENAI_MODEL',
+      'gpt-5.5',
+    ),
+    WHATSAPP_AI_CEREBRAS_API_KEY: whatsappAiProviderKeys.cerebras,
+    WHATSAPP_AI_CEREBRAS_BASE_URL: httpUrl(
+      {
+        ...config,
+        WHATSAPP_AI_CEREBRAS_BASE_URL:
+          config.WHATSAPP_AI_CEREBRAS_BASE_URL ?? 'https://api.cerebras.ai/v1',
+      },
+      'WHATSAPP_AI_CEREBRAS_BASE_URL',
+      true,
+    ),
+    WHATSAPP_AI_CEREBRAS_MODEL: optionalString(
+      config,
+      'WHATSAPP_AI_CEREBRAS_MODEL',
+      'gpt-oss-120b',
+    ),
+    WHATSAPP_AI_GEMINI_API_KEY: whatsappAiProviderKeys.gemini,
+    WHATSAPP_AI_GEMINI_BASE_URL: httpUrl(
+      {
+        ...config,
+        WHATSAPP_AI_GEMINI_BASE_URL:
+          config.WHATSAPP_AI_GEMINI_BASE_URL ??
+          'https://generativelanguage.googleapis.com/v1beta/openai',
+      },
+      'WHATSAPP_AI_GEMINI_BASE_URL',
+      true,
+    ),
+    WHATSAPP_AI_GEMINI_MODEL: optionalString(
+      config,
+      'WHATSAPP_AI_GEMINI_MODEL',
+      'gemini-2.5-flash',
+    ),
+    WHATSAPP_AI_GROQ_API_KEY: whatsappAiProviderKeys.groq,
+    WHATSAPP_AI_GROQ_BASE_URL: httpUrl(
+      {
+        ...config,
+        WHATSAPP_AI_GROQ_BASE_URL:
+          config.WHATSAPP_AI_GROQ_BASE_URL ?? 'https://api.groq.com/openai/v1',
+      },
+      'WHATSAPP_AI_GROQ_BASE_URL',
+      true,
+    ),
+    WHATSAPP_AI_GROQ_MODEL: optionalString(
+      config,
+      'WHATSAPP_AI_GROQ_MODEL',
+      'llama-3.3-70b-versatile',
+    ),
+    ...departmentPhones,
     DATA_EXCHANGE_MAX_FILE_BYTES: dataExchangeMaxFileBytes,
     DATA_EXCHANGE_MAX_TENANT_BYTES: dataExchangeMaxTenantBytes,
     DATA_EXCHANGE_RETENTION_DAYS: positiveInteger(
       config,
       'DATA_EXCHANGE_RETENTION_DAYS',
       30,
-    ),
-    N8N_SERVICE_KEY_ID: uuidString(
-      config,
-      'N8N_SERVICE_KEY_ID',
-      whatsappEnabled,
-    ),
-    N8N_SERVICE_NAME: optionalString(
-      config,
-      'N8N_SERVICE_NAME',
-      'n8n WhatsApp',
-    ),
-    N8N_SERVICE_SECRET: n8nServiceSecret,
-    N8N_DISPATCH_ENABLED: n8nDispatchEnabled,
-    N8N_WEBHOOK_URL: n8nWebhookUrl,
-    N8N_ALLOW_INSECURE_PRIVATE_URL: allowInsecurePrivateN8n,
-    N8N_OUTBOUND_SECRET: n8nOutboundSecret,
-    N8N_DISPATCH_INTERVAL_MS: positiveInteger(
-      config,
-      'N8N_DISPATCH_INTERVAL_MS',
-      500,
-    ),
-    N8N_REQUEST_TIMEOUT_MS: positiveInteger(
-      config,
-      'N8N_REQUEST_TIMEOUT_MS',
-      10_000,
-    ),
-    N8N_EXECUTION_TIMEOUT_MS: positiveInteger(
-      config,
-      'N8N_EXECUTION_TIMEOUT_MS',
-      300_000,
-    ),
-    N8N_RETRY_BASE_DELAY_MS: positiveInteger(
-      config,
-      'N8N_RETRY_BASE_DELAY_MS',
-      500,
-    ),
-    N8N_RETRY_MAX_DELAY_MS: positiveInteger(
-      config,
-      'N8N_RETRY_MAX_DELAY_MS',
-      300_000,
-    ),
-    N8N_DISPATCH_BATCH_SIZE: positiveInteger(
-      config,
-      'N8N_DISPATCH_BATCH_SIZE',
-      20,
     ),
   };
 }

@@ -13,10 +13,13 @@ import {
   type CreateQuoteProposalInput,
   type DecideQuoteProposalInput,
   type EvolutionResultInput,
+  type MarkEvolutionDispatchUnknownInput,
   type MessageListQuery,
   type PersistInboundInput,
+  type PersistInboundResult,
   type QuoteProposalListQuery,
   type QuoteRequestPatch,
+  type ReconcileAutomationOutboxInput,
   type SendQuoteProposalInput,
   type TransitionCommand,
   type TransitionListQuery,
@@ -45,6 +48,7 @@ import {
   dateOnlyFromDateTime,
   presentDateOnly,
 } from '../../../domain/whatsapp/quote-schedule';
+import { deterministicCommandId } from '../../../domain/whatsapp/whatsapp-automation-flow';
 import type {
   ConversationSnapshot,
   ConversationState as CanonicalConversationState,
@@ -53,10 +57,7 @@ import type {
   MessageKind as CanonicalMessageKind,
   RequestStatus as CanonicalRequestStatus,
 } from '../../../domain/whatsapp/whatsapp.constants';
-import {
-  ACTIVE_QUOTE_REQUEST_STATUSES,
-  UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT,
-} from '../../../domain/whatsapp/whatsapp.constants';
+import { UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT } from '../../../domain/whatsapp/whatsapp.constants';
 import { sanitizeLogText } from '../../../shared/utils/sensitive-data';
 import {
   ConversationState,
@@ -71,9 +72,14 @@ import {
   QuoteProposalDocumentStatus,
   RequestStatus,
   TransitionActorType,
+  WhatsAppAutomationExecutionStatus,
+  WhatsAppAutomationProvider,
   type Prisma,
 } from '../prisma/generated/client';
 import { PrismaService } from '../prisma/prisma.service';
+
+const LEGACY_AUTOMATION_RECONCILIATION_REQUIRED =
+  'LEGACY_AUTOMATION_RECONCILIATION_REQUIRED' as const;
 
 const departmentToPrisma: Readonly<Record<Department, DepartmentCode>> = {
   'human-resources': DepartmentCode.HUMAN_RESOURCES,
@@ -180,13 +186,6 @@ const requestFromPrisma: Readonly<
   REJECTED: 'rejected',
   CANCELLED: 'cancelled',
 };
-
-const activeQuoteRequestStatuses: RequestStatus[] =
-  ACTIVE_QUOTE_REQUEST_STATUSES.map((status) => requestToPrisma[status]);
-const alwaysCloseBlockingQuoteRequestStatuses =
-  activeQuoteRequestStatuses.filter(
-    (status) => status !== RequestStatus.APPROVED,
-  );
 
 const COMMERCIAL_PENDING_QUOTES_NOTIFICATION =
   'commercial.pending-quote-proposals' as const;
@@ -387,7 +386,6 @@ const deliveryFromPrisma: Readonly<
 
 const actorToPrisma = {
   user: TransitionActorType.USER,
-  n8n: TransitionActorType.N8N,
   webhook: TransitionActorType.WEBHOOK,
   system: TransitionActorType.SYSTEM,
 } as const;
@@ -745,8 +743,8 @@ function isPrismaUniqueError(error: unknown): boolean {
 export class PrismaWhatsAppRepository extends WhatsAppRepository {
   private readonly dispatchLeaseMs: number;
   private readonly followUpInactivityMs: number;
-  private readonly n8nRetryBaseDelayMs: number;
-  private readonly n8nRetryMaximumDelayMs: number;
+  private readonly automationRetryBaseDelayMs: number;
+  private readonly automationRetryMaximumDelayMs: number;
   private readonly preventCloseWithApprovedQuote: boolean;
 
   constructor(
@@ -758,10 +756,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       config.get<number>('EVOLUTION_DISPATCH_LEASE_MS') ?? 90_000;
     this.followUpInactivityMs =
       config.get<number>('WHATSAPP_FOLLOW_UP_INACTIVITY_MS') ?? 1_800_000;
-    this.n8nRetryBaseDelayMs =
-      config.get<number>('N8N_RETRY_BASE_DELAY_MS') ?? 1_000;
-    this.n8nRetryMaximumDelayMs =
-      config.get<number>('N8N_RETRY_MAX_DELAY_MS') ?? 300_000;
+    this.automationRetryBaseDelayMs =
+      config.get<number>('WHATSAPP_API_RETRY_BASE_DELAY_MS') ?? 1_000;
+    this.automationRetryMaximumDelayMs =
+      config.get<number>('WHATSAPP_API_RETRY_MAX_DELAY_MS') ?? 300_000;
     this.preventCloseWithApprovedQuote =
       config.get<boolean>('WHATSAPP_PREVENT_CLOSE_WITH_APPROVED_QUOTE') ??
       false;
@@ -784,7 +782,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
     });
   }
 
-  async persistInbound(input: PersistInboundInput): Promise<unknown> {
+  async persistInbound(
+    input: PersistInboundInput,
+  ): Promise<PersistInboundResult> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
         const duplicate = await transaction.integrationInbox.findUnique({
@@ -853,12 +853,12 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             companyId: input.channel.companyId,
             channelId: input.channel.id,
             contactId: contact.id,
-            closedAt: null,
           },
           orderBy: { updatedAt: 'desc' },
         });
 
         const isFirstContact = !conversation;
+        let reopenedAfterClosure = false;
         if (!conversation) {
           conversation = await transaction.whatsAppConversation.create({
             data: {
@@ -869,6 +869,78 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
               conversationState: ConversationState.BOT_ACTIVE,
               flowStep: FlowStep.MAIN_MENU,
               requestStatus: RequestStatus.NOT_STARTED,
+            },
+          });
+        } else if (
+          conversation.closedAt !== null ||
+          conversation.conversationState === ConversationState.CLOSED
+        ) {
+          const from = snapshot(conversation);
+          const next = resolveConversationTransition({
+            current: from,
+            name: 'reopen-after-customer-message',
+          });
+          const expectedVersion = conversation.version;
+          const transitionedAt = new Date();
+          conversation = await transaction.whatsAppConversation.update({
+            where: {
+              id_companyId: {
+                id: conversation.id,
+                companyId: input.channel.companyId,
+              },
+            },
+            data: {
+              department: departmentToPrisma[next.department],
+              conversationState: stateToPrisma[next.conversationState],
+              flowStep: flowToPrisma[next.flowStep],
+              requestStatus: requestToPrisma[next.requestStatus],
+              assignedToUserId: null,
+              resumeState: null,
+              resumeFlowStep: null,
+              mainMenuPresentedAt: null,
+              followUpMenuPresentedAt: null,
+              contextualFollowUpAt: null,
+              departmentContactOption: null,
+              closedAt: null,
+              version: { increment: 1 },
+            },
+          });
+          reopenedAfterClosure = true;
+          await transaction.whatsAppConversationTransition.create({
+            data: {
+              companyId: input.channel.companyId,
+              conversationId: conversation.id,
+              commandId: correlation(
+                'reopen-after-customer-message',
+                `${input.channel.id}:${input.providerMessageId}`,
+              ),
+              commandFingerprint: commandFingerprint({
+                conversationId: conversation.id,
+                providerMessageId: input.providerMessageId,
+                name: 'reopen-after-customer-message',
+              }),
+              name: 'reopen-after-customer-message',
+              expectedVersion,
+              resultingVersion: expectedVersion + 1,
+              actorType: TransitionActorType.WEBHOOK,
+              fromDepartment: departmentToPrisma[from.department],
+              toDepartment: departmentToPrisma[next.department],
+              fromState: stateToPrisma[from.conversationState],
+              toState: stateToPrisma[next.conversationState],
+              fromFlowStep: flowToPrisma[from.flowStep],
+              toFlowStep: flowToPrisma[next.flowStep],
+              fromRequestStatus: requestToPrisma[from.requestStatus],
+              toRequestStatus: requestToPrisma[next.requestStatus],
+              metadata: payload({
+                providerMessageId: input.providerMessageId,
+                reason: 'customer-message-after-closure',
+              }),
+              resultSnapshot: payload({
+                id: conversation.id,
+                ...next,
+                version: expectedVersion + 1,
+              }),
+              createdAt: transitionedAt,
             },
           });
         }
@@ -898,6 +970,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           | null = null;
 
         if (
+          input.kind === 'text' &&
           conversation.conversationState ===
             ConversationState.WAITING_FOR_CUSTOMER &&
           conversation.flowStep === FlowStep.QUOTE_SUMMARY_CONFIRMATION &&
@@ -906,6 +979,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         ) {
           automaticResumeName = 'resume-awaited-reply';
         } else if (
+          input.kind === 'text' &&
           conversation.conversationState ===
             ConversationState.WAITING_FOR_CUSTOMER &&
           conversation.flowStep === FlowStep.QUOTE_SEND_PENDING &&
@@ -913,6 +987,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         ) {
           automaticResumeName = 'proposal-response-received';
         } else if (
+          input.kind === 'text' &&
           conversation.contextualFollowUpAt !== null &&
           input.occurredAt >= conversation.contextualFollowUpAt &&
           (conversation.requestStatus === RequestStatus.UNDER_REVIEW ||
@@ -1098,6 +1173,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             canSendReply,
             contextualTransition,
             isFirstContact,
+            reopenedAfterClosure,
           },
         });
 
@@ -1113,6 +1189,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           canGenerateReply,
           canSendReply,
           isFirstContact,
+          reopenedAfterClosure,
           messageId: message.id,
           conversationId: conversation.id,
           version: conversation.version,
@@ -1215,30 +1292,6 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             );
           }
 
-          const activeQuote = await transaction.quoteRequest.findFirst({
-            where: {
-              companyId: input.companyId,
-              conversationId: input.conversationId,
-              status: {
-                in: this.preventCloseWithApprovedQuote
-                  ? activeQuoteRequestStatuses
-                  : alwaysCloseBlockingQuoteRequestStatuses,
-              },
-            },
-            orderBy: [{ sequence: 'desc' }, { id: 'desc' }],
-            select: { id: true, status: true },
-          });
-          if (activeQuote) {
-            throw new AppError(
-              'CONFLICT',
-              'A conversa possui uma solicitação de orçamento em andamento e não pode ser encerrada.',
-              {
-                quoteRequestId: activeQuote.id,
-                requestStatus: requestFromPrisma[activeQuote.status],
-              },
-            );
-          }
-
           const latestQuote = conversation.quoteRequests[0];
           const rejected =
             conversation.requestStatus === RequestStatus.REJECTED ||
@@ -1260,8 +1313,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             'return-to-bot',
             'forward',
             'new-quote-request',
-          ].includes(input.name) ||
-          closing
+          ].includes(input.name)
         ) {
           const queuedProposal =
             await transaction.quoteProposalDocument.findFirst({
@@ -1553,6 +1605,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                     : input.name === 'resume-contextual-contact'
                       ? null
                       : conversation.contextualFollowUpAt,
+            mainMenuPresentedAt: closing
+              ? null
+              : conversation.mainMenuPresentedAt,
             assignedToUserId: nextAssignedToUserId,
             unreadCount:
               input.name === 'mark-read' ||
@@ -1759,14 +1814,14 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         await this.lockCommand(
           transaction,
           companyId,
-          'n8n.quote-patch',
+          'api.quote-patch',
           input.commandId,
         );
         const duplicate = await transaction.integrationInbox.findUnique({
           where: {
             companyId_source_externalEventId: {
               companyId,
-              source: 'n8n.quote-patch',
+              source: 'api.quote-patch',
               externalEventId: input.commandId,
             },
           },
@@ -1805,7 +1860,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         await transaction.integrationInbox.create({
           data: {
             companyId,
-            source: 'n8n.quote-patch',
+            source: 'api.quote-patch',
             externalEventId: input.commandId,
             payloadHash: fingerprint,
             correlationId: correlation('quote-patch', input.commandId),
@@ -1917,7 +1972,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           where: {
             companyId_source_externalEventId: {
               companyId,
-              source: 'n8n.quote-patch',
+              source: 'api.quote-patch',
               externalEventId: input.commandId,
             },
           },
@@ -1935,7 +1990,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       if (isPrismaUniqueError(error)) {
         return this.replayInbox(
           companyId,
-          'n8n.quote-patch',
+          'api.quote-patch',
           input.commandId,
           fingerprint,
           'commandId',
@@ -1952,13 +2007,13 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         await this.lockCommand(
           transaction,
           input.companyId,
-          'n8n.outbound-command',
+          'api.outbound-command',
           input.commandId,
         );
         const inboxKey = {
           companyId_source_externalEventId: {
             companyId: input.companyId,
-            source: 'n8n.outbound-command',
+            source: 'api.outbound-command',
             externalEventId: input.commandId,
           },
         };
@@ -2009,9 +2064,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           throw validationError('A mensagem outbound exige texto ou mídia.');
         }
         if (unsupportedMessageKindReply) {
+          const unsupportedText = input.text?.trim() ?? '';
           if (
             input.kind !== 'text' ||
-            input.text?.trim() !== UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT ||
+            !unsupportedText.endsWith(UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT) ||
             input.media !== undefined ||
             input.recipientPhone !== undefined ||
             !input.inReplyToMessageId
@@ -2073,7 +2129,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           data: {
             companyId: input.companyId,
             channelId: conversation.channelId,
-            source: 'n8n.outbound-command',
+            source: 'api.outbound-command',
             externalEventId: input.commandId,
             payloadHash: fingerprint,
             correlationId: correlation('outbound-inbox', input.commandId),
@@ -2123,7 +2179,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       if (isPrismaUniqueError(error)) {
         const replay = (await this.replayInbox(
           input.companyId,
-          'n8n.outbound-command',
+          'api.outbound-command',
           input.commandId,
           fingerprint,
           'commandId',
@@ -2387,7 +2443,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         const inboxKey = {
           companyId_source_externalEventId: {
             companyId: input.companyId,
-            source: 'n8n.evolution-claim',
+            source: 'api.evolution-claim',
             externalEventId: input.commandId,
           },
         };
@@ -2398,7 +2454,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           await transaction.integrationInbox.create({
             data: {
               companyId: input.companyId,
-              source: 'n8n.evolution-claim',
+              source: 'api.evolution-claim',
               externalEventId: input.commandId,
               payloadHash: fingerprint,
               correlationId: correlation('evolution-claim', input.commandId),
@@ -2496,9 +2552,19 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
               idempotent: true,
             };
           }
-          return {
-            ...(duplicate.resultSnapshot as Record<string, unknown>),
+          const currentState = attempt.dispatchState.toLowerCase();
+          const result = await completeClaim({
             shouldSend: false,
+            state: currentState,
+            messageId: message.id,
+            attemptId: attempt.id,
+            claimedAt: attempt.dispatchClaimedAt?.toISOString() ?? null,
+            ...(attempt.dispatchLeaseUntil
+              ? { leaseUntil: attempt.dispatchLeaseUntil.toISOString() }
+              : {}),
+          });
+          return {
+            ...result,
             alreadyClaimed: true,
             idempotent: true,
           };
@@ -2612,7 +2678,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       if (isPrismaUniqueError(error)) {
         const replay = (await this.replayInbox(
           input.companyId,
-          'n8n.evolution-claim',
+          'api.evolution-claim',
           input.commandId,
           fingerprint,
           'commandId',
@@ -2640,7 +2706,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         const inboxKey = {
           companyId_source_externalEventId: {
             companyId: input.companyId,
-            source: 'n8n.evolution-result',
+            source: 'api.evolution-result',
             externalEventId: input.commandId,
           },
         };
@@ -2779,7 +2845,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           data: {
             companyId: input.companyId,
             channelId: message.channelId,
-            source: 'n8n.evolution-result',
+            source: 'api.evolution-result',
             externalEventId: input.commandId,
             payloadHash: fingerprint,
             correlationId: correlation('evolution-result', input.commandId),
@@ -2901,7 +2967,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       if (isPrismaUniqueError(error)) {
         return this.replayInbox(
           input.companyId,
-          'n8n.evolution-result',
+          'api.evolution-result',
           input.commandId,
           fingerprint,
           'commandId',
@@ -2911,9 +2977,74 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
     }
   }
 
+  async markEvolutionDispatchUnknown(
+    input: MarkEvolutionDispatchUnknownInput,
+  ): Promise<unknown> {
+    const errorMessage = sanitizeLogText(input.errorMessage).slice(0, 500);
+    return this.prisma.$transaction(async (transaction) => {
+      await this.lockCommand(
+        transaction,
+        input.companyId,
+        'evolution-attempt',
+        `${input.messageId}:${input.attemptId}`,
+      );
+      const attempt = await transaction.whatsAppMessageAttempt.findUnique({
+        where: {
+          id_companyId: {
+            id: input.attemptId,
+            companyId: input.companyId,
+          },
+        },
+      });
+      if (!attempt || attempt.messageId !== input.messageId) {
+        throw notFound('Tentativa de envio');
+      }
+      if (attempt.dispatchState === EvolutionDispatchState.UNKNOWN) {
+        return {
+          messageId: input.messageId,
+          attemptId: input.attemptId,
+          state: 'unknown',
+          idempotent: true,
+        };
+      }
+      if (
+        attempt.dispatchState !== EvolutionDispatchState.LEASED ||
+        attempt.dispatchOwnerId !== input.ownerId
+      ) {
+        throw new AppError(
+          'CONFLICT',
+          'A tentativa não pertence à execução que solicitou a reconciliação.',
+        );
+      }
+      await transaction.whatsAppMessageAttempt.update({
+        where: {
+          id_companyId: {
+            id: input.attemptId,
+            companyId: input.companyId,
+          },
+        },
+        data: {
+          dispatchState: EvolutionDispatchState.UNKNOWN,
+          dispatchLeaseUntil: null,
+          errorCode: input.errorCode.slice(0, 80),
+          errorMessage,
+        },
+      });
+      return {
+        messageId: input.messageId,
+        attemptId: input.attemptId,
+        state: 'unknown',
+        requiresReconciliation: true,
+      };
+    });
+  }
+
   async completeOutboxExecution(
     input: CompleteOutboxExecutionInput,
   ): Promise<unknown> {
+    const automationProvider = WhatsAppAutomationProvider.API;
+    const completionSource = 'api.outbox-completion';
+    const completionCorrelationPrefix = 'api-outbox-completion';
     const consumedSourceEventIds = [
       ...new Set(
         (input.consumedSourceEventIds ?? [])
@@ -2932,13 +3063,13 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         await this.lockCommand(
           transaction,
           input.companyId,
-          'n8n.outbox-completion-command',
+          `${completionSource}-command`,
           input.commandId,
         );
         const inboxKey = {
           companyId_source_externalEventId: {
             companyId: input.companyId,
-            source: 'n8n.outbox-completion',
+            source: completionSource,
             externalEventId: input.commandId,
           },
         };
@@ -2952,7 +3083,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             'commandId',
           );
           if (!duplicate.resultSnapshot) {
-            throw new AppError('CONFLICT', 'Completion n8n incompleto.');
+            throw new AppError('CONFLICT', 'Conclusão de outbox incompleta.');
           }
           return {
             ...(duplicate.resultSnapshot as Record<string, unknown>),
@@ -2963,7 +3094,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         await this.lockCommand(
           transaction,
           input.companyId,
-          'n8n.outbox-event',
+          'api.outbox-event',
           input.eventId,
         );
         const event = await transaction.integrationOutbox.findFirst({
@@ -2990,6 +3121,15 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           throw new AppError(
             'CONFLICT',
             'executionId não corresponde à execução atual do evento.',
+          );
+        }
+        if (
+          event.processingProvider !== null &&
+          event.processingProvider !== automationProvider
+        ) {
+          throw new AppError(
+            'CONFLICT',
+            'A execução pertence a outro provedor de automação.',
           );
         }
         if (
@@ -3088,28 +3228,24 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         await transaction.integrationInbox.create({
           data: {
             companyId: input.companyId,
-            source: 'n8n.outbox-completion',
+            source: completionSource,
             externalEventId: input.commandId,
             payloadHash: fingerprint,
             correlationId: correlation(
-              'n8n-outbox-completion',
+              completionCorrelationPrefix,
               input.commandId,
             ),
           },
         });
 
-        const completedBeforeAck = event.lockId !== null;
-        const attempts = Math.min(
-          event.maxAttempts,
-          event.attempts + (completedBeforeAck ? 1 : 0),
-        );
+        const attempts = event.attempts;
         const retryableFailureExhausted =
           input.outcome === 'retryable-failure' &&
           attempts >= event.maxAttempts;
         const now = new Date();
         const retryDelay = Math.min(
-          this.n8nRetryBaseDelayMs * 2 ** Math.max(0, attempts - 1),
-          this.n8nRetryMaximumDelayMs,
+          this.automationRetryBaseDelayMs * 2 ** Math.max(0, attempts - 1),
+          this.automationRetryMaximumDelayMs,
         );
         const failure = sanitizeLogText(
           `${input.errorCode ?? input.outcome}: ${input.errorMessage ?? ''}`,
@@ -3133,6 +3269,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                     status: IntegrationOutboxStatus.PENDING,
                     attempts,
                     availableAt: new Date(now.valueOf() + retryDelay),
+                    processingProvider: null,
                     executionId: null,
                     acceptedAt: null,
                     executionLeaseUntil: null,
@@ -3152,9 +3289,41 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                     lastError: failure,
                   },
         });
-        const consumed =
+        const executionStatus =
+          input.outcome === 'succeeded'
+            ? WhatsAppAutomationExecutionStatus.SUCCEEDED
+            : input.outcome === 'retryable-failure' &&
+                !retryableFailureExhausted
+              ? WhatsAppAutomationExecutionStatus.RETRYABLE_FAILURE
+              : WhatsAppAutomationExecutionStatus.TERMINAL_FAILURE;
+        const auditedExecution =
+          await transaction.whatsAppAutomationExecution.updateMany({
+            where: {
+              companyId: input.companyId,
+              executionId: input.executionId,
+              provider: automationProvider,
+            },
+            data: {
+              status: executionStatus,
+              acceptedAt: event.acceptedAt ?? now,
+              completedAt: now,
+              errorCode:
+                input.outcome === 'succeeded'
+                  ? null
+                  : (input.errorCode ?? input.outcome).slice(0, 80),
+              errorMessage:
+                input.outcome === 'succeeded' ? null : failure.slice(0, 500),
+            },
+          });
+        if (event.processingProvider !== null && auditedExecution.count !== 1) {
+          throw new AppError(
+            'CONFLICT',
+            'A execução não possui o registro de auditoria esperado.',
+          );
+        }
+        const consumedEvents =
           consumedSourceEventIds.length > 0
-            ? await transaction.integrationOutbox.updateMany({
+            ? await transaction.integrationOutbox.findMany({
                 where: {
                   id: { not: event.id },
                   companyId: input.companyId,
@@ -3164,8 +3333,20 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                   correlationId: { in: consumedSourceEventIds },
                   status: IntegrationOutboxStatus.PENDING,
                 },
+                select: { id: true, attempts: true },
+              })
+            : [];
+        const consumed =
+          consumedEvents.length > 0
+            ? await transaction.integrationOutbox.updateMany({
+                where: {
+                  id: { in: consumedEvents.map((item) => item.id) },
+                  companyId: input.companyId,
+                  status: IntegrationOutboxStatus.PENDING,
+                },
                 data: {
                   status: IntegrationOutboxStatus.DELIVERED,
+                  processingProvider: automationProvider,
                   deliveredAt: now,
                   executionId: null,
                   acceptedAt: null,
@@ -3176,6 +3357,31 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
                 },
               })
             : { count: 0 };
+        if (consumed.count !== consumedEvents.length) {
+          throw new AppError(
+            'CONFLICT',
+            'Os eventos incorporados ao lote foram alterados durante a conclusão.',
+          );
+        }
+        if (consumedEvents.length > 0) {
+          await transaction.whatsAppAutomationExecution.createMany({
+            data: consumedEvents.map((consumedEvent) => ({
+              companyId: input.companyId,
+              outboxEventId: consumedEvent.id,
+              executionId: deterministicCommandId(
+                input.executionId,
+                `consumed:${consumedEvent.id}`,
+              ),
+              provider: automationProvider,
+              status: WhatsAppAutomationExecutionStatus.SUCCEEDED,
+              attemptNumber: Math.max(1, consumedEvent.attempts),
+              startedAt: now,
+              acceptedAt: now,
+              completedAt: now,
+            })),
+            skipDuplicates: true,
+          });
+        }
         const persistedResult = {
           eventId: updated.id,
           executionId: input.executionId,
@@ -3200,7 +3406,619 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       if (isPrismaUniqueError(error)) {
         return this.replayInbox(
           input.companyId,
-          'n8n.outbox-completion',
+          completionSource,
+          input.commandId,
+          fingerprint,
+          'commandId',
+        );
+      }
+      throw error;
+    }
+  }
+
+  async reconcileAutomationOutbox(
+    input: ReconcileAutomationOutboxInput,
+  ): Promise<unknown> {
+    const evidence = input.evidence.trim();
+    if (evidence.length < 10 || evidence.length > 500) {
+      throw validationError(
+        'A reconciliação exige uma evidência entre 10 e 500 caracteres.',
+      );
+    }
+    if (
+      input.resolution !== 'confirmed-sent' &&
+      input.resolution !== 'confirmed-not-sent' &&
+      input.resolution !== 'confirmed-processed' &&
+      input.resolution !== 'confirmed-not-processed'
+    ) {
+      throw validationError('A resolução de reconciliação é inválida.');
+    }
+    const providerMessageId = input.providerMessageId?.trim();
+    if (
+      input.resolution !== 'confirmed-sent' &&
+      providerMessageId !== undefined
+    ) {
+      throw validationError(
+        'Somente um envio confirmado pode informar identificador do provedor.',
+      );
+    }
+    if (
+      input.resolution === 'confirmed-sent' &&
+      (!providerMessageId || providerMessageId.length > 160)
+    ) {
+      throw validationError(
+        'O envio confirmado exige um identificador válido do provedor.',
+      );
+    }
+    const normalizedInput = {
+      ...input,
+      evidence,
+      ...(providerMessageId ? { providerMessageId } : {}),
+    };
+    const fingerprint = commandFingerprint(normalizedInput);
+    const inboxSource = 'whatsapp.automation-reconciliation';
+
+    try {
+      return await this.prisma.$transaction(async (transaction) => {
+        await this.lockCommand(
+          transaction,
+          input.companyId,
+          'whatsapp-automation-reconciliation',
+          input.eventId,
+        );
+        const lockedEvent = await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT id
+          FROM integration_outbox
+          WHERE id = CAST(${input.eventId} AS uuid)
+            AND company_id = CAST(${input.companyId} AS uuid)
+          FOR UPDATE
+        `;
+        if (lockedEvent.length !== 1) throw notFound('Evento de outbox');
+
+        const inboxKey = {
+          companyId_source_externalEventId: {
+            companyId: input.companyId,
+            source: inboxSource,
+            externalEventId: input.commandId,
+          },
+        };
+        const duplicate = await transaction.integrationInbox.findUnique({
+          where: inboxKey,
+        });
+        if (duplicate) {
+          assertSameFingerprint(
+            duplicate.payloadHash,
+            fingerprint,
+            'commandId',
+          );
+          if (!duplicate.resultSnapshot) {
+            throw new AppError('CONFLICT', 'Reconciliação incompleta.');
+          }
+          return {
+            ...(duplicate.resultSnapshot as Record<string, unknown>),
+            idempotent: true,
+          };
+        }
+
+        const event = await transaction.integrationOutbox.findUnique({
+          where: {
+            id_companyId: {
+              id: input.eventId,
+              companyId: input.companyId,
+            },
+          },
+        });
+        if (!event) throw notFound('Evento de outbox');
+        if (event.status !== IntegrationOutboxStatus.DEAD) {
+          throw new AppError(
+            'CONFLICT',
+            'Somente um evento isolado pode ser reconciliado.',
+          );
+        }
+
+        const eventPayload =
+          event.payload &&
+          typeof event.payload === 'object' &&
+          !Array.isArray(event.payload)
+            ? (event.payload as Record<string, unknown>)
+            : {};
+        const inboundTopic =
+          event.topic === 'whatsapp.inbound.persisted' ||
+          event.topic === 'whatsapp.inbound.human-notification';
+        const inboundResolution =
+          input.resolution === 'confirmed-processed' ||
+          input.resolution === 'confirmed-not-processed';
+        if (inboundTopic) {
+          if (
+            !inboundResolution ||
+            event.lastError !== LEGACY_AUTOMATION_RECONCILIATION_REQUIRED ||
+            event.processingProvider === null
+          ) {
+            throw new AppError(
+              'CONFLICT',
+              'O evento inbound não foi isolado por uma troca de provedor.',
+            );
+          }
+          const channelId =
+            typeof eventPayload.channelId === 'string'
+              ? eventPayload.channelId
+              : undefined;
+          await transaction.integrationInbox.create({
+            data: {
+              companyId: input.companyId,
+              ...(channelId ? { channelId } : {}),
+              source: inboxSource,
+              externalEventId: input.commandId,
+              payloadHash: fingerprint,
+              correlationId: correlation(
+                'whatsapp-automation-reconciliation',
+                input.commandId,
+              ),
+            },
+          });
+
+          const now = new Date();
+          const confirmedProcessed = input.resolution === 'confirmed-processed';
+          const previousProvider =
+            event.processingProvider === WhatsAppAutomationProvider.API
+              ? 'api'
+              : 'legacy';
+          await transaction.integrationOutbox.update({
+            where: {
+              id_companyId: { id: event.id, companyId: input.companyId },
+            },
+            data: confirmedProcessed
+              ? {
+                  status: IntegrationOutboxStatus.DELIVERED,
+                  deliveredAt: now,
+                  executionId: null,
+                  acceptedAt: null,
+                  executionLeaseUntil: null,
+                  lockedAt: null,
+                  lockId: null,
+                  lastError: null,
+                }
+              : {
+                  status: IntegrationOutboxStatus.PENDING,
+                  attempts: 0,
+                  availableAt: now,
+                  processingProvider: null,
+                  executionId: null,
+                  acceptedAt: null,
+                  executionLeaseUntil: null,
+                  deliveredAt: null,
+                  lockedAt: null,
+                  lockId: null,
+                  lastError: null,
+                },
+          });
+          const persistedResult = {
+            eventId: event.id,
+            topic: event.topic,
+            resolution: input.resolution,
+            status: confirmedProcessed ? 'delivered' : 'pending',
+            previousProvider,
+            evidence,
+            reconciledBy: {
+              id: input.serviceIdentityId,
+              name: input.serviceIdentityName,
+            },
+            reconciledAt: now.toISOString(),
+          };
+          await transaction.integrationInbox.update({
+            where: inboxKey,
+            data: {
+              processedAt: now,
+              resultSnapshot: payload(persistedResult),
+            },
+          });
+          return { ...persistedResult, idempotent: false };
+        }
+        if (
+          event.topic !== 'whatsapp.outbound.requested' ||
+          inboundResolution
+        ) {
+          throw new AppError(
+            'CONFLICT',
+            'A resolução não corresponde ao tipo do evento isolado.',
+          );
+        }
+        const messageId =
+          typeof eventPayload.messageId === 'string'
+            ? eventPayload.messageId
+            : null;
+        const attemptId =
+          typeof eventPayload.attemptId === 'string'
+            ? eventPayload.attemptId
+            : null;
+        if (!messageId || !attemptId) {
+          throw new AppError(
+            'CONFLICT',
+            'O evento isolado não identifica a mensagem e a tentativa.',
+          );
+        }
+        await this.lockCommand(
+          transaction,
+          input.companyId,
+          'evolution-attempt',
+          `${messageId}:${attemptId}`,
+        );
+        await this.lockCommand(
+          transaction,
+          input.companyId,
+          'evolution-message-attempts',
+          messageId,
+        );
+
+        const [message, attempt, attemptNumbers] = await Promise.all([
+          transaction.whatsAppMessage.findUnique({
+            where: {
+              id_companyId: { id: messageId, companyId: input.companyId },
+            },
+          }),
+          transaction.whatsAppMessageAttempt.findUnique({
+            where: {
+              id_companyId: { id: attemptId, companyId: input.companyId },
+            },
+          }),
+          transaction.whatsAppMessageAttempt.aggregate({
+            where: { companyId: input.companyId, messageId },
+            _max: { attemptNumber: true },
+          }),
+        ]);
+        if (!message || message.direction !== MessageDirection.OUTBOUND) {
+          throw new AppError(
+            'CONFLICT',
+            'O evento isolado não aponta para uma mensagem de saída válida.',
+          );
+        }
+        if (!attempt || attempt.messageId !== message.id) {
+          throw new AppError(
+            'CONFLICT',
+            'O evento isolado não aponta para uma tentativa válida.',
+          );
+        }
+
+        const now = new Date();
+        const expiredLease =
+          attempt.dispatchState === EvolutionDispatchState.LEASED &&
+          attempt.dispatchLeaseUntil !== null &&
+          attempt.dispatchLeaseUntil <= now;
+        const confirmedLocalConfigurationFailure =
+          input.resolution === 'confirmed-not-sent' &&
+          attempt.status === MessageAttemptStatus.FAILED &&
+          attempt.dispatchState === EvolutionDispatchState.FAILED &&
+          attempt.errorCode === 'EVOLUTION_CONFIGURATION_INVALID' &&
+          message.deliveryStatus === DeliveryStatus.FAILED &&
+          attempt.providerMessageId === null &&
+          message.providerMessageId === null;
+        const confirmedSentAlreadyPersisted =
+          input.resolution === 'confirmed-sent' &&
+          attempt.status === MessageAttemptStatus.SUCCEEDED &&
+          attempt.dispatchState === EvolutionDispatchState.SUCCEEDED &&
+          (
+            [
+              DeliveryStatus.SENT,
+              DeliveryStatus.DELIVERED,
+              DeliveryStatus.READ,
+            ] as DeliveryStatus[]
+          ).includes(message.deliveryStatus) &&
+          attempt.providerMessageId === providerMessageId &&
+          message.providerMessageId === providerMessageId;
+        const awaitingReconciliation =
+          attempt.dispatchState === EvolutionDispatchState.UNKNOWN ||
+          expiredLease ||
+          confirmedLocalConfigurationFailure ||
+          confirmedSentAlreadyPersisted;
+        if (!awaitingReconciliation) {
+          throw new AppError(
+            'CONFLICT',
+            'A tentativa não está aguardando reconciliação.',
+          );
+        }
+        const compatibleConfirmedSentState =
+          (attempt.status === MessageAttemptStatus.PENDING &&
+            (
+              [
+                DeliveryStatus.PENDING,
+                DeliveryStatus.SENT,
+                DeliveryStatus.DELIVERED,
+                DeliveryStatus.READ,
+              ] as DeliveryStatus[]
+            ).includes(message.deliveryStatus)) ||
+          confirmedSentAlreadyPersisted;
+        const compatibleConfirmedNotSentState =
+          (attempt.status === MessageAttemptStatus.PENDING &&
+            message.deliveryStatus === DeliveryStatus.PENDING) ||
+          confirmedLocalConfigurationFailure;
+        if (
+          (input.resolution === 'confirmed-sent' &&
+            !compatibleConfirmedSentState) ||
+          (input.resolution === 'confirmed-not-sent' &&
+            !compatibleConfirmedNotSentState)
+        ) {
+          throw new AppError(
+            'CONFLICT',
+            'A mensagem ou a tentativa já possui um resultado incompatível.',
+          );
+        }
+        if (
+          input.resolution === 'confirmed-not-sent' &&
+          (attempt.providerMessageId !== null ||
+            message.providerMessageId !== null)
+        ) {
+          throw new AppError(
+            'CONFLICT',
+            'A ausência de envio não pode ser confirmada após um resultado positivo do provedor.',
+          );
+        }
+        if (
+          input.resolution === 'confirmed-sent' &&
+          ((attempt.providerMessageId !== null &&
+            attempt.providerMessageId !== providerMessageId) ||
+            (message.providerMessageId !== null &&
+              message.providerMessageId !== providerMessageId))
+        ) {
+          throw new AppError(
+            'CONFLICT',
+            'O identificador confirmado diverge do resultado já persistido.',
+          );
+        }
+
+        await transaction.integrationInbox.create({
+          data: {
+            companyId: input.companyId,
+            channelId: message.channelId,
+            source: inboxSource,
+            externalEventId: input.commandId,
+            payloadHash: fingerprint,
+            correlationId: correlation(
+              'whatsapp-automation-reconciliation',
+              input.commandId,
+            ),
+          },
+        });
+
+        let nextAttemptId: string | null = null;
+        let dispatchGeneration: string | null = null;
+        if (input.resolution === 'confirmed-sent') {
+          const finalDeliveryStatus = (
+            [
+              DeliveryStatus.SENT,
+              DeliveryStatus.DELIVERED,
+              DeliveryStatus.READ,
+            ] as DeliveryStatus[]
+          ).includes(message.deliveryStatus)
+            ? message.deliveryStatus
+            : DeliveryStatus.SENT;
+          const proposalDocument =
+            message.automationPurpose === 'quote-proposal'
+              ? await transaction.quoteProposalDocument.findUnique({
+                  where: {
+                    messageId_companyId: {
+                      messageId: message.id,
+                      companyId: input.companyId,
+                    },
+                  },
+                })
+              : null;
+          if (
+            proposalDocument &&
+            proposalDocument.status !== QuoteProposalDocumentStatus.QUEUED &&
+            proposalDocument.status !== QuoteProposalDocumentStatus.SENT
+          ) {
+            throw new AppError(
+              'CONFLICT',
+              'A proposta não está mais aguardando confirmação de envio.',
+            );
+          }
+          if (
+            proposalDocument?.providerMessageId &&
+            proposalDocument.providerMessageId !== providerMessageId
+          ) {
+            throw new AppError(
+              'CONFLICT',
+              'O identificador confirmado diverge da proposta persistida.',
+            );
+          }
+
+          if (!confirmedSentAlreadyPersisted) {
+            await transaction.whatsAppMessageAttempt.update({
+              where: {
+                id_companyId: { id: attempt.id, companyId: input.companyId },
+              },
+              data: {
+                status: MessageAttemptStatus.SUCCEEDED,
+                providerMessageId,
+                errorCode: null,
+                errorMessage: null,
+                completedAt: now,
+                dispatchState: EvolutionDispatchState.SUCCEEDED,
+                dispatchLeaseUntil: null,
+              },
+            });
+            await transaction.whatsAppMessage.update({
+              where: {
+                id_companyId: { id: message.id, companyId: input.companyId },
+              },
+              data: {
+                deliveryStatus: finalDeliveryStatus,
+                providerMessageId,
+              },
+            });
+          }
+          if (proposalDocument?.status === QuoteProposalDocumentStatus.QUEUED) {
+            await this.lockCommand(
+              transaction,
+              input.companyId,
+              'quote-proposal-delivery',
+              proposalDocument.id,
+            );
+            const documentUpdated =
+              await transaction.quoteProposalDocument.updateMany({
+                where: {
+                  id: proposalDocument.id,
+                  companyId: input.companyId,
+                  messageId: message.id,
+                  status: QuoteProposalDocumentStatus.QUEUED,
+                },
+                data: {
+                  status: QuoteProposalDocumentStatus.SENT,
+                  providerMessageId,
+                  sentAt: now,
+                },
+              });
+            if (documentUpdated.count !== 1) {
+              throw new AppError(
+                'CONFLICT',
+                'A proposta foi alterada durante a reconciliação.',
+              );
+            }
+            await this.completeQuoteProposalBatchIfReady(transaction, {
+              companyId: input.companyId,
+              conversationId: message.conversationId,
+              quoteRequestId: proposalDocument.quoteRequestId,
+              triggeringDocumentId: proposalDocument.id,
+              deliveryBatchId: proposalDocument.deliveryBatchId,
+            });
+          } else if (
+            !confirmedSentAlreadyPersisted &&
+            !proposalDocument &&
+            message.automationPurpose !== 'department-notification'
+          ) {
+            await transaction.whatsAppConversation.update({
+              where: {
+                id_companyId: {
+                  id: message.conversationId,
+                  companyId: input.companyId,
+                },
+              },
+              data: {
+                lastOutboundAt: now,
+                lastMessagePreview:
+                  message.text?.slice(0, 240) ??
+                  `[${kindFromPrisma[message.kind]}]`,
+                ...(message.automationPurpose === 'main-menu'
+                  ? { mainMenuPresentedAt: now }
+                  : {}),
+                ...(message.automationPurpose === 'commercial-follow-up-menu'
+                  ? { followUpMenuPresentedAt: now }
+                  : {}),
+              },
+            });
+          }
+          await transaction.integrationOutbox.update({
+            where: {
+              id_companyId: { id: event.id, companyId: input.companyId },
+            },
+            data: {
+              status: IntegrationOutboxStatus.DELIVERED,
+              deliveredAt: now,
+              executionLeaseUntil: null,
+              lockedAt: null,
+              lockId: null,
+              lastError: null,
+            },
+          });
+        } else {
+          await transaction.whatsAppMessageAttempt.update({
+            where: {
+              id_companyId: { id: attempt.id, companyId: input.companyId },
+            },
+            data: {
+              status: MessageAttemptStatus.FAILED,
+              errorCode: 'CONFIRMED_NOT_SENT',
+              errorMessage: sanitizeLogText(evidence),
+              completedAt: now,
+              dispatchState: EvolutionDispatchState.FAILED,
+              dispatchLeaseUntil: null,
+            },
+          });
+          if (message.deliveryStatus === DeliveryStatus.FAILED) {
+            await transaction.whatsAppMessage.update({
+              where: {
+                id_companyId: {
+                  id: message.id,
+                  companyId: input.companyId,
+                },
+              },
+              data: { deliveryStatus: DeliveryStatus.PENDING },
+            });
+          }
+          const nextAttempt = await transaction.whatsAppMessageAttempt.create({
+            data: {
+              companyId: input.companyId,
+              messageId: message.id,
+              attemptNumber:
+                Math.max(
+                  attempt.attemptNumber,
+                  attemptNumbers._max.attemptNumber ?? 0,
+                ) + 1,
+              status: MessageAttemptStatus.PENDING,
+              dispatchState: EvolutionDispatchState.READY,
+            },
+          });
+          nextAttemptId = nextAttempt.id;
+          dispatchGeneration = randomUUID();
+          await transaction.integrationOutbox.update({
+            where: {
+              id_companyId: { id: event.id, companyId: input.companyId },
+            },
+            data: {
+              payload: payload({
+                ...eventPayload,
+                eventId: dispatchGeneration,
+                commandId: dispatchGeneration,
+                attemptId: nextAttempt.id,
+                dispatchGeneration,
+              }),
+              status: IntegrationOutboxStatus.PENDING,
+              attempts: 0,
+              availableAt: now,
+              processingProvider: null,
+              executionId: null,
+              acceptedAt: null,
+              executionLeaseUntil: null,
+              deliveredAt: null,
+              lockedAt: null,
+              lockId: null,
+              lastError: null,
+            },
+          });
+        }
+
+        const persistedResult = {
+          eventId: event.id,
+          messageId: message.id,
+          previousAttemptId: attempt.id,
+          ...(nextAttemptId ? { nextAttemptId } : {}),
+          ...(dispatchGeneration ? { dispatchGeneration } : {}),
+          resolution: input.resolution,
+          status:
+            input.resolution === 'confirmed-sent' ? 'delivered' : 'pending',
+          providerMessageId:
+            input.resolution === 'confirmed-sent' ? providerMessageId : null,
+          evidence,
+          reconciledBy: {
+            id: input.serviceIdentityId,
+            name: input.serviceIdentityName,
+          },
+          reconciledAt: now.toISOString(),
+        };
+        await transaction.integrationInbox.update({
+          where: inboxKey,
+          data: {
+            processedAt: now,
+            resultSnapshot: payload(persistedResult),
+          },
+        });
+        return { ...persistedResult, idempotent: false };
+      });
+    } catch (error) {
+      if (isPrismaUniqueError(error)) {
+        return this.replayInbox(
+          input.companyId,
+          inboxSource,
           input.commandId,
           fingerprint,
           'commandId',
@@ -4773,7 +5591,6 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           mimetype: document.mimeType,
           sizeBytes: document.sizeBytes,
           sha256: document.sha256,
-          downloadPath: `/internal/whatsapp/proposal-documents/${document.id}/content`,
           caption,
         };
         const message = await transaction.whatsAppMessage.create({
@@ -5167,6 +5984,26 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             take: 50,
           })
         : [anchor];
+    const shouldRecoverPendingQuestion =
+      anchor.kind !== MessageKind.TEXT &&
+      (conversation.flowStep === FlowStep.QUOTE_DATA_COLLECTION ||
+        conversation.flowStep === FlowStep.QUOTE_SUMMARY_CONFIRMATION);
+    const pendingQuestion = shouldRecoverPendingQuestion
+      ? await this.prisma.whatsAppMessage.findFirst({
+          where: {
+            companyId,
+            conversationId,
+            direction: MessageDirection.OUTBOUND,
+            kind: MessageKind.TEXT,
+            deliveryStatus: { not: DeliveryStatus.FAILED },
+            automationPurpose: { not: 'unsupported-message-kind' },
+            createdAt: { lt: anchor.createdAt },
+            text: { not: null },
+          },
+          select: { text: true },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        })
+      : null;
 
     return {
       conversation: presentConversationDetail(conversation),
@@ -5174,6 +6011,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         sourceEventId,
         windowStartedAt: anchor.createdAt.toISOString(),
         windowEndsAt: windowEndsAt.toISOString(),
+        pendingQuestion: pendingQuestion?.text?.trim() || null,
         messages: messages.map((message) => ({
           messageId: message.id,
           sourceEventId: message.correlationId,
@@ -5473,7 +6311,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         name: 'proposal-delivery-confirmed',
         expectedVersion: conversation.version,
         resultingVersion: nextVersion,
-        actorType: TransitionActorType.N8N,
+        actorType: TransitionActorType.SYSTEM,
         fromDepartment: conversation.department,
         toDepartment: departmentToPrisma[next.department],
         fromState: conversation.conversationState,

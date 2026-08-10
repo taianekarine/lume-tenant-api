@@ -16,9 +16,10 @@ instalação, seu próprio PostgreSQL e seus próprios backups.
 - outbox/inbox para sincronização tolerante a falhas;
 - validação offline da licença;
 - contrato de comunicação idempotente com o `lume-edge-agent`.
-- backend oficial de WhatsApp com Evolution API e n8n;
+- backend oficial de WhatsApp com Evolution, automação e IA na própria API;
 - conversas, mensagens, solicitações e transições isoladas por tenant;
 - inbox/outbox confiáveis, concorrência otimista e retenção configurável.
+- cópia durável de mídias recebidas em volume próprio, isolada por tenant.
 
 O projeto não possui master global, operadores da fornecedora ou cadastro de
 outros tenants. Uma instalação aceita exatamente um tenant.
@@ -52,10 +53,13 @@ bootstrap. Remova `TENANT_ADMIN_PASSWORD` do ambiente depois da criação.
 A API usa `http://localhost:3333/api/v1`. O Swagger local fica em
 `http://localhost:3333/docs`.
 
-Para habilitar WhatsApp, preencha o bloco `WHATSAPP_*`, `EVOLUTION_*` e `N8N_*`
+Para habilitar WhatsApp, preencha os blocos `WHATSAPP_*`, `EVOLUTION_*` e as
+chaves `WHATSAPP_AI_*`
 do ambiente antes de executar o bootstrap idempotente. O contrato completo,
 matriz de estados, assinaturas e endpoints está em
 [`docs/whatsapp-mvp.md`](docs/whatsapp-mvp.md).
+A consolidação, o proxy seguro de mídia e o checklist operacional estão em
+[`docs/whatsapp-api.md`](docs/whatsapp-api.md).
 
 ## Autonomia
 
@@ -203,4 +207,6 @@ Consulte [architecture.md](docs/architecture.md),
 [whatsapp-mvp.md](docs/whatsapp-mvp.md). O contrato extensível de arquivos está
 em [data-exchange.md](docs/data-exchange.md). A carga silenciosa de atendimentos
 WhatsApp atuais por CLI está em
-[whatsapp-conversation-import.md](docs/whatsapp-conversation-import.md).
+[whatsapp-conversation-import.md](docs/whatsapp-conversation-import.md). O
+runbook da migração controlada da automação está em
+[whatsapp-automation-migration.md](docs/whatsapp-automation-migration.md).

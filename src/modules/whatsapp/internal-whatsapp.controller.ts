@@ -21,6 +21,7 @@ import {
   PatchQuoteRequestUseCase,
   QueryWhatsAppUseCase,
   QuoteProposalUseCase,
+  ReconcileAutomationOutboxUseCase,
   RecordEvolutionResultUseCase,
   TransitionWhatsAppConversationUseCase,
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
@@ -37,6 +38,7 @@ import {
   CreateOutboundMessageDto,
   EvolutionResultDto,
   PatchQuoteRequestDto,
+  ReconcileAutomationOutboxDto,
   TransitionConversationDto,
 } from './dto/whatsapp.dto';
 import {
@@ -44,7 +46,7 @@ import {
   parseDateOnly,
 } from '../../domain/whatsapp/quote-schedule';
 
-@ApiTags('WhatsApp interno n8n')
+@ApiTags('WhatsApp interno')
 @ApiBearerAuth('serviceBearer')
 @Public()
 @UseGuards(ServiceIdentityGuard)
@@ -57,6 +59,7 @@ export class InternalWhatsAppController {
     private readonly claimEvolutionDispatchUseCase: ClaimEvolutionDispatchUseCase,
     private readonly evolutionResult: RecordEvolutionResultUseCase,
     private readonly completeOutbox: CompleteOutboxExecutionUseCase,
+    private readonly reconcileOutbox: ReconcileAutomationOutboxUseCase,
     private readonly query: QueryWhatsAppUseCase,
     private readonly proposals: QuoteProposalUseCase,
   ) {}
@@ -74,7 +77,7 @@ export class InternalWhatsAppController {
       ...body,
       companyId: service.companyId,
       conversationId,
-      actorType: 'n8n',
+      actorType: 'system',
     });
   }
 
@@ -178,6 +181,25 @@ export class InternalWhatsAppController {
       ...body,
       companyId: service.companyId,
       eventId,
+    });
+  }
+
+  @Post('outbox-events/:eventId/reconciliations')
+  @ApiOkResponse({
+    description:
+      'Reconcilia um evento isolado mediante evidência operacional, sem repetir efeitos durante a requisição.',
+  })
+  reconcileOutboxEvent(
+    @CurrentService() service: ServicePrincipal,
+    @Param('eventId', new ParseUUIDPipe()) eventId: string,
+    @Body() body: ReconcileAutomationOutboxDto,
+  ) {
+    return this.reconcileOutbox.execute({
+      ...body,
+      companyId: service.companyId,
+      eventId,
+      serviceIdentityId: service.id,
+      serviceIdentityName: service.name,
     });
   }
 

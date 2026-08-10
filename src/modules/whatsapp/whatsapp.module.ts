@@ -1,23 +1,25 @@
 import { Module } from '@nestjs/common';
 
+import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
 import { WhatsAppRepository } from '../../application/contracts/whatsapp.repository';
 import {
-  ClaimEvolutionDispatchUseCase,
-  CompleteOutboxExecutionUseCase,
   CreateHumanOutboundWhatsAppUseCase,
-  CreateOutboundWhatsAppUseCase,
-  PatchQuoteRequestUseCase,
   QuoteProposalUseCase,
   QueryWhatsAppUseCase,
-  RecordEvolutionResultUseCase,
   TransitionWhatsAppConversationUseCase,
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
 import { EvolutionWebhookService } from '../../infra/integrations/evolution/evolution-webhook.service';
-import { IntegrationOutboxDispatcher } from '../../infra/integrations/n8n/integration-outbox.dispatcher';
+import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
+import { HttpEvolutionOutboundGateway } from '../../infra/integrations/evolution/evolution-outbound.client';
+import { ApiWhatsAppAutomationProvider } from '../../infra/integrations/whatsapp/api-whatsapp-automation.provider';
+import { WhatsAppAutomationDecisionStore } from '../../infra/integrations/whatsapp/whatsapp-automation-decision.store';
+import { WhatsAppAutomationCheckpointStore } from '../../infra/integrations/whatsapp/whatsapp-automation-checkpoint.store';
+import { WhatsAppAutomationDispatcher } from '../../infra/integrations/whatsapp/whatsapp-automation.dispatcher';
+import { WhatsAppAutomationEventStore } from '../../infra/integrations/whatsapp/whatsapp-automation-event.store';
+import { OpenAiCompatibleWhatsAppConversationAgent } from '../../infra/integrations/whatsapp-ai/openai-compatible-whatsapp-conversation-agent';
 import { WhatsAppRetentionService } from '../../infra/retention/whatsapp-retention.service';
-import { ServiceIdentityGuard } from '../../shared/http/guards/service-identity.guard';
+import { FileSystemWhatsAppMediaStorage } from '../../infra/storage/file-system-whatsapp-media.storage';
 import { EvolutionWebhookController } from './evolution-webhook.controller';
-import { InternalWhatsAppController } from './internal-whatsapp.controller';
 import { NotificationsController } from './notifications.controller';
 import { QuoteProposalController } from './quote-proposal.controller';
 import { WhatsAppPanelController } from './whatsapp-panel.controller';
@@ -25,16 +27,26 @@ import { WhatsAppPanelController } from './whatsapp-panel.controller';
 @Module({
   controllers: [
     EvolutionWebhookController,
-    InternalWhatsAppController,
     WhatsAppPanelController,
     QuoteProposalController,
     NotificationsController,
   ],
   providers: [
     EvolutionWebhookService,
-    IntegrationOutboxDispatcher,
+    EvolutionMediaContentService,
+    FileSystemWhatsAppMediaStorage,
+    {
+      provide: WhatsAppMediaStorage,
+      useExisting: FileSystemWhatsAppMediaStorage,
+    },
+    HttpEvolutionOutboundGateway,
+    OpenAiCompatibleWhatsAppConversationAgent,
+    ApiWhatsAppAutomationProvider,
+    WhatsAppAutomationCheckpointStore,
+    WhatsAppAutomationDecisionStore,
+    WhatsAppAutomationEventStore,
+    WhatsAppAutomationDispatcher,
     WhatsAppRetentionService,
-    ServiceIdentityGuard,
     {
       provide: TransitionWhatsAppConversationUseCase,
       useFactory: (repository: WhatsAppRepository) =>
@@ -42,39 +54,9 @@ import { WhatsAppPanelController } from './whatsapp-panel.controller';
       inject: [WhatsAppRepository],
     },
     {
-      provide: PatchQuoteRequestUseCase,
-      useFactory: (repository: WhatsAppRepository) =>
-        new PatchQuoteRequestUseCase(repository),
-      inject: [WhatsAppRepository],
-    },
-    {
-      provide: CreateOutboundWhatsAppUseCase,
-      useFactory: (repository: WhatsAppRepository) =>
-        new CreateOutboundWhatsAppUseCase(repository),
-      inject: [WhatsAppRepository],
-    },
-    {
       provide: CreateHumanOutboundWhatsAppUseCase,
       useFactory: (repository: WhatsAppRepository) =>
         new CreateHumanOutboundWhatsAppUseCase(repository),
-      inject: [WhatsAppRepository],
-    },
-    {
-      provide: ClaimEvolutionDispatchUseCase,
-      useFactory: (repository: WhatsAppRepository) =>
-        new ClaimEvolutionDispatchUseCase(repository),
-      inject: [WhatsAppRepository],
-    },
-    {
-      provide: RecordEvolutionResultUseCase,
-      useFactory: (repository: WhatsAppRepository) =>
-        new RecordEvolutionResultUseCase(repository),
-      inject: [WhatsAppRepository],
-    },
-    {
-      provide: CompleteOutboxExecutionUseCase,
-      useFactory: (repository: WhatsAppRepository) =>
-        new CompleteOutboxExecutionUseCase(repository),
       inject: [WhatsAppRepository],
     },
     {

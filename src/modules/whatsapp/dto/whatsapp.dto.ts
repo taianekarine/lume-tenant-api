@@ -188,8 +188,7 @@ export class PatchQuoteRequestDto extends VersionedCommandDto {
 export class CreateOutboundMessageDto extends VersionedCommandDto {
   @ApiProperty({
     enum: [true],
-    description:
-      'Este endpoint pertence ao n8n e sempre cria conteúdo automático.',
+    description: 'Este endpoint interno sempre cria conteúdo automático.',
   })
   @IsIn([true])
   automatic!: true;
@@ -363,6 +362,58 @@ export class CompleteOutboxExecutionDto {
   @IsString()
   @MaxLength(500)
   errorMessage?: string;
+}
+
+export class ReconcileAutomationOutboxDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  commandId!: string;
+
+  @ApiProperty({
+    enum: [
+      'confirmed-sent',
+      'confirmed-not-sent',
+      'confirmed-processed',
+      'confirmed-not-processed',
+    ],
+  })
+  @IsIn([
+    'confirmed-sent',
+    'confirmed-not-sent',
+    'confirmed-processed',
+    'confirmed-not-processed',
+  ])
+  resolution!:
+    | 'confirmed-sent'
+    | 'confirmed-not-sent'
+    | 'confirmed-processed'
+    | 'confirmed-not-processed';
+
+  @ApiProperty({ minLength: 10, maxLength: 500 })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @MinLength(10)
+  @MaxLength(500)
+  evidence!: string;
+
+  @ApiPropertyOptional({
+    maxLength: 160,
+    description:
+      'Identificador confirmado no provedor. Obrigatório quando o envio foi confirmado.',
+  })
+  @ValidateIf(
+    (object: ReconcileAutomationOutboxDto) =>
+      object.resolution === 'confirmed-sent',
+  )
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @MinLength(1)
+  @MaxLength(160)
+  providerMessageId?: string;
 }
 
 export class AutomationBatchQueryDto {

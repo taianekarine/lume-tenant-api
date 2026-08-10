@@ -1,0 +1,125 @@
+# WhatsApp consolidado na Tenant API
+
+## Responsabilidades
+
+A Tenant API é a única responsável pelo fluxo de WhatsApp. O módulo concentra:
+
+- recebimento autenticado dos webhooks da Evolution;
+- deduplicação, persistência e ordenação de eventos;
+- conversa canônica por empresa, canal e número;
+- mensagens, anexos, histórico e estado do atendimento;
+- menus, automação comercial e integração com IA;
+- envio de mensagens e propostas em PDF pela Evolution;
+- recuperação autenticada de imagens, áudios, vídeos, figurinhas e documentos.
+
+O Tenant Web consome somente os endpoints autenticados da Tenant API. Segredos
+da Evolution e dos provedores de IA permanecem no servidor.
+
+## Garantias de processamento
+
+Cada webhook usa o identificador externo e o hash do conteúdo para deduplicação.
+Os eventos internos são gravados em outbox ordenada por conversa e processados
+pela própria API com lease, tentativas e backoff. Apenas uma execução ativa pode
+tratar cada evento. O provedor registrado nas novas execuções é sempre `api`.
+
+A migração `20260806000600_consolidate_whatsapp_api_and_conversations` converte
+marcadores legados, devolve execuções interrompidas para processamento seguro e
+consolida conversas duplicadas antes de criar a chave única canônica.
+
+## Conversa e atendimento
+
+Existe uma conversa canônica para cada combinação de empresa, canal e contato.
+Encerrar atendimento finaliza somente a sessão humana atual: remove o atendente
+e preserva mensagens, anexos e orçamentos. A conversa permanece encerrada até o
+próximo contato. A primeira mensagem seguinte, textual ou não, reabre a mesma
+conversa, registra `reopen-after-customer-message` e apresenta o menu inicial
+antes de qualquer interpretação do conteúdo.
+
+Devolver ao bot remove o atendente, mas preserva o contexto comercial para que o
+fluxo retome do ponto adequado. Uma conversa em `human-active` sempre possui um
+atendente; qualquer estado legado incompatível é normalizado pela migração.
+
+O envio humano de uma proposta em PDF assume o usuário remetente como atendente
+ativo antes de enfileirar o documento e registra a transição no histórico.
+
+## Conteúdo de mídia
+
+O painel nunca recebe a chave nem a URL temporária da Evolution. No recebimento
+do webhook, a API persiste a mensagem, baixa o binário enquanto ele ainda está
+disponível, valida MIME, compatibilidade com o tipo e limite de tamanho e grava
+o conteúdo no armazenamento controlado. O banco mantém somente a chave interna,
+MIME, tamanho real, nome normalizado, SHA-256 e data do armazenamento. Uma nova
+tentativa do mesmo evento reutiliza a mensagem e a chave existentes, sem criar
+duplicidade.
+
+A implementação atual usa `filesystem`. Em produção,
+`WHATSAPP_MEDIA_STORAGE_PATH` deve apontar para um diretório absoluto montado em
+volume persistente e incluído no backup. O `compose.prod.yml` monta o volume
+`lume_tenant_whatsapp_media` em `/app/var/whatsapp-media`.
+
+A rota autenticada
+`GET /api/v1/whatsapp/conversations/:conversationId/messages/:messageId/content`
+valida empresa, permissão, conversa e mensagem e serve primeiro a cópia própria,
+sem consultar a Evolution. PDFs de propostas enviadas continuam sendo lidos do
+banco. A resposta usa `private, no-store` e `nosniff`.
+
+Para uma mídia histórica sem cópia própria, a primeira leitura tenta uma única
+recuperação segura e a armazena. Um usuário com permissão de gerenciamento também
+pode solicitar o reprocessamento idempotente por
+`POST /api/v1/whatsapp/conversations/:conversationId/messages/:messageId/content/retain`.
+Se a origem já expirou, a API responde claramente que o arquivo não está mais
+disponível; nenhuma recuperação inexistente é prometida.
+
+Falhas temporárias de rede ou do provedor retornam indisponibilidade de serviço,
+permitindo nova entrega do webhook. Respostas definitivas de arquivo inexistente
+não geram repetição infinita.
+
+## Entrada não textual
+
+Imagem, áudio, vídeo, figurinha, documento, localização, contato ou conteúdo
+desconhecido são bloqueados antes dos menus e da IA. A conversa não muda de
+etapa, o conteúdo não é interpretado como resposta e o cliente recebe:
+
+> Ainda não consigo interpretar esse tipo de arquivo. Por favor, envie sua resposta em texto.
+
+Durante a coleta de orçamento, a pergunta textual pendente é repetida antes da
+orientação. A mesma regra vale no menu inicial, menu comercial e atendimento
+humano. Na reabertura de uma conversa encerrada, o menu inicial aparece primeiro.
+
+## Configuração mínima
+
+Quando `WHATSAPP_ENABLED=true`, configure:
+
+- canal, número e limites `WHATSAPP_*`;
+- diretório persistente `WHATSAPP_MEDIA_STORAGE_PATH` em produção;
+- `EVOLUTION_BASE_URL`, instância, chave e segredo do webhook;
+- ao menos uma chave listada em `WHATSAPP_AI_PROVIDER_ORDER`;
+- telefones `MILENIUM_DEPARTMENT_*_PHONE` usados pelos menus.
+
+Não existe seletor de provedor de automação. Os arquivos `.env.example` e
+`.env.production.example` são a referência vigente.
+
+## Checklist operacional
+
+Antes da publicação, confirme:
+
+1. migrações aplicadas, chave única das conversas criada e volume de mídia montado;
+2. webhook válido recebido uma única vez, inclusive após reenvio;
+3. menu inicial, coleta por IA e encaminhamento funcionando;
+4. assumir, responder, devolver ao bot e encerrar registrados no histórico;
+5. envio de texto e de proposta PDF refletido imediatamente no painel;
+6. imagem, áudio, vídeo, figurinha, documento e PDF abertos pelo proxy seguro;
+7. a mesma mídia continua abrindo após reiniciar a API e sem acesso à URL externa;
+8. mídia antiga expirada apresenta estado indisponível e mídia ainda válida é migrada;
+9. anexos em cada etapa não avançam o fluxo nem são enviados à IA;
+10. falha temporária da Evolution é reprocessada sem mensagem ou evento duplicado.
+
+## Recuperação
+
+Em falha, desative temporariamente `WHATSAPP_ENABLED`, preserve o banco e corrija
+a causa antes de reativar. Não execute dois consumidores sobre a mesma outbox.
+Eventos com tentativas esgotadas devem ser analisados por correlação e reabertos
+somente após confirmar que não foram enviados ou processados.
+
+Banco e volume `WHATSAPP_MEDIA_STORAGE_PATH` formam um único conjunto de backup.
+Restaurar apenas um deles pode deixar metadados sem arquivo ou arquivos órfãos.

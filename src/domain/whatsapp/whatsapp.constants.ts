@@ -62,7 +62,7 @@ export const MESSAGE_KINDS = [
 export const QUOTE_PROPOSAL_MAX_PDF_BYTES = 10 * 1024 * 1024;
 
 export const UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT =
-  'No momento não consigo ler, ver ou ouvir este tipo de mensagem. Por favor, envie sua mensagem em texto para continuarmos o atendimento.';
+  'Ainda não consigo interpretar esse tipo de arquivo. Por favor, envie sua resposta em texto.';
 
 export const TRANSITION_NAMES = [
   'present-main-menu',
@@ -84,6 +84,7 @@ export const TRANSITION_NAMES = [
   'close-after-rejection',
   'resume-awaited-reply',
   'resume-contextual-contact',
+  'reopen-after-customer-message',
 ] as const;
 
 export type ConversationState = (typeof CONVERSATION_STATES)[number];

@@ -16,6 +16,27 @@ const productionEmailEnvironment = {
   RESEND_FROM_EMAIL: 'no-reply@example.test',
   RESEND_FROM_NAME: 'Lume',
 };
+const validWhatsAppEnvironment = {
+  WHATSAPP_ENABLED: 'true',
+  WHATSAPP_CHANNEL_ID: '00000000-0000-4000-8000-000000000221',
+  WHATSAPP_CHANNEL_NAME: 'WhatsApp principal',
+  WHATSAPP_PHONE_NUMBER: '5511999999999',
+  EVOLUTION_PROVIDER_NAME: 'Evolution API',
+  EVOLUTION_BASE_URL: 'https://evolution.example.test',
+  EVOLUTION_INSTANCE_NAME: 'lume',
+  EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
+  EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
+  WHATSAPP_AI_OPENAI_API_KEY: 'openai-key-with-at-least-20-characters',
+  MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5534999999901',
+  MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5534999999902',
+  MILENIUM_DEPARTMENT_DP_PHONE: '5534999999903',
+  MILENIUM_DEPARTMENT_FINANCE_PHONE: '5534999999904',
+  MILENIUM_DEPARTMENT_MANAGEMENT_PHONE: '5534999999905',
+  MILENIUM_DEPARTMENT_MAINTENANCE_PHONE: '5534999999906',
+  MILENIUM_DEPARTMENT_MONITORING_PHONE: '5534999999907',
+  MILENIUM_DEPARTMENT_OPERATIONAL_PHONE: '5534999999908',
+};
+const apiProviderEnvironment = validWhatsAppEnvironment;
 
 describe('validateEnvironment', () => {
   it('normalizes defaults required by an autonomous tenant', () => {
@@ -170,7 +191,7 @@ describe('validateEnvironment', () => {
         ...validEnvironment,
         WHATSAPP_ENABLED: 'true',
       }),
-    ).toThrow('EVOLUTION_WEBHOOK_SECRET');
+    ).toThrow('WHATSAPP_AI_PROVIDER_ORDER');
 
     expect(
       validateEnvironment({
@@ -184,16 +205,70 @@ describe('validateEnvironment', () => {
         EVOLUTION_INSTANCE_NAME: 'lume',
         EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
         EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
-        N8N_SERVICE_KEY_ID: '00000000-0000-4000-8000-000000000222',
-        N8N_SERVICE_SECRET: 'n8n-service-secret-with-32-characters',
-        N8N_DISPATCH_ENABLED: 'false',
+        WHATSAPP_AI_OPENAI_API_KEY: 'openai-key-with-at-least-20-characters',
+        MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5534999999901',
+        MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5534999999902',
+        MILENIUM_DEPARTMENT_DP_PHONE: '5534999999903',
+        MILENIUM_DEPARTMENT_FINANCE_PHONE: '5534999999904',
+        MILENIUM_DEPARTMENT_MANAGEMENT_PHONE: '5534999999905',
+        MILENIUM_DEPARTMENT_MAINTENANCE_PHONE: '5534999999906',
+        MILENIUM_DEPARTMENT_MONITORING_PHONE: '5534999999907',
+        MILENIUM_DEPARTMENT_OPERATIONAL_PHONE: '5534999999908',
       }),
     ).toMatchObject({
       WHATSAPP_ENABLED: true,
-      N8N_DISPATCH_ENABLED: false,
+      WHATSAPP_MEDIA_STORAGE_DRIVER: 'filesystem',
       WHATSAPP_RETENTION_DAYS: 365,
       INTEGRATION_RETENTION_DAYS: 90,
     });
+  });
+
+  it('ativa somente a automação própria da API quando o WhatsApp está habilitado', () => {
+    expect(
+      validateEnvironment({
+        ...validEnvironment,
+        ...validWhatsAppEnvironment,
+      }),
+    ).toMatchObject({
+      WHATSAPP_AI_PROVIDER_ORDER: 'openai,cerebras,gemini,groq',
+      WHATSAPP_API_EXECUTION_TIMEOUT_MS: 480_000,
+      EVOLUTION_SEND_TEXT_TIMEOUT_MS: 10_000,
+      EVOLUTION_SEND_MEDIA_TIMEOUT_MS: 30_000,
+    });
+  });
+
+  it('rejeita configuração incompleta da automação própria', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        ...apiProviderEnvironment,
+        WHATSAPP_AI_OPENAI_API_KEY: '',
+      }),
+    ).toThrow('chave de ao menos um provedor');
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        ...apiProviderEnvironment,
+        MILENIUM_DEPARTMENT_OPERATIONAL_PHONE: '',
+      }),
+    ).toThrow('MILENIUM_DEPARTMENT_*_PHONE');
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        ...apiProviderEnvironment,
+        WHATSAPP_API_EXECUTION_TIMEOUT_MS: '120000',
+      }),
+    ).toThrow('deve ser ao menos');
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        ...apiProviderEnvironment,
+        WHATSAPP_API_DEPARTMENT_COLLECTION_MS: '300001',
+      }),
+    ).toThrow('no máximo 300000');
   });
 
   it('requires the OpenAI key only when document review is enabled and limits retries', () => {
@@ -213,7 +288,7 @@ describe('validateEnvironment', () => {
     ).toThrow('no máximo 3');
   });
 
-  it('exige HTTPS do n8n em produção salvo opt-in para rede privada', () => {
+  it('exige HTTPS da Evolution em produção', () => {
     const productionWhatsApp = {
       ...validEnvironment,
       NODE_ENV: 'production',
@@ -228,33 +303,50 @@ describe('validateEnvironment', () => {
       EVOLUTION_INSTANCE_NAME: 'lume',
       EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
       EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
-      N8N_SERVICE_KEY_ID: '00000000-0000-4000-8000-000000000222',
-      N8N_SERVICE_SECRET: 'n8n-service-secret-with-32-characters',
-      N8N_DISPATCH_ENABLED: 'true',
-      N8N_OUTBOUND_SECRET: 'n8n-outbound-secret-with-32-characters',
+      WHATSAPP_MEDIA_STORAGE_PATH: 'C:\\lume-data\\whatsapp-media',
+      WHATSAPP_AI_OPENAI_API_KEY: 'openai-key-with-at-least-20-characters',
+      MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5534999999901',
+      MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5534999999902',
+      MILENIUM_DEPARTMENT_DP_PHONE: '5534999999903',
+      MILENIUM_DEPARTMENT_FINANCE_PHONE: '5534999999904',
+      MILENIUM_DEPARTMENT_MANAGEMENT_PHONE: '5534999999905',
+      MILENIUM_DEPARTMENT_MAINTENANCE_PHONE: '5534999999906',
+      MILENIUM_DEPARTMENT_MONITORING_PHONE: '5534999999907',
+      MILENIUM_DEPARTMENT_OPERATIONAL_PHONE: '5534999999908',
     };
     expect(() =>
       validateEnvironment({
         ...productionWhatsApp,
-        N8N_WEBHOOK_URL: 'http://n8n:5678/webhook/lume',
+        EVOLUTION_BASE_URL: 'http://public.example.com',
       }),
     ).toThrow('HTTPS');
     expect(
       validateEnvironment({
         ...productionWhatsApp,
-        N8N_WEBHOOK_URL: 'http://n8n:5678/webhook/lume',
-        N8N_ALLOW_INSECURE_PRIVATE_URL: 'true',
+        EVOLUTION_BASE_URL: 'https://evolution.example.test',
       }),
     ).toMatchObject({
-      N8N_ALLOW_INSECURE_PRIVATE_URL: true,
-      N8N_WEBHOOK_URL: 'http://n8n:5678/webhook/lume',
+      EVOLUTION_BASE_URL: 'https://evolution.example.test',
     });
+  });
+
+  it('exige armazenamento persistente absoluto para WhatsApp em produção', () => {
     expect(() =>
       validateEnvironment({
-        ...productionWhatsApp,
-        N8N_WEBHOOK_URL: 'http://public.example.com/webhook/lume',
-        N8N_ALLOW_INSECURE_PRIVATE_URL: 'true',
+        ...validEnvironment,
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://app.example.com',
+        ...productionEmailEnvironment,
+        ...validWhatsAppEnvironment,
       }),
-    ).toThrow('host privado');
+    ).toThrow('WHATSAPP_MEDIA_STORAGE_PATH');
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        ...validWhatsAppEnvironment,
+        WHATSAPP_MEDIA_STORAGE_PATH: './temporario',
+      }),
+    ).toThrow('caminho absoluto');
   });
 });

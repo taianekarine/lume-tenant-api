@@ -72,8 +72,9 @@ O runtime não chama o control. A licença é validada com Ed25519 localmente.
 Depois do vencimento existe um período de tolerância definido no documento.
 
 Para WhatsApp, `integration_outbox` armazena eventos por tenant e possui
-dispatcher n8n com lock, correlação, retry e backoff. `integration_inbox`
-deduplica webhooks Evolution e comandos internos. `outbox_events` e
+dispatcher interno da API com lock, correlação, retry e backoff.
+`integration_inbox` deduplica webhooks Evolution e comandos internos.
+`outbox_events` e
 `inbox_receipts` permanecem apenas para compatibilidade com o contrato legado
 do edge-agent.
 
@@ -208,5 +209,5 @@ metadados, bytes, hash, expiração e auditoria sob `companyId`.
 
 O módulo não substitui os documentos de proposta do WhatsApp, que possuem ciclo
 e regras comerciais próprios. Ele é uma fundação reutilizável para futuras
-views de importação/exportação. Redis, n8n e navegador não armazenam o estado
+views de importação/exportação. Cache e navegador não armazenam o estado
 autoritativo desses artefatos. Consulte [data-exchange.md](data-exchange.md).

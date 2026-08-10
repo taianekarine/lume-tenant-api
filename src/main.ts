@@ -52,16 +52,6 @@ async function bootstrap() {
       )
       .setVersion('1.0')
       .addBearerAuth()
-      .addBearerAuth(
-        {
-          type: 'http',
-          scheme: 'bearer',
-          bearerFormat: '<keyId>.<secret>',
-          description:
-            'Identidade de serviço n8n com segredo armazenado por hash.',
-        },
-        'serviceBearer',
-      )
       .build();
     const document = SwaggerModule.createDocument(app, openApiConfig);
     SwaggerModule.setup('docs', app, document, {

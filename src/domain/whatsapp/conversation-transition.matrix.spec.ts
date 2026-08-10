@@ -436,8 +436,29 @@ describe('matriz MVP de conversas WhatsApp', () => {
     ).toThrow('waiting-for-customer');
   });
 
+  it('reabre uma conversa encerrada no mesmo histórico e volta ao menu inicial', () => {
+    expect(
+      transition(
+        {
+          ...initial,
+          conversationState: 'closed',
+          flowStep: 'closed',
+          requestStatus: 'under-review',
+        },
+        'reopen-after-customer-message',
+      ),
+    ).toMatchObject({
+      department: 'commercial',
+      conversationState: 'bot-active',
+      flowStep: 'main-menu',
+      requestStatus: 'under-review',
+    });
+  });
+
   it('separa transições internas reservadas das ações humanas', () => {
-    expect(() => assertTransitionActor('take-over', 'n8n')).toThrow('ator n8n');
+    expect(() => assertTransitionActor('take-over', 'system')).toThrow(
+      'ator system',
+    );
     expect(() => assertTransitionActor('confirm-quote', 'user')).toThrow(
       'ator user',
     );
@@ -445,20 +466,25 @@ describe('matriz MVP de conversas WhatsApp', () => {
       assertTransitionActor('start-department-contact', 'user'),
     ).toThrow('ator user');
     expect(() =>
-      assertTransitionActor('start-department-contact', 'n8n'),
+      assertTransitionActor('start-department-contact', 'system'),
     ).not.toThrow();
     expect(() =>
-      assertTransitionActor('resume-contextual-contact', 'n8n'),
-    ).toThrow('ator n8n');
+      assertTransitionActor('resume-contextual-contact', 'user'),
+    ).toThrow('ator user');
     expect(() =>
-      assertTransitionActor('proposal-response-received', 'n8n'),
-    ).toThrow('ator n8n');
+      assertTransitionActor('proposal-response-received', 'user'),
+    ).toThrow('ator user');
     expect(() => assertTransitionActor('take-over', 'user')).not.toThrow();
+    expect(() =>
+      assertTransitionActor('present-main-menu', 'system'),
+    ).not.toThrow();
+    expect(() => assertTransitionActor('start-quote', 'system')).not.toThrow();
+    expect(() => assertTransitionActor('forward', 'system')).not.toThrow();
     expect(() =>
       assertTransitionActor('resume-contextual-contact', 'webhook'),
     ).not.toThrow();
     expect(() =>
-      assertTransitionActor('proposal-delivery-confirmed', 'n8n'),
+      assertTransitionActor('proposal-delivery-confirmed', 'system'),
     ).not.toThrow();
     expect(() =>
       assertTransitionActor('proposal-response-received', 'webhook'),
@@ -467,9 +493,14 @@ describe('matriz MVP de conversas WhatsApp', () => {
       assertTransitionActor('close-after-rejection', 'user'),
     ).not.toThrow();
     expect(() => assertTransitionActor('close', 'user')).not.toThrow();
-    expect(() => assertTransitionActor('close', 'n8n')).toThrow('ator n8n');
-    expect(() => assertTransitionActor('close-after-rejection', 'n8n')).toThrow(
-      'ator n8n',
+    expect(() =>
+      assertTransitionActor('reopen-after-customer-message', 'webhook'),
+    ).not.toThrow();
+    expect(() => assertTransitionActor('close', 'system')).toThrow(
+      'ator system',
     );
+    expect(() =>
+      assertTransitionActor('close-after-rejection', 'system'),
+    ).toThrow('ator system');
   });
 });

@@ -11,6 +11,7 @@ import {
 } from '../../../core/errors/app-error';
 import type { MessageKind } from '../../../domain/whatsapp/whatsapp.constants';
 import { normalizeWhatsAppPhone } from '../../../shared/utils/normalization';
+import { EvolutionMediaContentService } from './evolution-media-content.service';
 
 type Headers = Readonly<Record<string, string | string[] | undefined>>;
 type JsonObject = Record<string, unknown>;
@@ -139,6 +140,7 @@ export class EvolutionWebhookService {
 
   constructor(
     private readonly repository: WhatsAppRepository,
+    private readonly mediaContent: EvolutionMediaContentService,
     config: ConfigService,
   ) {
     this.webhookSecret = config.get<string>('EVOLUTION_WEBHOOK_SECRET') ?? '';
@@ -245,7 +247,7 @@ export class EvolutionWebhookService {
       .update(`${channel.id}:${providerMessageId}`)
       .digest('hex')}`;
 
-    return this.repository.persistInbound({
+    const persisted = await this.repository.persistInbound({
       channel,
       externalEventId: providerMessageId,
       providerMessageId,
@@ -261,6 +263,21 @@ export class EvolutionWebhookService {
       text: content.text,
       media: content.media,
     });
+    if (
+      ['image', 'document', 'audio', 'video', 'sticker'].includes(
+        content.kind,
+      ) &&
+      persisted.messageId &&
+      persisted.conversationId
+    ) {
+      const retention = await this.mediaContent.retainInbound(
+        channel.companyId,
+        persisted.conversationId,
+        persisted.messageId,
+      );
+      return { ...persisted, mediaRetention: retention.status };
+    }
+    return persisted;
   }
 
   private authenticate(
@@ -419,7 +436,6 @@ export class EvolutionWebhookService {
       media: {
         mimeType,
         size,
-        ...(url ? { url } : {}),
         ...(typeof media.fileName === 'string'
           ? { fileName: media.fileName.slice(0, 255) }
           : {}),

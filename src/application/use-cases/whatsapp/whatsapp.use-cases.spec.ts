@@ -13,6 +13,7 @@ import {
   type PersistInboundInput,
   type QuoteProposalListQuery,
   type QuoteRequestPatch,
+  type ReconcileAutomationOutboxInput,
   type SendQuoteProposalInput,
   type TransitionCommand,
   type TransitionListQuery,
@@ -28,6 +29,7 @@ import {
   PersistInboundWhatsAppUseCase,
   QuoteProposalUseCase,
   QueryWhatsAppUseCase,
+  ReconcileAutomationOutboxUseCase,
   RecordEvolutionResultUseCase,
   TransitionWhatsAppConversationUseCase,
 } from './whatsapp.use-cases';
@@ -72,6 +74,14 @@ class RecordingWhatsAppRepository extends WhatsAppRepository {
   async recordEvolutionResult(_input: EvolutionResultInput) {
     this.calls.push('recordEvolutionResult');
     return { operation: 'recordEvolutionResult' };
+  }
+  async markEvolutionDispatchUnknown() {
+    this.calls.push('markEvolutionDispatchUnknown');
+    return { operation: 'markEvolutionDispatchUnknown' };
+  }
+  async reconcileAutomationOutbox(_input: ReconcileAutomationOutboxInput) {
+    this.calls.push('reconcileAutomationOutbox');
+    return { operation: 'reconcileAutomationOutbox' };
   }
   async listConversations(_companyId: string, _query: ConversationListQuery) {
     this.calls.push('listConversations');
@@ -213,6 +223,15 @@ describe('casos de uso WhatsApp', () => {
       attemptId: 'attempt',
       status: 'sent',
     });
+    await new ReconcileAutomationOutboxUseCase(repository).execute({
+      companyId: 'company',
+      eventId: 'event',
+      commandId: 'reconciliation',
+      resolution: 'confirmed-not-sent',
+      evidence: 'Envio ausente no provedor.',
+      serviceIdentityId: 'service',
+      serviceIdentityName: 'Operação',
+    });
 
     expect(repository.calls).toEqual([
       'persistInbound',
@@ -222,6 +241,7 @@ describe('casos de uso WhatsApp', () => {
       'createHumanOutbound',
       'claimEvolutionDispatch',
       'recordEvolutionResult',
+      'reconcileAutomationOutbox',
     ]);
   });
 

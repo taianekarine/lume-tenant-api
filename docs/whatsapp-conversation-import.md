@@ -2,7 +2,7 @@
 
 O importador é executado exclusivamente pela Tenant API. Ele não carrega o
 `AppModule`: a CLI abre somente uma conexão Prisma, portanto não inicializa
-dispatcher de outbox, retenção, n8n, Redis, Evolution API, webhook ou envio de
+dispatcher de outbox, retenção, cache, Evolution API, webhook ou envio de
 notificações.
 
 ## Diretório privado

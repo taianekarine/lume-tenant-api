@@ -120,6 +120,19 @@ enum IntegrationOutboxStatus {
   DEAD       @map("dead")
 }
 
+enum WhatsAppAutomationProvider {
+  N8N @map("n8n")
+  API @map("api")
+}
+
+enum WhatsAppAutomationExecutionStatus {
+  CLAIMED           @map("claimed")
+  ACCEPTED          @map("accepted")
+  SUCCEEDED         @map("succeeded")
+  RETRYABLE_FAILURE @map("retryable-failure")
+  TERMINAL_FAILURE  @map("terminal-failure")
+}
+
 enum QuoteProposalDocumentStatus {
   UPLOADED @map("uploaded")
   QUEUED   @map("queued")
@@ -246,38 +259,41 @@ model Company {
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
-  users                      User[]
-  auditLogs                  TenantAuditLog[]
-  departments                TenantDepartment[]
-  whatsappProviders          WhatsAppProvider[]
-  whatsappChannels           WhatsAppChannel[]
-  whatsappContacts           WhatsAppContact[]
-  whatsappConversations      WhatsAppConversation[]
-  whatsappMessages           WhatsAppMessage[]
-  whatsappMessageAttempts    WhatsAppMessageAttempt[]
-  whatsappTransitions        WhatsAppConversationTransition[]
-  quoteRequests              QuoteRequest[]
-  quoteProposalDocuments     QuoteProposalDocument[]
-  quoteNotificationReads     QuoteNotificationRead[]
-  integrationInbox           IntegrationInbox[]
-  integrationOutbox          IntegrationOutbox[]
-  serviceIdentities          ServiceIdentity[]
-  passwordChangeChallenges   PasswordChangeChallenge[]
-  passwordHistory            UserPasswordHistory[]
-  whatsappImportBatches      WhatsAppImportBatch[]
-  whatsappImportRecords      WhatsAppImportRecord[]
-  whatsappImportExternalRefs WhatsAppImportExternalRef[]
-  dataExchangeArtifacts      DataExchangeArtifact[]
-  documentTypes              DocumentType[]
-  documentChecklistTemplates DocumentChecklistTemplate[]
-  documentChecklistItems     DocumentChecklistItem[]
-  documentRequests           DocumentRequest[]
-  documentRequestItems       DocumentRequestItem[]
-  documentSubmissions        DocumentSubmission[]
-  documentFiles              DocumentFile[]
-  documentValidations        DocumentValidation[]
-  documentReviews            DocumentReview[]
-  documentStatusHistory      DocumentStatusHistory[]
+  users                         User[]
+  auditLogs                     TenantAuditLog[]
+  departments                   TenantDepartment[]
+  whatsappProviders             WhatsAppProvider[]
+  whatsappChannels              WhatsAppChannel[]
+  whatsappContacts              WhatsAppContact[]
+  whatsappConversations         WhatsAppConversation[]
+  whatsappMessages              WhatsAppMessage[]
+  whatsappMessageAttempts       WhatsAppMessageAttempt[]
+  whatsappTransitions           WhatsAppConversationTransition[]
+  quoteRequests                 QuoteRequest[]
+  quoteProposalDocuments        QuoteProposalDocument[]
+  quoteNotificationReads        QuoteNotificationRead[]
+  integrationInbox              IntegrationInbox[]
+  integrationOutbox             IntegrationOutbox[]
+  whatsappAutomationExecutions  WhatsAppAutomationExecution[]
+  whatsappAutomationDecisions   WhatsAppAutomationDecision[]
+  whatsappAutomationCheckpoints WhatsAppAutomationCheckpoint[]
+  serviceIdentities             ServiceIdentity[]
+  passwordChangeChallenges      PasswordChangeChallenge[]
+  passwordHistory               UserPasswordHistory[]
+  whatsappImportBatches         WhatsAppImportBatch[]
+  whatsappImportRecords         WhatsAppImportRecord[]
+  whatsappImportExternalRefs    WhatsAppImportExternalRef[]
+  dataExchangeArtifacts         DataExchangeArtifact[]
+  documentTypes                 DocumentType[]
+  documentChecklistTemplates    DocumentChecklistTemplate[]
+  documentChecklistItems        DocumentChecklistItem[]
+  documentRequests              DocumentRequest[]
+  documentRequestItems          DocumentRequestItem[]
+  documentSubmissions           DocumentSubmission[]
+  documentFiles                 DocumentFile[]
+  documentValidations           DocumentValidation[]
+  documentReviews               DocumentReview[]
+  documentStatusHistory         DocumentStatusHistory[]
 
   @@map("companies")
 }
@@ -529,11 +545,11 @@ model WhatsAppConversation {
   proposalDocuments QuoteProposalDocument[]
 
   @@unique([id, companyId])
+  @@unique([companyId, channelId, contactId], map: "whatsapp_conversations_company_channel_contact_key")
   @@index([companyId, updatedAt])
   @@index([companyId, conversationState, updatedAt])
   @@index([companyId, department, conversationState, updatedAt], map: "whatsapp_conversations_company_department_state_updated_idx")
   @@index([companyId, department, requestStatus, updatedAt], map: "whatsapp_conversations_company_department_request_updated_idx")
-  @@index([companyId, channelId, contactId, closedAt])
   @@index([companyId, id, version])
   @@index([assignedToUserId, companyId])
   @@map("whatsapp_conversations")
@@ -552,6 +568,12 @@ model WhatsAppMessage {
   kind              MessageKind      @default(TEXT)
   text              String?          @db.Text
   media             Json?            @db.JsonB
+  mediaStorageKey   String?          @map("media_storage_key") @db.VarChar(700)
+  mediaMimeType     String?          @map("media_mime_type") @db.VarChar(160)
+  mediaSizeBytes    Int?             @map("media_size_bytes")
+  mediaOriginalName String?          @map("media_original_name") @db.VarChar(255)
+  mediaSha256       String?          @map("media_sha256") @db.Char(64)
+  mediaStoredAt     DateTime?        @map("media_stored_at")
   automationPurpose String?          @map("automation_purpose") @db.VarChar(80)
   recipientPhone    String?          @map("recipient_phone") @db.VarChar(20)
   correlationId     String           @map("correlation_id") @db.VarChar(120)
@@ -572,6 +594,7 @@ model WhatsAppMessage {
   @@unique([id, companyId])
   @@unique([id, companyId, conversationId])
   @@index([companyId, conversationId, occurredAt, id])
+  @@index([companyId, mediaStoredAt])
   @@index([actorUserId, companyId, occurredAt])
   @@index([companyId, deliveryStatus, createdAt])
   @@map("whatsapp_messages")
@@ -1079,36 +1102,107 @@ model IntegrationInbox {
 }
 
 model IntegrationOutbox {
-  id                  String                  @id @default(uuid()) @db.Uuid
-  companyId           String                  @map("company_id") @db.Uuid
-  topic               String                  @db.VarChar(100)
-  aggregateType       String                  @map("aggregate_type") @db.VarChar(60)
-  aggregateId         String                  @map("aggregate_id") @db.VarChar(100)
-  aggregateSequence   Int                     @map("aggregate_sequence")
-  correlationId       String                  @map("correlation_id") @db.VarChar(120)
-  payload             Json                    @db.JsonB
-  status              IntegrationOutboxStatus @default(PENDING)
-  attempts            Int                     @default(0)
-  maxAttempts         Int                     @default(8) @map("max_attempts")
-  availableAt         DateTime                @default(now()) @map("available_at")
-  lockedAt            DateTime?               @map("locked_at")
-  lockId              String?                 @map("lock_id") @db.Uuid
-  executionId         String?                 @map("execution_id") @db.Uuid
-  acceptedAt          DateTime?               @map("accepted_at")
-  executionLeaseUntil DateTime?               @map("execution_lease_until")
-  deliveredAt         DateTime?               @map("delivered_at")
-  lastError           String?                 @map("last_error") @db.VarChar(500)
-  createdAt           DateTime                @default(now()) @map("created_at")
-  updatedAt           DateTime                @updatedAt @map("updated_at")
+  id                  String                      @id @default(uuid()) @db.Uuid
+  companyId           String                      @map("company_id") @db.Uuid
+  topic               String                      @db.VarChar(100)
+  aggregateType       String                      @map("aggregate_type") @db.VarChar(60)
+  aggregateId         String                      @map("aggregate_id") @db.VarChar(100)
+  aggregateSequence   Int                         @map("aggregate_sequence")
+  correlationId       String                      @map("correlation_id") @db.VarChar(120)
+  payload             Json                        @db.JsonB
+  status              IntegrationOutboxStatus     @default(PENDING)
+  attempts            Int                         @default(0)
+  maxAttempts         Int                         @default(8) @map("max_attempts")
+  availableAt         DateTime                    @default(now()) @map("available_at")
+  lockedAt            DateTime?                   @map("locked_at")
+  lockId              String?                     @map("lock_id") @db.Uuid
+  executionId         String?                     @map("execution_id") @db.Uuid
+  acceptedAt          DateTime?                   @map("accepted_at")
+  executionLeaseUntil DateTime?                   @map("execution_lease_until")
+  processingProvider  WhatsAppAutomationProvider? @map("processing_provider")
+  deliveredAt         DateTime?                   @map("delivered_at")
+  lastError           String?                     @map("last_error") @db.VarChar(500)
+  createdAt           DateTime                    @default(now()) @map("created_at")
+  updatedAt           DateTime                    @updatedAt @map("updated_at")
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company              Company                       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  executions           WhatsAppAutomationExecution[]
+  automationDecision   WhatsAppAutomationDecision?
+  automationCheckpoint WhatsAppAutomationCheckpoint?
 
   @@unique([companyId, correlationId])
+  @@unique([id, companyId])
   @@unique([companyId, aggregateType, aggregateId, aggregateSequence])
   @@index([status, availableAt, lockedAt])
   @@index([companyId, aggregateType, aggregateId, aggregateSequence, status])
   @@index([companyId, createdAt])
   @@map("integration_outbox")
+}
+
+model WhatsAppAutomationExecution {
+  id            String                            @id @default(uuid()) @db.Uuid
+  companyId     String                            @map("company_id") @db.Uuid
+  outboxEventId String                            @map("outbox_event_id") @db.Uuid
+  executionId   String                            @map("execution_id") @db.Uuid
+  provider      WhatsAppAutomationProvider
+  status        WhatsAppAutomationExecutionStatus @default(CLAIMED)
+  attemptNumber Int                               @map("attempt_number")
+  startedAt     DateTime                          @default(now()) @map("started_at")
+  acceptedAt    DateTime?                         @map("accepted_at")
+  completedAt   DateTime?                         @map("completed_at")
+  errorCode     String?                           @map("error_code") @db.VarChar(80)
+  errorMessage  String?                           @map("error_message") @db.VarChar(500)
+  createdAt     DateTime                          @default(now()) @map("created_at")
+  updatedAt     DateTime                          @updatedAt @map("updated_at")
+
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  outboxEvent IntegrationOutbox @relation(fields: [outboxEventId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, executionId])
+  @@index([companyId, outboxEventId, startedAt])
+  @@index([provider, status, startedAt])
+  @@map("whatsapp_automation_executions")
+}
+
+model WhatsAppAutomationDecision {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  outboxEventId String   @map("outbox_event_id") @db.Uuid
+  inputHash     String   @map("input_hash") @db.VarChar(64)
+  provider      String   @db.VarChar(20)
+  model         String   @db.VarChar(120)
+  promptVersion String   @map("prompt_version") @db.VarChar(40)
+  aiAttempt     Int      @map("ai_attempt")
+  output        Json     @db.JsonB
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  outboxEvent IntegrationOutbox @relation(fields: [outboxEventId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([outboxEventId, companyId])
+  @@index([companyId, createdAt])
+  @@map("whatsapp_automation_decisions")
+}
+
+model WhatsAppAutomationCheckpoint {
+  id                   String   @id @default(uuid()) @db.Uuid
+  companyId            String   @map("company_id") @db.Uuid
+  outboxEventId        String   @map("outbox_event_id") @db.Uuid
+  inputHash            String   @map("input_hash") @db.VarChar(64)
+  conversationSnapshot Json     @map("conversation_snapshot") @db.JsonB
+  messagesSnapshot     Json     @map("messages_snapshot") @db.JsonB
+  bufferedText         String   @map("buffered_text") @db.Text
+  planSnapshot         Json     @map("plan_snapshot") @db.JsonB
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  company     Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  outboxEvent IntegrationOutbox @relation(fields: [outboxEventId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([outboxEventId, companyId])
+  @@index([companyId, createdAt])
+  @@map("whatsapp_automation_checkpoints")
 }
 
 model ServiceIdentity {

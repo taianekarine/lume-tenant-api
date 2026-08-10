@@ -31,13 +31,26 @@ export interface PersistInboundInput {
   media?: Readonly<Record<string, unknown>>;
 }
 
+export interface PersistInboundResult {
+  readonly accepted: true;
+  readonly duplicate: boolean;
+  readonly messageId: string | null;
+  readonly conversationId: string | null;
+  readonly automationAllowed?: boolean;
+  readonly canGenerateReply?: boolean;
+  readonly canSendReply?: boolean;
+  readonly isFirstContact?: boolean;
+  readonly reopenedAfterClosure?: boolean;
+  readonly version?: number;
+}
+
 export interface TransitionCommand {
   companyId: string;
   conversationId: string;
   commandId: string;
   expectedVersion: number;
   name: TransitionName;
-  actorType: 'user' | 'n8n' | 'webhook' | 'system';
+  actorType: 'user' | 'webhook' | 'system';
   actorUserId?: string;
   targetDepartment?: Department;
   metadata?: Readonly<Record<string, unknown>>;
@@ -112,17 +125,44 @@ export interface EvolutionResultInput {
   errorMessage?: string;
 }
 
+export interface MarkEvolutionDispatchUnknownInput {
+  companyId: string;
+  messageId: string;
+  attemptId: string;
+  ownerId: string;
+  errorCode: string;
+  errorMessage: string;
+}
+
 export interface CompleteOutboxExecutionInput {
   companyId: string;
   eventId: string;
   commandId: string;
   executionId: string;
+  automationProvider?: 'api';
   aggregateType: string;
   aggregateId: string;
   outcome: 'succeeded' | 'retryable-failure' | 'terminal-failure';
   consumedSourceEventIds?: string[];
   errorCode?: string;
   errorMessage?: string;
+}
+
+export type AutomationOutboxReconciliationResolution =
+  | 'confirmed-sent'
+  | 'confirmed-not-sent'
+  | 'confirmed-processed'
+  | 'confirmed-not-processed';
+
+export interface ReconcileAutomationOutboxInput {
+  companyId: string;
+  eventId: string;
+  commandId: string;
+  resolution: AutomationOutboxReconciliationResolution;
+  evidence: string;
+  providerMessageId?: string;
+  serviceIdentityId: string;
+  serviceIdentityName: string;
 }
 
 export interface ConversationListQuery {
@@ -241,7 +281,9 @@ export abstract class WhatsAppRepository {
   abstract findWebhookChannel(
     channelId: string,
   ): Promise<WebhookChannelConfiguration | null>;
-  abstract persistInbound(input: PersistInboundInput): Promise<unknown>;
+  abstract persistInbound(
+    input: PersistInboundInput,
+  ): Promise<PersistInboundResult>;
   abstract transition(input: TransitionCommand): Promise<unknown>;
   abstract patchQuoteRequest(
     companyId: string,
@@ -256,8 +298,14 @@ export abstract class WhatsAppRepository {
     input: ClaimEvolutionDispatchInput,
   ): Promise<unknown>;
   abstract recordEvolutionResult(input: EvolutionResultInput): Promise<unknown>;
+  abstract markEvolutionDispatchUnknown(
+    input: MarkEvolutionDispatchUnknownInput,
+  ): Promise<unknown>;
   abstract completeOutboxExecution(
     input: CompleteOutboxExecutionInput,
+  ): Promise<unknown>;
+  abstract reconcileAutomationOutbox(
+    input: ReconcileAutomationOutboxInput,
   ): Promise<unknown>;
   abstract listConversations(
     companyId: string,
