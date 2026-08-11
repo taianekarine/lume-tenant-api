@@ -109,6 +109,10 @@ describe('WhatsAppAutomationEventStore', () => {
     expect(claimQueryParts?.join('')).toContain(
       '\'api\'::"WhatsAppAutomationProvider"',
     );
+    expect(claimQueryParts?.join('')).toContain('newer_inbound."created_at" >');
+    expect(claimQueryParts?.join('')).toContain(
+      "predecessor.\"status\" IN ('pending', 'processing')",
+    );
     expect(executeRaw).toHaveBeenCalledOnce();
     expect(executionUpdateMany).toHaveBeenCalledTimes(2);
   });

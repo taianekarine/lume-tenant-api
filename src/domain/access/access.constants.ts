@@ -8,6 +8,7 @@ export const ASSIGNABLE_DEPARTMENTS = [
   'maintenance',
   'monitoring',
   'operations',
+  'information-technology',
 ] as const;
 
 export type AssignableDepartment = (typeof ASSIGNABLE_DEPARTMENTS)[number];
@@ -24,13 +25,13 @@ export const ASSIGNABLE_DEPARTMENT_LABELS: Readonly<
   maintenance: 'Manutenção',
   monitoring: 'Monitoramento',
   operations: 'Operacional',
+  'information-technology': 'Tecnologia da Informação (TI)',
 };
 
 export const LEGACY_DEPARTMENTS = [
   'human-resources',
   'controlling',
   'cleaning',
-  'information-technology',
 ] as const;
 
 export const DEPARTMENTS = [
@@ -394,6 +395,10 @@ export const DEFAULT_DEPARTMENT_PERMISSIONS: Readonly<
     'manuals:manage',
     'reports:view',
     'reports:export',
+    'users:view',
+    'users:create',
+    'users:update',
+    'users:manage',
   ],
 };
 

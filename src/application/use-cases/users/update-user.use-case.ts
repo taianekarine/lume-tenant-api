@@ -27,6 +27,7 @@ import {
   UsersRepository,
 } from '../../contracts/repositories';
 import { presentUser } from '../../presenters/user.presenter';
+import { assertCanAccessUserTarget } from '../../../domain/access/user-management-policy';
 
 export interface UpdateUserInput {
   companyId: string;
@@ -57,6 +58,36 @@ export class UpdateUserUseCase {
 
     if (!target) {
       throw notFound('Usuário');
+    }
+
+    const actorId = input.actorUserId ?? input.currentUserId;
+    const actor = actorId
+      ? await this.users.findById(input.companyId, actorId)
+      : null;
+    const actorRole = actor
+      ? assertCanAccessUserTarget(actor.user.props, target.user.props)
+      : null;
+    if (
+      actorRole === 'people-operations' &&
+      (input.cpf !== undefined ||
+        input.isAdministrator !== undefined ||
+        input.documentAccessMode !== undefined ||
+        input.departments !== undefined ||
+        input.permissionCodes !== undefined)
+    ) {
+      throw forbidden(
+        'RH e Departamento Pessoal não podem alterar acessos ou permissões de usuários existentes.',
+      );
+    }
+    if (
+      actorRole === 'information-technology' &&
+      input.permissionCodes?.some((permission) =>
+        permission.startsWith('license:'),
+      )
+    ) {
+      throw forbidden(
+        'Somente administradores podem conceder acesso à licença.',
+      );
     }
 
     const emailNormalized = input.email
@@ -95,10 +126,6 @@ export class UpdateUserUseCase {
       finalIsAdministrator !== target.user.props.isAdministrator;
 
     if (target.user.props.isAdministrator || administratorChanged) {
-      const actorId = input.actorUserId ?? input.currentUserId;
-      const actor = actorId
-        ? await this.users.findById(input.companyId, actorId)
-        : null;
       if (!actor?.user.props.isAdministrator) {
         throw forbidden(
           'Somente outro administrador pode alterar uma conta administradora.',

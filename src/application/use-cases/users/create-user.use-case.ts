@@ -10,6 +10,7 @@ import {
   type PermissionCode,
   type SupportedUserDepartment,
 } from '../../../domain/access/access.constants';
+import { resolveUserManagementRole } from '../../../domain/access/user-management-policy';
 import {
   isValidUsername,
   User,
@@ -64,24 +65,39 @@ export class CreateUserUseCase {
       throw forbidden('O usuário responsável pela criação não foi encontrado.');
     }
 
-    const actorIsAdministrator = actor?.user.props.isAdministrator === true;
-    const actorCanCreateDocumentAccess =
-      actor?.user.props.departments.some((department) =>
-        ['personnel-department', 'human-resources'].includes(department),
-      ) === true;
+    const actorRole = actor
+      ? resolveUserManagementRole(actor.user.props)
+      : null;
+    const actorIsAdministrator = actorRole === 'administrator';
     const isAdministrator = input.isAdministrator === true;
 
     if (input.actorUserId && !actorIsAdministrator) {
-      if (!actorCanCreateDocumentAccess) {
+      if (actorRole === 'none') {
         throw forbidden(
-          'Somente administradores, RH e Departamento Pessoal podem criar acessos.',
+          'Somente administradores, TI, RH e Departamento Pessoal podem criar acessos.',
+        );
+      }
+      if (actorRole === 'information-technology' && isAdministrator) {
+        throw forbidden(
+          'Somente administradores podem criar uma conta administradora.',
         );
       }
       if (
-        isAdministrator ||
-        input.documentAccessMode !== 'document-portal' ||
-        input.departments.length > 0 ||
-        input.permissionCodes.length > 0
+        actorRole === 'information-technology' &&
+        input.permissionCodes.some((permission) =>
+          permission.startsWith('license:'),
+        )
+      ) {
+        throw forbidden(
+          'Somente administradores podem conceder acesso à licença.',
+        );
+      }
+      if (
+        actorRole === 'people-operations' &&
+        (isAdministrator ||
+          input.documentAccessMode !== 'document-portal' ||
+          input.departments.length > 0 ||
+          input.permissionCodes.length > 0)
       ) {
         throw forbidden(
           'RH e Departamento Pessoal podem criar somente o acesso inicial ao portal de documentos, sem departamentos ou permissões adicionais.',

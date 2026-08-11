@@ -118,7 +118,7 @@ describe('fluxo de automação do WhatsApp', () => {
     });
   });
 
-  it('usa o snapshot imutável do evento para decidir o roteamento', () => {
+  it('usa o estado mais recente quando uma mensagem chegou durante a IA', () => {
     const eventConversation = conversation({ flowStep: 'main-menu' });
     const latestConversation = conversation({
       flowStep: 'quote-data-collection',
@@ -132,9 +132,9 @@ describe('fluxo de automação do WhatsApp', () => {
         conversation: latestConversation,
       }),
     ).toMatchObject({
-      responseMessage: COMMERCIAL_MENU,
-      transitionBeforeAi: 'select-commercial',
-      reason: 'commercial-selected',
+      kind: 'ai',
+      aiMode: 'eventual-quote',
+      reason: 'continue-quote',
     });
   });
 
@@ -269,30 +269,60 @@ describe('fluxo de automação do WhatsApp', () => {
     });
   });
 
-  it('aplica a mesma orientação durante atendimento humano sem mudar o estado', () => {
-    const current = conversation({
-      conversationState: 'human-active',
-      flowStep: 'human-service',
-      assignedTo: { id: 'user-1', name: 'Operador' },
-    });
+  it.each([
+    'text',
+    'image',
+    'audio',
+    'video',
+    'sticker',
+    'document',
+    'unknown',
+  ] as const)(
+    'mantém silêncio absoluto para %s durante atendimento humano',
+    (kind) => {
+      const current = conversation({
+        conversationState: 'human-active',
+        flowStep: 'human-service',
+        assignedTo: { id: 'user-1', name: 'Operador' },
+      });
 
-    expect(
-      decideAutomationPlan({
-        envelope: envelope(null, current, {
-          kind: 'video',
-          media: { mimeType: 'video/mp4' },
-          topic: 'whatsapp.inbound.human-notification',
-          automationAllowed: false,
-          canGenerateReply: false,
-          canSendReply: false,
+      expect(
+        decideAutomationPlan({
+          envelope: envelope(kind === 'text' ? 'Detalhe' : null, current, {
+            kind,
+            media: kind === 'text' ? null : { received: true },
+            topic: 'whatsapp.inbound.human-notification',
+            automationAllowed: false,
+            canGenerateReply: false,
+            canSendReply: false,
+          }),
         }),
-      }),
-    ).toMatchObject({
-      kind: 'static-reply',
-      responseMessage: UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT,
-      transitionAfterSend: null,
-    });
-  });
+      ).toMatchObject({
+        kind: 'human-notification',
+        responseMessage: null,
+        transitionAfterSend: null,
+        reason: 'human-active-blocks-bot',
+      });
+    },
+  );
+
+  it.each([
+    { conversationState: 'sent-to-human' as const },
+    { flowStep: 'human-service' as const },
+    { assignedTo: { id: 'user-1', name: 'Operador' } },
+  ])(
+    'bloqueia toda automação em qualquer sinal de atendimento humano',
+    (blocked) => {
+      expect(
+        decideAutomationPlan({
+          envelope: envelope('Olá', conversation(blocked)),
+        }),
+      ).toMatchObject({
+        kind: 'human-notification',
+        responseMessage: null,
+      });
+    },
+  );
 
   it('não ativa o bot durante atendimento humano', () => {
     const current = conversation({

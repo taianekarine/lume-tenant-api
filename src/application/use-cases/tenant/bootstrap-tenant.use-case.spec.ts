@@ -14,7 +14,7 @@ import {
 import { BootstrapTenantUseCase } from './bootstrap-tenant.use-case';
 
 describe('BootstrapTenantUseCase', () => {
-  it('publishes only the nine assignable departments with PT-BR labels', () => {
+  it('publishes all assignable departments with PT-BR labels', () => {
     expect(ASSIGNABLE_DEPARTMENTS).toEqual([
       'commercial',
       'purchasing',
@@ -25,6 +25,7 @@ describe('BootstrapTenantUseCase', () => {
       'maintenance',
       'monitoring',
       'operations',
+      'information-technology',
     ]);
     expect(
       ASSIGNABLE_DEPARTMENTS.map(
@@ -40,6 +41,7 @@ describe('BootstrapTenantUseCase', () => {
       'Manutenção',
       'Monitoramento',
       'Operacional',
+      'Tecnologia da Informação (TI)',
     ]);
   });
 
@@ -53,7 +55,7 @@ describe('BootstrapTenantUseCase', () => {
     ).execute(companyFixture);
 
     expect(result.tenant.id).toBe(license.status().payload.tenantId);
-    expect(store.tenantDepartments).toHaveLength(9);
+    expect(store.tenantDepartments).toHaveLength(10);
     expect(
       store.tenantDepartments.map((department) => department.name),
     ).toEqual([
@@ -66,6 +68,7 @@ describe('BootstrapTenantUseCase', () => {
       'Manutenção',
       'Monitoramento',
       'Operacional',
+      'Tecnologia da Informação (TI)',
     ]);
     expect(
       store.tenantDepartments.find((department) => department.isDefault)?.code,

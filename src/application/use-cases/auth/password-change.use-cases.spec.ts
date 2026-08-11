@@ -292,6 +292,7 @@ describe('password change flow', () => {
       emailNormalized: 'usuario@example.test',
       cpfNormalized: null,
       passwordHash: await passwordHasher.hash('SenhaAtual@2026'),
+      isAdministrator: true,
       departments: ['commercial'],
     });
     store.users.push(user);
@@ -313,7 +314,7 @@ describe('password change flow', () => {
     await expect(
       useCase.execute({
         companyId: company.id,
-        actorUserId: '00000000-0000-4000-8000-000000000099',
+        actorUserId: user.id,
         userId: user.id,
       }),
     ).rejects.toThrow('Delivery failed.');
@@ -353,6 +354,7 @@ describe('password change flow', () => {
       emailNormalized: 'usuario@example.test',
       cpfNormalized: null,
       passwordHash: await passwordHasher.hash('SenhaTemporaria@2026'),
+      isAdministrator: true,
       departments: ['commercial'],
       mustChangePassword: true,
     });
@@ -382,7 +384,7 @@ describe('password change flow', () => {
         }),
       ).execute({
         companyId: company.id,
-        actorUserId: '00000000-0000-4000-8000-000000000099',
+        actorUserId: user.id,
         userId: user.id,
       }),
     ).rejects.toThrow('Delivery failed.');
@@ -493,6 +495,89 @@ describe('password change flow', () => {
       code: 'EMAIL_DELIVERY_UNAVAILABLE',
     });
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('allows TI to request a reset for another ordinary user but blocks self and administrators', async () => {
+    const store = new InMemoryStore();
+    const company = Company.create({
+      id: '00000000-0000-4000-8000-000000000010',
+      legalName: 'Empresa Teste',
+      taxId: '11222333000181',
+    });
+    const administrator = User.create({
+      companyId: company.id,
+      name: 'Administradora',
+      username: 'admin',
+      usernameNormalized: 'admin',
+      email: 'admin@example.test',
+      emailNormalized: 'admin@example.test',
+      cpfNormalized: null,
+      passwordHash: 'hashed:SenhaInicial@2026',
+      isAdministrator: true,
+      departments: [],
+    });
+    const informationTechnology = User.create({
+      companyId: company.id,
+      name: 'Analista de TI',
+      username: 'analista.ti',
+      usernameNormalized: 'analista.ti',
+      email: 'ti@example.test',
+      emailNormalized: 'ti@example.test',
+      cpfNormalized: null,
+      passwordHash: 'hashed:SenhaInicial@2026',
+      departments: ['information-technology'],
+    });
+    const common = User.create({
+      companyId: company.id,
+      name: 'Usuário comum',
+      username: 'usuario.comum',
+      usernameNormalized: 'usuario.comum',
+      email: 'comum@example.test',
+      emailNormalized: 'comum@example.test',
+      cpfNormalized: null,
+      passwordHash: 'hashed:SenhaInicial@2026',
+      departments: ['commercial'],
+    });
+    store.companies.push(company);
+    store.users.push(administrator, informationTechnology, common);
+    const notifier = new RecordingPasswordResetNotifier();
+    const useCase = new RequestAdminPasswordResetUseCase(
+      new InMemoryUsersRepository(store),
+      new InMemoryPasswordChangeChallengesRepository(store),
+      new FakePasswordChangeTokenService(),
+      notifier,
+      new TestAuditLogsRepository(),
+      new ConfigService({
+        PASSWORD_CHANGE_TOKEN_TTL_MINUTES: 30,
+        PASSWORD_RESET_URL_BASE: 'https://tenant.example/password-change',
+      }),
+    );
+
+    await expect(
+      useCase.execute({
+        companyId: company.id,
+        actorUserId: informationTechnology.id,
+        userId: common.id,
+      }),
+    ).resolves.toMatchObject({ requested: true });
+
+    await expect(
+      useCase.execute({
+        companyId: company.id,
+        actorUserId: informationTechnology.id,
+        userId: informationTechnology.id,
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    await expect(
+      useCase.execute({
+        companyId: company.id,
+        actorUserId: informationTechnology.id,
+        userId: administrator.id,
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(notifier.notifications).toHaveLength(1);
+    expect(store.passwordChallenges).toHaveLength(1);
   });
 
   it('blocks a non-administrator from resetting an administrator password', async () => {

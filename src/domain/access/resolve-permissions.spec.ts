@@ -59,7 +59,8 @@ describe('resolveEffectivePermissions', () => {
       if (
         department === 'management' ||
         department === 'human-resources' ||
-        department === 'personnel-department'
+        department === 'personnel-department' ||
+        department === 'information-technology'
       ) {
         continue;
       }
@@ -73,6 +74,23 @@ describe('resolveEffectivePermissions', () => {
         department,
       ).toBe(false);
     }
+  });
+
+  it('grants user management to existing TI users without granting license access', () => {
+    const permissions = resolveEffectivePermissions(
+      ['information-technology'],
+      [],
+    );
+
+    expect(permissions).toEqual(
+      expect.arrayContaining([
+        'users:view',
+        'users:create',
+        'users:update',
+        'users:manage',
+      ]),
+    );
+    expect(permissions).not.toContain('license:view');
   });
 
   it('limits HR and Personnel Department to viewing and creating user access', () => {

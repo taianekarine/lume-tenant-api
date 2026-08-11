@@ -57,6 +57,7 @@ const departmentPersistenceCodes: Readonly<
   maintenance: DepartmentCode.MAINTENANCE,
   monitoring: DepartmentCode.MONITORING,
   operations: DepartmentCode.OPERATIONS,
+  'information-technology': DepartmentCode.INFORMATION_TECHNOLOGY,
 };
 
 const tenantDepartments = ASSIGNABLE_DEPARTMENTS.map((publicCode) => ({

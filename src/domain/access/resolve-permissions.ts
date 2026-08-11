@@ -43,6 +43,13 @@ export function resolveEffectivePermissions(
     EMPLOYEE_SELF_SERVICE_PERMISSIONS,
   );
 
+  if (departments.includes('information-technology')) {
+    permissions.add('users:view');
+    permissions.add('users:create');
+    permissions.add('users:update');
+    permissions.add('users:manage');
+  }
+
   for (const permission of filterPermissionCodesForDepartments(
     departments,
     individualPermissions,

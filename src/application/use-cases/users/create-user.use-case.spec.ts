@@ -202,6 +202,75 @@ describe('tenant-scoped user use cases', () => {
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
+  it('allows an existing TI user to create an ordinary user with departments and permissions', async () => {
+    const informationTechnology = await createUser.execute({
+      companyId: store.companies[0].id,
+      name: 'Analista de TI',
+      username: 'analista.ti',
+      email: 'ti@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['information-technology'],
+      permissionCodes: [],
+    });
+
+    const created = await createUser.execute({
+      companyId: store.companies[0].id,
+      actorUserId: informationTechnology.id,
+      name: 'Novo Comercial',
+      username: 'novo.comercial',
+      email: 'novo.comercial@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['commercial'],
+      permissionCodes: ['commercial:view', 'commercial:manage'],
+    });
+
+    expect(created.isAdministrator).toBe(false);
+    expect(created.departments).toEqual(['commercial']);
+    expect(created.permissionCodes).toEqual([
+      'commercial:manage',
+      'commercial:view',
+    ]);
+  });
+
+  it('prevents TI from creating administrators or granting license permissions', async () => {
+    const informationTechnology = await createUser.execute({
+      companyId: store.companies[0].id,
+      name: 'Analista de TI',
+      username: 'analista.ti',
+      email: 'ti@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['information-technology'],
+      permissionCodes: [],
+    });
+
+    await expect(
+      createUser.execute({
+        companyId: store.companies[0].id,
+        actorUserId: informationTechnology.id,
+        name: 'Admin indevido',
+        username: 'admin.por.ti',
+        email: 'admin.por.ti@empresa.test',
+        password: 'OutraSenha@2026',
+        isAdministrator: true,
+        departments: [],
+        permissionCodes: [],
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    await expect(
+      createUser.execute({
+        companyId: store.companies[0].id,
+        actorUserId: informationTechnology.id,
+        name: 'Licença indevida',
+        username: 'licenca.por.ti',
+        email: 'licenca.por.ti@empresa.test',
+        password: 'OutraSenha@2026',
+        departments: ['management'],
+        permissionCodes: ['license:view'],
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
   it.each(['12345678901', '---', '1234'])(
     'rejects username without at least one letter: %s',
     async (username) => {
@@ -221,10 +290,10 @@ describe('tenant-scoped user use cases', () => {
 
   it('does not return a user through another company id', async () => {
     await expect(
-      new GetUserUseCase(users).execute(
-        '00000000-0000-4000-8000-000000000099',
-        store.users[0].id,
-      ),
+      new GetUserUseCase(users).execute({
+        companyId: '00000000-0000-4000-8000-000000000099',
+        userId: store.users[0].id,
+      }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 });

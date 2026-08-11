@@ -40,6 +40,10 @@ leitura normal usa somente a cópia persistida. Defina
 `EVOLUTION_MEDIA_CONTENT_TIMEOUT_MS` acima do timeout esperado da Evolution e
 abaixo do timeout do proxy reverso.
 
+Mantenha `WHATSAPP_MAX_ATTACHMENT_BYTES=52428800` (50 MiB) na API. Esse valor
+fica abaixo do limite aproximado de 55 MiB do proxy. Arquivos maiores continuam
+no histórico com indicação de limite excedido, mas não são baixados nem gravados.
+
 `WHATSAPP_MEDIA_STORAGE_PATH` é obrigatório e absoluto em produção. No Compose,
 o caminho é `/app/var/whatsapp-media`. Não use a camada gravável efêmera do
 container. Monitore espaço livre e erros de escrita; uma falha temporária de
@@ -61,7 +65,10 @@ seletor de consumidor. Não execute outro processo lendo a mesma outbox.
 - imagem, áudio, vídeo, figurinha, documento e PDF abrem no painel antes e
   depois de reiniciar a API;
 - desligar temporariamente o acesso à Evolution não afeta mídias já armazenadas;
-- conteúdo não textual não avança menus nem coleta da IA e recebe orientação;
+- conteúdo não textual não avança menus nem coleta da IA e recebe orientação
+  somente quando o bot está ativo;
+- durante atendimento humano, texto e qualquer mídia são persistidos sem nenhuma
+  resposta automática;
 - logs e interface não exibem segredos nem detalhes internos ao usuário.
 
 ## Recuperação

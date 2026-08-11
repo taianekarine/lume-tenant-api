@@ -305,4 +305,40 @@ describe('EvolutionMediaContentService', () => {
       code: 'EXTERNAL_SERVICE_UNAVAILABLE',
     });
   });
+
+  it('mantém visível a mensagem acima do limite sem baixar o arquivo', async () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const prisma = prismaWithMessage({
+      id: messageId,
+      companyId,
+      conversationId,
+      providerMessageId: 'large-video',
+      direction: MessageDirection.INBOUND,
+      kind: MessageKind.VIDEO,
+      media: {
+        mimeType: 'video/mp4',
+        fileName: 'video-grande.mp4',
+        size: 10_485_761,
+        retentionStatus: 'too-large',
+      },
+      proposalDocument: null,
+    });
+    const service = new EvolutionMediaContentService(
+      prisma,
+      mediaStorage(),
+      config(),
+    );
+
+    await expect(
+      service.retainInbound(companyId, conversationId, messageId),
+    ).resolves.toMatchObject({ status: 'too-large', messageId });
+    await expect(
+      service.getContent(companyId, conversationId, messageId),
+    ).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: expect.stringContaining('excede o limite'),
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

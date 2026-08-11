@@ -280,12 +280,43 @@ export function decideAutomationPlan(input: {
   const { envelope } = input;
   const currentConversation =
     input.conversation ?? envelope.payload.conversation;
-  const routingConversation = envelope.payload.conversation;
+  const routingConversation = currentConversation;
   const messageText = (
     input.bufferedText ??
     getProcessableMessageText(envelope) ??
     ''
   ).trim();
+
+  const humanAutomationBlocked =
+    envelope.topic === 'whatsapp.inbound.human-notification' ||
+    currentConversation.conversationState === 'human-active' ||
+    currentConversation.conversationState === 'sent-to-human' ||
+    currentConversation.flowStep === 'human-service' ||
+    currentConversation.assignedTo != null;
+
+  if (humanAutomationBlocked) {
+    return {
+      kind: 'human-notification',
+      responseMessage: null,
+      transitionBeforeAi: null,
+      transitionAfterSend: null,
+      transitionMetadata: {
+        reason: 'human-conversation-inbound',
+        historyAvailableInPanel: true,
+      },
+      aiMode: null,
+      reason: 'human-active-blocks-bot',
+    };
+  }
+
+  if (
+    envelope.payload.automationAllowed !== true ||
+    envelope.payload.canGenerateReply !== true ||
+    envelope.payload.canSendReply !== true ||
+    currentConversation.conversationState !== 'bot-active'
+  ) {
+    return suppressed('tenant-api-did-not-authorize-automatic-reply');
+  }
 
   const initialMenuRequired =
     currentConversation.conversationState === 'bot-active' &&
@@ -334,33 +365,6 @@ export function decideAutomationPlan(input: {
       reason: 'unsupported-message-kind-preserves-conversation-state',
       outboundPurpose: 'unsupported-message-kind',
     };
-  }
-
-  if (
-    envelope.topic === 'whatsapp.inbound.human-notification' ||
-    currentConversation.conversationState === 'human-active'
-  ) {
-    return {
-      kind: 'human-notification',
-      responseMessage: null,
-      transitionBeforeAi: null,
-      transitionAfterSend: null,
-      transitionMetadata: {
-        reason: 'human-conversation-inbound',
-        historyAvailableInPanel: true,
-      },
-      aiMode: null,
-      reason: 'human-active-blocks-bot',
-    };
-  }
-
-  if (
-    envelope.payload.automationAllowed !== true ||
-    envelope.payload.canGenerateReply !== true ||
-    envelope.payload.canSendReply !== true ||
-    currentConversation.conversationState !== 'bot-active'
-  ) {
-    return suppressed('tenant-api-did-not-authorize-automatic-reply');
   }
 
   if (currentConversation.departmentContactOption) {

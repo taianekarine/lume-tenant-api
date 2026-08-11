@@ -5,6 +5,7 @@ import {
   validationError,
 } from '../../../core/errors/app-error';
 import type { UserAccountStatus } from '../../../domain/entities/user';
+import { assertCanManageUserTarget } from '../../../domain/access/user-management-policy';
 import {
   TenantAuditLogsRepository,
   UsersRepository,
@@ -31,20 +32,12 @@ export class UpdateUserStatusUseCase {
     const target = await this.users.findById(input.companyId, input.userId);
     if (!target) throw notFound('Usuário');
 
+    const actor = await this.users.findById(input.companyId, input.actorUserId);
+    if (!actor) throw notFound('Usuário responsável');
+    assertCanManageUserTarget(actor.user.props, target.user.props);
+
     if (input.userId === input.currentUserId && input.status !== 'active') {
       throw forbidden('Você não pode desativar ou suspender a própria conta.');
-    }
-
-    if (target.user.props.isAdministrator) {
-      const actor = await this.users.findById(
-        input.companyId,
-        input.actorUserId,
-      );
-      if (!actor?.user.props.isAdministrator) {
-        throw forbidden(
-          'Somente outro administrador pode alterar o status de um administrador.',
-        );
-      }
     }
 
     const now = new Date();

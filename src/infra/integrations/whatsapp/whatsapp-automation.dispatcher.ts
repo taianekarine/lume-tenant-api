@@ -70,7 +70,26 @@ export class WhatsAppAutomationDispatcher
     this.running = true;
     try {
       const events = await this.eventStore.claim(this.batchSize);
-      await Promise.all(events.map((event) => this.dispatch(event)));
+      const eventsByConversation = new Map<
+        string,
+        ClaimedWhatsAppAutomationEvent[]
+      >();
+      for (const event of events) {
+        const key = `${event.companyId}:${event.aggregateType}:${event.aggregateId}`;
+        const group = eventsByConversation.get(key) ?? [];
+        group.push(event);
+        eventsByConversation.set(key, group);
+      }
+      await Promise.all(
+        Array.from(eventsByConversation.values()).map(async (group) => {
+          group.sort((left, right) =>
+            left.aggregateSequence === right.aggregateSequence
+              ? left.createdAt.valueOf() - right.createdAt.valueOf()
+              : left.aggregateSequence - right.aggregateSequence,
+          );
+          for (const event of group) await this.dispatch(event);
+        }),
+      );
     } finally {
       this.running = false;
     }

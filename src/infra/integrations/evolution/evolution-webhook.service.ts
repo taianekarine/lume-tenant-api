@@ -150,7 +150,7 @@ export class EvolutionWebhookService {
     this.maximumPayloadBytes =
       config.get<number>('WHATSAPP_MAX_WEBHOOK_BYTES') ?? 262_144;
     this.maximumAttachmentBytes =
-      config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ?? 10_485_760;
+      config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ?? 52_428_800;
     this.allowedMimeTypes = new Set(
       (
         config.get<string>('WHATSAPP_ALLOWED_MIME_TYPES') ??
@@ -402,13 +402,11 @@ export class EvolutionWebhookService {
       throw validationError('Tipo MIME do anexo não permitido.');
     }
     const size = protobufInteger(media.fileLength ?? media.fileSize);
-    if (
-      !Number.isFinite(size) ||
-      size < 0 ||
-      size > this.maximumAttachmentBytes
-    ) {
-      throw validationError('Tamanho do anexo inválido ou acima do limite.');
+    if (!Number.isFinite(size) || size < 0) {
+      throw validationError('Tamanho do anexo inválido.');
     }
+    const retentionStatus =
+      size > this.maximumAttachmentBytes ? 'too-large' : 'pending';
     const url =
       typeof media.url === 'string'
         ? media.url
@@ -436,6 +434,7 @@ export class EvolutionWebhookService {
       media: {
         mimeType,
         size,
+        retentionStatus,
         ...(typeof media.fileName === 'string'
           ? { fileName: media.fileName.slice(0, 255) }
           : {}),

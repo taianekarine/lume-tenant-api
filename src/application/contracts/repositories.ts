@@ -41,6 +41,8 @@ export interface UserListQuery {
   department?: UserDepartment;
   permission?: PermissionCode;
   status?: UserAccountStatus;
+  excludeUserId?: string;
+  excludeAdministrators?: boolean;
 }
 
 export interface UserListResult {

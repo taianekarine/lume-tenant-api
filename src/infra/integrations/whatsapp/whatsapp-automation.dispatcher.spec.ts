@@ -27,14 +27,15 @@ const event: ClaimedWhatsAppAutomationEvent = {
 
 function createSubject(
   input: {
-    apiExecute?: () => Promise<void>;
+    apiExecute?: (event: ClaimedWhatsAppAutomationEvent) => Promise<void>;
     markAccepted?: () => Promise<void>;
+    claimedEvents?: ClaimedWhatsAppAutomationEvent[];
   } = {},
 ) {
   const calls: string[] = [];
   const claim = vi
     .fn()
-    .mockResolvedValueOnce([event])
+    .mockResolvedValueOnce(input.claimedEvents ?? [event])
     .mockResolvedValueOnce([]);
   const eventStore = {
     claim,
@@ -49,9 +50,9 @@ function createSubject(
   const apiProvider = {
     name: 'api' as const,
     acknowledgement: 'before-execution' as const,
-    execute: vi.fn(async () => {
+    execute: vi.fn(async (claimedEvent: ClaimedWhatsAppAutomationEvent) => {
       calls.push('execute:api');
-      await input.apiExecute?.();
+      await input.apiExecute?.(claimedEvent);
     }),
   };
   const repository = {
@@ -139,5 +140,34 @@ describe('WhatsAppAutomationDispatcher', () => {
       'execute:api',
       'completed-after-acceptance',
     ]);
+  });
+
+  it('serializa defensivamente eventos da mesma conversa', async () => {
+    let activeExecutions = 0;
+    let maximumConcurrency = 0;
+    const second = {
+      ...event,
+      id: '00000000-0000-4000-8000-000000000011',
+      executionId: '00000000-0000-4000-8000-000000000014',
+      aggregateSequence: 2,
+      createdAt: new Date('2026-08-06T12:00:01.000Z'),
+    };
+    const subject = createSubject({
+      claimedEvents: [second, event],
+      apiExecute: async () => {
+        activeExecutions += 1;
+        maximumConcurrency = Math.max(maximumConcurrency, activeExecutions);
+        await Promise.resolve();
+        activeExecutions -= 1;
+      },
+    });
+
+    await subject.subject.tick();
+
+    expect(maximumConcurrency).toBe(1);
+    expect(subject.apiProvider.execute).toHaveBeenCalledTimes(2);
+    expect(
+      subject.apiProvider.execute.mock.calls.map(([claimed]) => claimed.id),
+    ).toEqual([event.id, second.id]);
   });
 });

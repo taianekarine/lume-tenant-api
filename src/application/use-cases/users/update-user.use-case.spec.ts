@@ -172,6 +172,156 @@ describe('UpdateUserUseCase', () => {
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
+  it('allows TI to edit another ordinary user but blocks self and administrator targets', async () => {
+    const administrator = store.users[0];
+    const informationTechnology = await create.execute({
+      companyId: administrator.companyId,
+      name: 'Analista de TI',
+      username: 'analista.ti',
+      email: 'ti@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['information-technology'],
+      permissionCodes: [],
+    });
+    const common = await create.execute({
+      companyId: administrator.companyId,
+      name: 'Usuário comum',
+      username: 'usuario.comum',
+      email: 'comum@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['commercial'],
+      permissionCodes: ['commercial:view'],
+    });
+
+    await expect(
+      useCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: common.id,
+        departments: ['operations'],
+        permissionCodes: ['operations:view'],
+      }),
+    ).resolves.toMatchObject({ departments: ['operations'] });
+
+    await expect(
+      useCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: informationTechnology.id,
+        name: 'Autoedição indevida',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    await expect(
+      useCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: administrator.id,
+        name: 'Administrador capturado',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('allows TI to suspend and reactivate another ordinary user but blocks self and administrators', async () => {
+    const administrator = store.users[0];
+    const informationTechnology = await create.execute({
+      companyId: administrator.companyId,
+      name: 'Analista de TI',
+      username: 'analista.ti.status',
+      email: 'ti.status@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['information-technology'],
+      permissionCodes: [],
+    });
+    const common = await create.execute({
+      companyId: administrator.companyId,
+      name: 'Usuário comum',
+      username: 'usuario.status',
+      email: 'usuario.status@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['commercial'],
+      permissionCodes: ['commercial:view'],
+    });
+    const statusUseCase = new UpdateUserStatusUseCase(users);
+
+    await expect(
+      statusUseCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: common.id,
+        status: 'suspended',
+        suspendedUntil: new Date(Date.now() + 86_400_000),
+        suspensionReason: 'Bloqueio solicitado',
+      }),
+    ).resolves.toMatchObject({ status: 'suspended', isActive: false });
+
+    await expect(
+      statusUseCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: common.id,
+        status: 'active',
+      }),
+    ).resolves.toMatchObject({ status: 'active', isActive: true });
+
+    await expect(
+      statusUseCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: informationTechnology.id,
+        status: 'active',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    await expect(
+      statusUseCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: administrator.id,
+        status: 'active',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('prevents TI from granting license permissions while editing another user', async () => {
+    const administrator = store.users[0];
+    const informationTechnology = await create.execute({
+      companyId: administrator.companyId,
+      name: 'Analista de TI',
+      username: 'analista.ti',
+      email: 'ti@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['information-technology'],
+      permissionCodes: [],
+    });
+    const common = await create.execute({
+      companyId: administrator.companyId,
+      name: 'Usuário comum',
+      username: 'usuario.comum',
+      email: 'comum@empresa.test',
+      password: 'OutraSenha@2026',
+      departments: ['management'],
+      permissionCodes: [],
+    });
+
+    await expect(
+      useCase.execute({
+        companyId: administrator.companyId,
+        actorUserId: informationTechnology.id,
+        currentUserId: informationTechnology.id,
+        userId: common.id,
+        permissionCodes: ['license:view'],
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
   it('keeps one active direct administrator', async () => {
     const administrator = store.users[0];
     const inactiveAdministrator = User.restore({

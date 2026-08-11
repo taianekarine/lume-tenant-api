@@ -36,6 +36,7 @@ function conversation(overrides: Record<string, unknown> = {}) {
     followUpMenuPresentedAt: null,
     departmentContactOption: null,
     currentQuoteRequest: null,
+    assignedTo: null,
     ...overrides,
   };
 }
@@ -281,6 +282,71 @@ describe('ApiWhatsAppAutomationProvider', () => {
       expect.objectContaining({ outcome: 'succeeded' }),
     );
   });
+
+  it.each([
+    'text',
+    'image',
+    'sticker',
+    'audio',
+    'video',
+    'document',
+    'unknown',
+  ])(
+    'mantém silêncio absoluto no atendimento humano para mensagem %s',
+    async (kind) => {
+      const current = conversation({
+        conversationState: 'human-active',
+        flowStep: 'human-service',
+        assignedTo: { id: 'user-1', name: 'Atendente' },
+      });
+      const { subject, repository, evolution, agent } = createSubject({
+        repository: {
+          getAutomationBatch: vi.fn(async () => ({
+            conversation: current,
+            batch: {
+              messages: [
+                {
+                  sourceEventId: 'evolution:source-1',
+                  messageId: ids.message,
+                  occurredAt: '2026-08-06T12:00:00.000Z',
+                  kind,
+                  text: kind === 'text' ? 'mensagem para o atendente' : null,
+                },
+              ],
+            },
+          })),
+        },
+      });
+
+      await subject.execute(
+        event('whatsapp.inbound.human-notification', {
+          conversation: current,
+          message: {
+            providerMessageId: `provider-${kind}-1`,
+            direction: 'inbound',
+            deliveryStatus: 'received',
+            kind,
+            text: kind === 'text' ? 'mensagem para o atendente' : null,
+            media:
+              kind === 'text' ? null : { mimeType: 'application/octet-stream' },
+            occurredAt: '2026-08-06T12:00:00.000Z',
+          },
+          automationAllowed: false,
+          canGenerateReply: false,
+          canSendReply: false,
+          isFirstContact: false,
+        }),
+      );
+
+      expect(agent.complete).not.toHaveBeenCalled();
+      expect(repository.transition).not.toHaveBeenCalled();
+      expect(repository.createOutbound).not.toHaveBeenCalled();
+      expect(evolution.send).not.toHaveBeenCalled();
+      expect(repository.completeOutboxExecution).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'succeeded' }),
+      );
+    },
+  );
 
   it('responde mídia com orientação fixa sem chamar IA nem avançar o fluxo', async () => {
     const current = conversation({

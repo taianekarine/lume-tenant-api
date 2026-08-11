@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 
 import type { AuthenticatedPrincipal } from '../../application/presenters/user.presenter';
 import { ListPermissionsUseCase } from '../../application/use-cases/access/list-permissions.use-case';
-import { forbidden } from '../../core/errors/app-error';
+import { assertCanAccessUserCatalog } from '../../domain/access/user-management-policy';
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 
@@ -24,11 +24,7 @@ export class AccessController {
     description: 'Catálogo de permissões compatível com o front-end.',
   })
   permissions(@CurrentUser() current: AuthenticatedPrincipal) {
-    if (!current.departments.includes('management')) {
-      throw forbidden(
-        'O catálogo de permissões administrativas é restrito ao departamento Gerência.',
-      );
-    }
+    assertCanAccessUserCatalog(current);
     return this.listPermissions.execute();
   }
 }

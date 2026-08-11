@@ -295,6 +295,8 @@ export class PrismaUsersRepository extends UsersRepository {
     }
     const where: Prisma.UserWhereInput = {
       companyId,
+      ...(query.excludeUserId ? { id: { not: query.excludeUserId } } : {}),
+      ...(query.excludeAdministrators ? { isAdministrator: false } : {}),
       ...(accessFilters.length > 0 ? { AND: accessFilters } : {}),
       ...(query.status
         ? {

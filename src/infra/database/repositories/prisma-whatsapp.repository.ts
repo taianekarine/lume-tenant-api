@@ -2048,16 +2048,12 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         const unsupportedMessageKindReply =
           input.purpose === 'unsupported-message-kind';
         if (
-          conversation.conversationState !== ConversationState.BOT_ACTIVE &&
-          !unsupportedMessageKindReply
+          conversation.conversationState !== ConversationState.BOT_ACTIVE ||
+          conversation.flowStep === FlowStep.HUMAN_SERVICE ||
+          conversation.assignedToUserId !== null
         ) {
           throw forbidden(
             'Envio automático permitido somente em conversationState=bot-active.',
-          );
-        }
-        if (conversation.conversationState === ConversationState.CLOSED) {
-          throw forbidden(
-            'Uma conversa encerrada não aceita respostas automáticas.',
           );
         }
         if (!input.text?.trim() && !input.media) {

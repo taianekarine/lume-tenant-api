@@ -52,6 +52,10 @@ MIME, tamanho real, nome normalizado, SHA-256 e data do armazenamento. Uma nova
 tentativa do mesmo evento reutiliza a mensagem e a chave existentes, sem criar
 duplicidade.
 
+O limite funcional padrão é 50 MiB (`WHATSAPP_MAX_ATTACHMENT_BYTES=52428800`).
+Uma mídia acima desse valor não desaparece: a mensagem permanece no histórico
+com `retentionStatus=too-large`, enquanto o conteúdo não é baixado nem armazenado.
+
 A implementação atual usa `filesystem`. Em produção,
 `WHATSAPP_MEDIA_STORAGE_PATH` deve apontar para um diretório absoluto montado em
 volume persistente e incluído no backup. O `compose.prod.yml` monta o volume
@@ -83,8 +87,10 @@ etapa, o conteúdo não é interpretado como resposta e o cliente recebe:
 > Ainda não consigo interpretar esse tipo de arquivo. Por favor, envie sua resposta em texto.
 
 Durante a coleta de orçamento, a pergunta textual pendente é repetida antes da
-orientação. A mesma regra vale no menu inicial, menu comercial e atendimento
-humano. Na reabertura de uma conversa encerrada, o menu inicial aparece primeiro.
+orientação. A mesma regra vale no menu inicial e no menu comercial. Durante
+atendimento humano, a entrada continua persistida e visível, mas o bot permanece
+em silêncio absoluto. Na reabertura de uma conversa encerrada, o menu inicial
+aparece primeiro.
 
 ## Configuração mínima
 

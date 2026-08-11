@@ -90,7 +90,7 @@ interface MediaMessageRow {
 }
 
 export interface RetainWhatsAppMediaResult {
-  readonly status: 'stored' | 'already-stored' | 'unavailable';
+  readonly status: 'stored' | 'already-stored' | 'unavailable' | 'too-large';
   readonly messageId: string;
   readonly sizeBytes?: number;
   readonly mimeType?: string;
@@ -256,7 +256,7 @@ export class EvolutionMediaContentService {
     this.instanceName = config.get<string>('EVOLUTION_INSTANCE_NAME') ?? '';
     this.apiKey = config.get<string>('EVOLUTION_API_KEY') ?? '';
     this.maximumBytes =
-      config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ?? 10_485_760;
+      config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ?? 52_428_800;
     this.requestTimeoutMs =
       config.get<number>('EVOLUTION_MEDIA_CONTENT_TIMEOUT_MS') ?? 30_000;
     this.allowedMimeTypes = new Set(
@@ -291,6 +291,7 @@ export class EvolutionMediaContentService {
       return (await this.ensureStored(message)).content;
     } catch (error) {
       if (error instanceof AppError && error.code === 'NOT_FOUND') {
+        await this.markRetentionStatus(message, 'unavailable');
         throw unavailableMedia();
       }
       throw error;
@@ -321,7 +322,15 @@ export class EvolutionMediaContentService {
       };
     } catch (error) {
       if (error instanceof AppError && error.code === 'NOT_FOUND') {
+        await this.markRetentionStatus(message, 'unavailable');
         return { status: 'unavailable', messageId };
+      }
+      if (
+        error instanceof AppError &&
+        error.details?.retentionStatus === 'too-large'
+      ) {
+        await this.markRetentionStatus(message, 'too-large');
+        return { status: 'too-large', messageId };
       }
       throw error;
     }
@@ -332,7 +341,20 @@ export class EvolutionMediaContentService {
     readonly alreadyStored: boolean;
   }> {
     const stored = await this.readStoredContent(message);
-    if (stored) return { content: stored, alreadyStored: true };
+    if (stored) {
+      if (optionalObject(message.media)?.retentionStatus !== 'stored') {
+        await this.markRetentionStatus(message, 'stored');
+      }
+      return { content: stored, alreadyStored: true };
+    }
+
+    if (optionalObject(message.media)?.retentionStatus === 'too-large') {
+      throw new AppError(
+        'VALIDATION_ERROR',
+        'Este arquivo excede o limite permitido para armazenamento.',
+        { retentionStatus: 'too-large' },
+      );
+    }
 
     const content = await this.fetchEvolutionContent(message);
     await this.persistContent(message, content);
@@ -486,6 +508,13 @@ export class EvolutionMediaContentService {
         direction: MessageDirection.INBOUND,
       },
       data: {
+        media: {
+          ...(optionalObject(message.media) ?? {}),
+          mimeType: media.mimeType,
+          size: media.content.byteLength,
+          fileName: media.fileName,
+          retentionStatus: 'stored',
+        },
         mediaStorageKey: storageKey,
         mediaMimeType: media.mimeType,
         mediaSizeBytes: media.content.byteLength,
@@ -495,6 +524,26 @@ export class EvolutionMediaContentService {
       },
     });
     if (updated.count !== 1) throw notFound('Mensagem de mídia');
+  }
+
+  private async markRetentionStatus(
+    message: MediaMessageRow,
+    retentionStatus: 'stored' | 'unavailable' | 'too-large',
+  ): Promise<void> {
+    await this.prisma.whatsAppMessage.updateMany({
+      where: {
+        id: message.id,
+        companyId: message.companyId,
+        conversationId: message.conversationId,
+        direction: MessageDirection.INBOUND,
+      },
+      data: {
+        media: {
+          ...(optionalObject(message.media) ?? {}),
+          retentionStatus,
+        },
+      },
+    });
   }
 
   private proposalContent(message: MediaMessageRow): WhatsAppMediaContent {

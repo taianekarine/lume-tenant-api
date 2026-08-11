@@ -191,11 +191,13 @@ export class WhatsAppPanelController {
       messageId,
     );
     return {
-      available: result.status !== 'unavailable',
+      available: ['stored', 'already-stored'].includes(result.status),
       message:
         result.status === 'unavailable'
           ? 'Este arquivo antigo não está mais disponível.'
-          : 'Arquivo armazenado com segurança.',
+          : result.status === 'too-large'
+            ? 'Este arquivo excede o limite permitido para armazenamento.'
+            : 'Arquivo armazenado com segurança.',
       ...(result.sizeBytes ? { sizeBytes: result.sizeBytes } : {}),
       ...(result.mimeType ? { mimeType: result.mimeType } : {}),
     };

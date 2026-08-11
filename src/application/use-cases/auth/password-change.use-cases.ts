@@ -18,6 +18,7 @@ import {
   TenantAuditLogsRepository,
   UsersRepository,
 } from '../../contracts/repositories';
+import { assertCanManageUserTarget } from '../../../domain/access/user-management-policy';
 
 export type PasswordChangeReason = 'first-access' | 'admin-reset';
 
@@ -243,24 +244,16 @@ export class RequestAdminPasswordResetUseCase {
     actorUserId: string;
     userId: string;
   }) {
+    const user = await this.users.findById(input.companyId, input.userId);
+    if (!user) throw notFound('Usuário');
+    const actor = await this.users.findById(input.companyId, input.actorUserId);
+    if (!actor) throw notFound('Usuário responsável');
+    assertCanManageUserTarget(actor.user.props, user.user.props);
+
     if (!this.notifier.configured) {
       throw validationError(
         'O envio de e-mail para redefinição de senha ainda não está configurado.',
       );
-    }
-
-    const user = await this.users.findById(input.companyId, input.userId);
-    if (!user) throw notFound('Usuário');
-    if (user.user.props.isAdministrator) {
-      const actor = await this.users.findById(
-        input.companyId,
-        input.actorUserId,
-      );
-      if (!actor?.user.props.isAdministrator) {
-        throw forbidden(
-          'Somente outro administrador pode redefinir a senha de um administrador.',
-        );
-      }
     }
     if (!user.user.props.isActive || user.user.props.status !== 'active') {
       throw validationError(

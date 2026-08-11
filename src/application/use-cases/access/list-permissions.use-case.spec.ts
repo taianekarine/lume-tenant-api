@@ -11,6 +11,10 @@ describe('ListPermissionsUseCase', () => {
     expect(catalog.permissions).not.toContain('users:delete');
     expect(catalog.permissions).not.toContain('dashboard:delete');
     expect(catalog.actionsByResource.dashboard).toEqual(['view']);
-    expect(catalog.departments).toHaveLength(9);
+    expect(catalog.departments).toHaveLength(10);
+    expect(catalog.departments).toContainEqual({
+      code: 'information-technology',
+      name: 'Tecnologia da Informação (TI)',
+    });
   });
 });

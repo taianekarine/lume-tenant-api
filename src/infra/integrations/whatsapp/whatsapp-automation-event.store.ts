@@ -170,6 +170,19 @@ export class WhatsAppAutomationEventStore {
             OR (
               candidate."payload" #>> '{conversation,departmentContactOption}' IS NULL
               AND candidate."created_at" <= ${normalBatchReadyAt}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM "integration_outbox" AS newer_inbound
+                WHERE newer_inbound."company_id" = candidate."company_id"
+                  AND newer_inbound."aggregate_type" = candidate."aggregate_type"
+                  AND newer_inbound."aggregate_id" = candidate."aggregate_id"
+                  AND newer_inbound."topic" IN (
+                    'whatsapp.inbound.persisted',
+                    'whatsapp.inbound.human-notification'
+                  )
+                  AND newer_inbound."aggregate_sequence" > candidate."aggregate_sequence"
+                  AND newer_inbound."created_at" > ${normalBatchReadyAt}
+              )
             )
           )
           AND (
@@ -196,7 +209,7 @@ export class WhatsAppAutomationEventStore {
               AND predecessor."aggregate_type" = candidate."aggregate_type"
               AND predecessor."aggregate_id" = candidate."aggregate_id"
               AND predecessor."aggregate_sequence" < candidate."aggregate_sequence"
-              AND predecessor."status" <> 'delivered'
+              AND predecessor."status" IN ('pending', 'processing')
           )
           ORDER BY candidate."available_at", candidate."created_at", candidate."id"
           FOR UPDATE SKIP LOCKED

@@ -18,7 +18,6 @@ import {
 
 import type { AuthenticatedPrincipal } from '../../application/presenters/user.presenter';
 import { normalizeUserDepartment } from '../../domain/access/access.constants';
-import { forbidden } from '../../core/errors/app-error';
 import { CreateUserUseCase } from '../../application/use-cases/users/create-user.use-case';
 import { GetUserUseCase } from '../../application/use-cases/users/get-user.use-case';
 import { ListUsersUseCase } from '../../application/use-cases/users/list-users.use-case';
@@ -44,28 +43,15 @@ import {
   UpdateUserStatusDto,
   UpdateUserDto,
 } from './dto/users.dto';
+import {
+  assertCanAccessUserCatalog,
+  resolveUserManagementRole,
+} from '../../domain/access/user-management-policy';
 
 function assertPeopleOperationsCreationAccess(
   current: AuthenticatedPrincipal,
 ): void {
-  if (
-    !current.isAdministrator &&
-    !current.departments.some((department) =>
-      ['personnel-department', 'human-resources'].includes(department),
-    )
-  ) {
-    throw forbidden(
-      'A criação de acessos é restrita a administradores, RH e Departamento Pessoal.',
-    );
-  }
-}
-
-function assertAdministratorAccess(current: AuthenticatedPrincipal): void {
-  if (!current.isAdministrator) {
-    throw forbidden(
-      'Somente administradores podem gerenciar acessos e permissões de usuários.',
-    );
-  }
+  assertCanAccessUserCatalog(current);
 }
 
 @ApiTags('Usuários')
@@ -142,8 +128,12 @@ export class UsersController {
     @Query() query: ListUsersQueryDto,
   ) {
     assertPeopleOperationsCreationAccess(current);
+    const role = resolveUserManagementRole(current);
     return this.listUsers.execute(current.companyId, {
       ...query,
+      ...(role === 'information-technology'
+        ? { excludeUserId: current.id, excludeAdministrators: true }
+        : {}),
       department: query.department
         ? normalizeUserDepartment(query.department)
         : undefined,
@@ -200,7 +190,11 @@ export class UsersController {
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
   ) {
     assertPeopleOperationsCreationAccess(current);
-    return this.getUser.execute(current.companyId, userId);
+    return this.getUser.execute({
+      companyId: current.companyId,
+      actorUserId: current.id,
+      userId,
+    });
   }
 
   @Patch(':id')
@@ -212,16 +206,18 @@ export class UsersController {
     @Body() body: UpdateUserDto,
   ) {
     assertPeopleOperationsCreationAccess(current);
-    const permittedBody = current.isAdministrator
-      ? body
-      : {
-          name: body.name,
-          email: body.email,
-          jobTitle: body.jobTitle,
-          maritalStatus: body.maritalStatus,
-          militaryDocumentStatus: body.militaryDocumentStatus,
-          dependents: body.dependents,
-        };
+    const role = resolveUserManagementRole(current);
+    const permittedBody =
+      role === 'administrator' || role === 'information-technology'
+        ? body
+        : {
+            name: body.name,
+            email: body.email,
+            jobTitle: body.jobTitle,
+            maritalStatus: body.maritalStatus,
+            militaryDocumentStatus: body.militaryDocumentStatus,
+            dependents: body.dependents,
+          };
     const user = await this.updateUser.execute({
       ...permittedBody,
       companyId: current.companyId,
@@ -251,7 +247,6 @@ export class UsersController {
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
     @Body() body: UpdateUserStatusDto,
   ) {
-    assertAdministratorAccess(current);
     return this.updateUserStatus.execute({
       companyId: current.companyId,
       actorUserId: current.id,
@@ -274,7 +269,6 @@ export class UsersController {
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
   ) {
-    assertAdministratorAccess(current);
     return this.requestPasswordReset.execute({
       companyId: current.companyId,
       actorUserId: current.id,
