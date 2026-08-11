@@ -17,6 +17,7 @@ describe('UsersController permissions', () => {
     expect(permissionsFor('update')).toEqual(['users:update', 'users:create']);
     expect(permissionsFor('resetPassword')).toEqual(['users:update']);
     expect(permissionsFor('status')).toEqual(['users:manage']);
+    expect(permissionsFor('delete')).toEqual(['users:manage']);
   });
 
   it('does not expose the unsupported users:delete permission', () => {
@@ -27,6 +28,7 @@ describe('UsersController permissions', () => {
       'update',
       'status',
       'resetPassword',
+      'delete',
     ] as const) {
       expect(permissionsFor(method)).not.toContain('users:delete');
     }

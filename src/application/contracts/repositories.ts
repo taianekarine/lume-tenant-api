@@ -143,6 +143,11 @@ export abstract class UsersRepository {
     userId: string,
     input: UpdateUserStatusPersistenceInput,
   ): Promise<UserRecord | null>;
+  abstract softDelete(
+    companyId: string,
+    userId: string,
+    deletedAt: Date,
+  ): Promise<boolean>;
   abstract markLastLogin(
     companyId: string,
     userId: string,
@@ -173,6 +178,7 @@ export abstract class UsersRepository {
 }
 
 export abstract class PasswordChangeChallengesRepository {
+  abstract create(challenge: PasswordChangeChallengeRecord): Promise<void>;
   abstract replaceForUser(
     challenge: PasswordChangeChallengeRecord,
   ): Promise<void>;

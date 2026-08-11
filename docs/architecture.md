@@ -110,8 +110,9 @@ controllers/DTOs em `src/modules/whatsapp`.
   e ignora valores diretos armazenados fora do teto departamental;
 - `PATCH /users/:id/status` mantém `status` e o campo legado `isActive`
   consistentes, revoga sessões e registra prazo e motivo da suspensão;
-- `users:update` é a fronteira de edição de acesso e `users:manage` é a
-  fronteira exclusiva do estado da conta; `users:delete` não é publicado;
+- `users:update` é a fronteira de edição de acesso e `users:manage` protege o
+  estado da conta; `users:delete` não é publicado no catálogo delegável, e a
+  exclusão lógica possui validação adicional de administrador no caso de uso;
 - `GET /users/me/profile`, `PUT /users/me/profile-picture` e
   `PATCH /users/me/password` operam somente sobre o principal autenticado;
 - foto de perfil é validada pelo conteúdo real (assinatura/MIME e dimensões

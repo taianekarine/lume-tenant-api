@@ -446,10 +446,23 @@ describe('password change flow', () => {
 
     const unknown = await useCase.execute({ identifier: 'inexistente' });
     const existing = await useCase.execute({ identifier: 'USUARIO' });
+    const repeated = await useCase.execute({
+      identifier: 'usuario@example.test',
+    });
 
     expect(existing).toEqual(unknown);
-    expect(notifier.notifications).toHaveLength(1);
-    expect(store.passwordChallenges).toHaveLength(1);
+    expect(repeated).toEqual(unknown);
+    expect(notifier.notifications).toHaveLength(2);
+    expect(store.passwordChallenges).toHaveLength(2);
+    expect(
+      store.passwordChallenges[0].expiresAt.getTime() -
+        store.passwordChallenges[0].createdAt.getTime(),
+    ).toBe(30 * 60_000);
+    expect(
+      store.passwordChallenges.every(
+        (challenge) => challenge.consumedAt === null,
+      ),
+    ).toBe(true);
     expect(auditLogs.entries[0]).not.toHaveProperty('actorUserId');
     expect(store.users[0].props.mustChangePassword).toBe(false);
     expect(store.users[0].props.tokenVersion).toBe(user.props.tokenVersion);

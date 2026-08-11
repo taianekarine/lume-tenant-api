@@ -21,6 +21,15 @@ export class PrismaPasswordChangeChallengesRepository extends PasswordChangeChal
     super();
   }
 
+  async create(challenge: PasswordChangeChallengeRecord): Promise<void> {
+    await this.prisma.passwordChangeChallenge.create({
+      data: {
+        ...challenge,
+        reason: reasonToPrisma[challenge.reason],
+      },
+    });
+  }
+
   async replaceForUser(
     challenge: PasswordChangeChallengeRecord,
   ): Promise<void> {

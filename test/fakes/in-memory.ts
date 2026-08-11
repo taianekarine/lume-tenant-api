@@ -317,6 +317,26 @@ export class InMemoryUsersRepository extends UsersRepository {
     return this.updateStatus(companyId, userId, input);
   }
 
+  async softDelete(companyId: string, userId: string) {
+    const index = this.store.users.findIndex(
+      (user) => user.companyId === companyId && user.id === userId,
+    );
+    if (index < 0) return false;
+    const target = this.store.users[index];
+    if (target.props.isAdministrator) {
+      const activeAdministrators = this.store.users.filter(
+        (user) =>
+          user.companyId === companyId &&
+          user.props.isAdministrator &&
+          user.props.isActive &&
+          user.props.status === 'active',
+      ).length;
+      if (activeAdministrators <= 1) return false;
+    }
+    this.store.users.splice(index, 1);
+    return true;
+  }
+
   async markLastLogin(companyId: string, userId: string, date: Date) {
     const index = this.store.users.findIndex(
       (user) => user.companyId === companyId && user.id === userId,
@@ -424,6 +444,10 @@ export class InMemoryUsersRepository extends UsersRepository {
 export class InMemoryPasswordChangeChallengesRepository extends PasswordChangeChallengesRepository {
   constructor(private readonly store: InMemoryStore) {
     super();
+  }
+
+  async create(challenge: PasswordChangeChallengeRecord) {
+    this.store.passwordChallenges.push(challenge);
   }
 
   async replaceForUser(challenge: PasswordChangeChallengeRecord) {

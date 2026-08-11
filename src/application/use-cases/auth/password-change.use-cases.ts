@@ -8,6 +8,8 @@ import {
 } from '../../../core/errors/app-error';
 import type { UserRecord } from '../../contracts/repositories';
 import { normalizeLoginIdentifier } from '../../../shared/utils/normalization';
+
+export const PASSWORD_RESET_TTL_MINUTES = 30;
 import {
   PasswordChangeTokenService,
   PasswordHasher,
@@ -222,7 +224,6 @@ export class ChangeOwnPasswordUseCase {
 }
 
 export class RequestAdminPasswordResetUseCase {
-  private readonly ttlMinutes: number;
   private readonly resetUrlBase: string;
 
   constructor(
@@ -233,9 +234,6 @@ export class RequestAdminPasswordResetUseCase {
     private readonly auditLogs: TenantAuditLogsRepository,
     config: ConfigService,
   ) {
-    this.ttlMinutes = config.getOrThrow<number>(
-      'PASSWORD_CHANGE_TOKEN_TTL_MINUTES',
-    );
     this.resetUrlBase = config.getOrThrow<string>('PASSWORD_RESET_URL_BASE');
   }
 
@@ -262,7 +260,9 @@ export class RequestAdminPasswordResetUseCase {
     }
 
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + this.ttlMinutes * 60_000);
+    const expiresAt = new Date(
+      now.getTime() + PASSWORD_RESET_TTL_MINUTES * 60_000,
+    );
     const token = this.tokenService.issue();
     const resetUrl = new URL(this.resetUrlBase);
     resetUrl.searchParams.set('token', token.plainText);
@@ -330,7 +330,6 @@ export class RequestAdminPasswordResetUseCase {
 }
 
 export class RequestPasswordResetUseCase {
-  private readonly ttlMinutes: number;
   private readonly resetUrlBase: string;
   private readonly minimumResponseMs: number;
 
@@ -342,9 +341,6 @@ export class RequestPasswordResetUseCase {
     private readonly auditLogs: TenantAuditLogsRepository,
     config: ConfigService,
   ) {
-    this.ttlMinutes = config.getOrThrow<number>(
-      'PASSWORD_CHANGE_TOKEN_TTL_MINUTES',
-    );
     this.resetUrlBase = config.getOrThrow<string>('PASSWORD_RESET_URL_BASE');
     this.minimumResponseMs =
       config.get<number>('PASSWORD_RESET_MIN_RESPONSE_MS') ?? 0;
@@ -385,7 +381,9 @@ export class RequestPasswordResetUseCase {
     }
 
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + this.ttlMinutes * 60_000);
+    const expiresAt = new Date(
+      now.getTime() + PASSWORD_RESET_TTL_MINUTES * 60_000,
+    );
     const token = this.tokenService.issue();
     const resetUrl = new URL(this.resetUrlBase);
     resetUrl.searchParams.set('token', token.plainText);
@@ -401,7 +399,7 @@ export class RequestPasswordResetUseCase {
       createdAt: now,
     } as const;
     try {
-      await this.challenges.replaceForUser(challenge);
+      await this.challenges.create(challenge);
     } catch {
       await this.waitForMinimumResponse(startedAt);
       return genericResponse;
@@ -417,14 +415,7 @@ export class RequestPasswordResetUseCase {
         expiresAt,
       });
     } catch (error) {
-      await this.challenges
-        .cancelReplacement({
-          challengeId: challenge.id,
-          companyId: challenge.companyId,
-          userId: challenge.userId,
-          replacedAt: now,
-        })
-        .catch(() => undefined);
+      await this.challenges.delete(challenge.id).catch(() => undefined);
       await this.auditLogs
         .create({
           companyId: user.user.companyId,
