@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import { validateEnvironment } from './environment';
@@ -37,6 +39,7 @@ const validWhatsAppEnvironment = {
   MILENIUM_DEPARTMENT_OPERATIONAL_PHONE: '5534999999908',
 };
 const apiProviderEnvironment = validWhatsAppEnvironment;
+const absoluteWhatsappMediaStoragePath = resolve('var', 'whatsapp-media-test');
 
 describe('validateEnvironment', () => {
   it('normalizes defaults required by an autonomous tenant', () => {
@@ -303,7 +306,7 @@ describe('validateEnvironment', () => {
       EVOLUTION_INSTANCE_NAME: 'lume',
       EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
       EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
-      WHATSAPP_MEDIA_STORAGE_PATH: 'C:\\lume-data\\whatsapp-media',
+      WHATSAPP_MEDIA_STORAGE_PATH: absoluteWhatsappMediaStoragePath,
       WHATSAPP_AI_OPENAI_API_KEY: 'openai-key-with-at-least-20-characters',
       MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5534999999901',
       MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5534999999902',
