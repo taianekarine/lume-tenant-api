@@ -106,7 +106,9 @@ não confundir administração global com o departamento Gerência.
 - `users:update` altera dados, departamentos, permissões e solicita recuperação
   de senha; `users:manage` fica restrito ao ciclo de estado da conta
   (ativar novamente, desativar ou suspender);
-- `users:delete` não faz parte do catálogo nem existe endpoint de exclusão;
+- `users:delete` não faz parte do catálogo delegável; `DELETE /api/v1/users/:id`
+  exige administrador, impede autoexclusão e preserva históricos por exclusão
+  lógica;
 - nomes de usuário possuem 3–40 caracteres permitidos e obrigatoriamente ao
   menos uma letra, evitando ambiguidade com documentos;
 - `PATCH /api/v1/users/:id/status` ativa, desativa ou suspende por data/dias,

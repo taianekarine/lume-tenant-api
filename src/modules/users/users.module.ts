@@ -16,6 +16,7 @@ import { GetUserUseCase } from '../../application/use-cases/users/get-user.use-c
 import { ListUsersUseCase } from '../../application/use-cases/users/list-users.use-case';
 import { UpdateUserUseCase } from '../../application/use-cases/users/update-user.use-case';
 import { UpdateUserStatusUseCase } from '../../application/use-cases/users/update-user-status.use-case';
+import { DeleteUserUseCase } from '../../application/use-cases/users/delete-user.use-case';
 import {
   ChangeOwnPasswordUseCase,
   RequestAdminPasswordResetUseCase,
@@ -64,6 +65,14 @@ import { DocumentManagementModule } from '../documents/document-management.modul
         users: UsersRepository,
         auditLogs: TenantAuditLogsRepository,
       ) => new UpdateUserStatusUseCase(users, auditLogs),
+      inject: [UsersRepository, TenantAuditLogsRepository],
+    },
+    {
+      provide: DeleteUserUseCase,
+      useFactory: (
+        users: UsersRepository,
+        auditLogs: TenantAuditLogsRepository,
+      ) => new DeleteUserUseCase(users, auditLogs),
       inject: [UsersRepository, TenantAuditLogsRepository],
     },
     {

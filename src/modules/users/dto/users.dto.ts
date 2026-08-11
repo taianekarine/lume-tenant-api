@@ -116,6 +116,15 @@ export class CreateUserDto {
   @IsIn(['standard', 'document-portal'])
   documentAccessMode: 'standard' | 'document-portal' = 'standard';
 
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Cria a solicitação documental inicial. Obrigatório para candidatos.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  requestDocuments?: boolean;
+
   @ApiProperty({
     enum: userClassifications,
     default: 'Geral',
