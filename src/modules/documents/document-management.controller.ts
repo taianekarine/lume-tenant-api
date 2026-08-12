@@ -392,7 +392,7 @@ export class DocumentManagementController {
       'Content-Disposition',
       contentDisposition('gestao-documental.xlsx', 'attachment'),
     );
-    return new StreamableFile(file);
+    return new StreamableFile(file.content);
   }
 
   @Get('users/:subjectUserId/export.xlsx')
@@ -411,12 +411,9 @@ export class DocumentManagementController {
     );
     response.setHeader(
       'Content-Disposition',
-      contentDisposition(
-        `dados-documentais-${subjectUserId}.xlsx`,
-        'attachment',
-      ),
+      contentDisposition(file.fileName, 'attachment'),
     );
-    return new StreamableFile(file);
+    return new StreamableFile(file.content);
   }
 
   @Get('users/:subjectUserId/files.zip')
