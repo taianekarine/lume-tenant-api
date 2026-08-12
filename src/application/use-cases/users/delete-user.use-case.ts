@@ -1,4 +1,10 @@
-import { conflict, forbidden, notFound } from '../../../core/errors/app-error';
+import { PasswordHasher } from '../../contracts/cryptography';
+import {
+  AppError,
+  conflict,
+  forbidden,
+  notFound,
+} from '../../../core/errors/app-error';
 import {
   TenantAuditLogsRepository,
   UsersRepository,
@@ -7,6 +13,7 @@ import {
 export class DeleteUserUseCase {
   constructor(
     private readonly users: UsersRepository,
+    private readonly passwordHasher: PasswordHasher,
     private readonly auditLogs?: TenantAuditLogsRepository,
   ) {}
 
@@ -14,10 +21,21 @@ export class DeleteUserUseCase {
     companyId: string;
     actorUserId: string;
     userId: string;
+    password: string;
   }): Promise<{ deleted: true }> {
     const actor = await this.users.findById(input.companyId, input.actorUserId);
     if (!actor?.user.props.isAdministrator) {
       throw forbidden('Somente administradores podem excluir usuários.');
+    }
+    const passwordMatches = await this.passwordHasher.compare(
+      input.password,
+      actor.user.props.passwordHash,
+    );
+    if (!passwordMatches) {
+      throw new AppError(
+        'INVALID_CREDENTIALS',
+        'A senha administrativa informada está incorreta.',
+      );
     }
     if (input.actorUserId === input.userId) {
       throw forbidden('Você não pode excluir a própria conta.');

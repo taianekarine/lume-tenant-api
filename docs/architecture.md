@@ -112,7 +112,9 @@ controllers/DTOs em `src/modules/whatsapp`.
   consistentes, revoga sessões e registra prazo e motivo da suspensão;
 - `users:update` é a fronteira de edição de acesso e `users:manage` protege o
   estado da conta; `users:delete` não é publicado no catálogo delegável, e a
-  exclusão lógica possui validação adicional de administrador no caso de uso;
+  exclusão lógica possui validação adicional de administrador no caso de uso e
+  exige a confirmação da senha atual do administrador;
+
 - `GET /users/me/profile`, `PUT /users/me/profile-picture` e
   `PATCH /users/me/password` operam somente sobre o principal autenticado;
 - foto de perfil é validada pelo conteúdo real (assinatura/MIME e dimensões
@@ -121,6 +123,14 @@ controllers/DTOs em `src/modules/whatsapp`.
   caso de uso de entrada;
 - todas as consultas e mutações usam o `companyId` resolvido pelo JWT e pela
   licença local.
+
+## Métricas administrativas
+
+`api_request_metrics` registra, em lote, apenas empresa, usuário, ação HTTP
+normalizada, resultado, duração e bytes. Corpos, parâmetros, arquivos, senhas,
+tokens e IP não são armazenados. O painel é exclusivo de administradores, aplica
+isolamento por empresa e apresenta nomes humanizados em vez de rotas técnicas.
+A retenção é definida por `API_USAGE_RETENTION_DAYS` (90 dias por padrão).
 
 Contas possuem estado `active`, `inactive` ou `suspended`. Login, refresh e JWT
 recusam contas não ativas. Ao consultar uma suspensão cujo

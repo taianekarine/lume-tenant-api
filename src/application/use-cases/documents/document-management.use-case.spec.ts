@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import JSZip from 'jszip';
 
 import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
 import { DocumentManagementUseCase } from './document-management.use-case';
@@ -346,6 +347,67 @@ describe('DocumentManagementUseCase.review', () => {
           toStatus: 'waived',
         }),
       }),
+    );
+  });
+});
+
+describe('DocumentManagementUseCase.exportUserFiles', () => {
+  it('places every file and the manifest in one versioned employee folder', async () => {
+    const createdAt = new Date('2026-08-11T12:00:00.000Z');
+    const prisma = {
+      user: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'subject-id',
+          name: 'Ana da Silva',
+          email: 'ana@example.com',
+          deletedAt: null,
+        }),
+      },
+      documentFile: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 'file-id',
+            submissionId: 'submission-id',
+            fileName: 'identidade.jpg',
+            content: Buffer.from('arquivo'),
+            side: 'FRONT',
+            sha256: 'hash',
+            createdAt,
+            submission: {
+              version: 3,
+              requestItem: {
+                documentType: { code: 'rg', name: 'RG' },
+                request: { id: 'request-id' },
+              },
+            },
+          },
+        ]),
+      },
+      tenantAuditLog: { create: vi.fn().mockResolvedValue({}) },
+    };
+    const principal = {
+      id: 'admin-id',
+      companyId: 'company-id',
+      isAdministrator: true,
+      departments: ['management'],
+      permissions: ['documents:manage', 'documents:export'],
+    } as AuthenticatedPrincipal;
+
+    const result = await new DocumentManagementUseCase(
+      prisma as never,
+    ).exportUserFiles(principal, 'subject-id');
+    const archive = await JSZip.loadAsync(result.content);
+    const rootFolder = result.fileName.replace(/\.zip$/, '');
+    const files = Object.values(archive.files)
+      .filter((entry) => !entry.dir)
+      .map((entry) => entry.name);
+
+    expect(files).toHaveLength(2);
+    expect(files).toEqual(
+      expect.arrayContaining([
+        `${rootFolder}/documentos_v3/01_rg_front_identidade.jpg`,
+        `${rootFolder}/documentos_v3/manifesto.json`,
+      ]),
     );
   });
 });

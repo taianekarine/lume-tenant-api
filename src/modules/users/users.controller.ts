@@ -41,6 +41,7 @@ import {
   CreateUserDto,
   ChangeOwnPasswordDto,
   ListUsersQueryDto,
+  DeleteUserDto,
   UpdateProfilePictureDto,
   UpdateUserStatusDto,
   UpdateUserDto,
@@ -292,11 +293,13 @@ export class UsersController {
   delete(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Body() body: DeleteUserDto,
   ) {
     return this.deleteUser.execute({
       companyId: current.companyId,
       actorUserId: current.id,
       userId,
+      password: body.password,
     });
   }
 }

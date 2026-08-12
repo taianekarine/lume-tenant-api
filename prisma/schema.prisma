@@ -294,6 +294,7 @@ model Company {
   documentValidations           DocumentValidation[]
   documentReviews               DocumentReview[]
   documentStatusHistory         DocumentStatusHistory[]
+  apiRequestMetrics             ApiRequestMetric[]
 
   @@map("companies")
 }
@@ -351,6 +352,7 @@ model User {
   uploadedDocumentFiles         DocumentFile[]                   @relation("DocumentFileUploader")
   documentReviews               DocumentReview[]                 @relation("DocumentReviewer")
   documentStatusChanges         DocumentStatusHistory[]          @relation("DocumentStatusActor")
+  apiRequestMetrics             ApiRequestMetric[]
 
   @@unique([id, companyId])
   @@index([companyId])
@@ -426,6 +428,28 @@ model TenantAuditLog {
   @@index([companyId, createdAt])
   @@index([actorUserId, createdAt])
   @@map("tenant_audit_logs")
+}
+
+model ApiRequestMetric {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  method        String   @db.VarChar(10)
+  route         String   @db.VarChar(240)
+  statusCode    Int      @map("status_code")
+  requestBytes  Int      @default(0) @map("request_bytes")
+  responseBytes Int      @default(0) @map("response_bytes")
+  durationMs    Int      @map("duration_ms")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@index([companyId, createdAt(sort: Desc)])
+  @@index([companyId, userId, createdAt(sort: Desc)])
+  @@index([companyId, route, createdAt(sort: Desc)])
+  @@index([companyId, statusCode, createdAt(sort: Desc)])
+  @@map("api_request_metrics")
 }
 
 model TenantDepartment {

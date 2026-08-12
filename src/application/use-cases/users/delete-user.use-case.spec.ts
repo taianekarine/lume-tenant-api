@@ -6,6 +6,7 @@ import { TenantAuditLogsRepository } from '../../contracts/repositories';
 import {
   InMemoryStore,
   InMemoryUsersRepository,
+  FakePasswordHasher,
 } from '../../../../test/fakes/in-memory';
 import { DeleteUserUseCase } from './delete-user.use-case';
 
@@ -57,6 +58,7 @@ function setup() {
     common,
     useCase: new DeleteUserUseCase(
       new InMemoryUsersRepository(store),
+      new FakePasswordHasher(),
       auditLogs,
     ),
     auditLogs,
@@ -72,6 +74,7 @@ describe('DeleteUserUseCase', () => {
         companyId: context.company.id,
         actorUserId: context.administrator.id,
         userId: context.common.id,
+        password: 'Senha@2026',
       }),
     ).resolves.toEqual({ deleted: true });
 
@@ -94,6 +97,7 @@ describe('DeleteUserUseCase', () => {
         companyId: context.company.id,
         actorUserId: context.common.id,
         userId: context.administrator.id,
+        password: 'Senha@2026',
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
     await expect(
@@ -101,7 +105,25 @@ describe('DeleteUserUseCase', () => {
         companyId: context.company.id,
         actorUserId: context.administrator.id,
         userId: context.administrator.id,
+        password: 'Senha@2026',
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('rejects deletion when the administrative password is incorrect', async () => {
+    const context = setup();
+
+    await expect(
+      context.useCase.execute({
+        companyId: context.company.id,
+        actorUserId: context.administrator.id,
+        userId: context.common.id,
+        password: 'SenhaIncorreta@2026',
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS' });
+    expect(context.store.users.map((user) => user.id)).toContain(
+      context.common.id,
+    );
+    expect(context.auditLogs.entries).toHaveLength(0);
   });
 });
