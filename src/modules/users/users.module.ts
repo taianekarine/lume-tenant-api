@@ -71,9 +71,10 @@ import { DocumentManagementModule } from '../documents/document-management.modul
       provide: DeleteUserUseCase,
       useFactory: (
         users: UsersRepository,
+        passwordHasher: PasswordHasher,
         auditLogs: TenantAuditLogsRepository,
-      ) => new DeleteUserUseCase(users, auditLogs),
-      inject: [UsersRepository, TenantAuditLogsRepository],
+      ) => new DeleteUserUseCase(users, passwordHasher, auditLogs),
+      inject: [UsersRepository, PasswordHasher, TenantAuditLogsRepository],
     },
     {
       provide: ChangeOwnPasswordUseCase,

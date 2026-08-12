@@ -240,6 +240,52 @@ export class DocumentManagementController {
     });
   }
 
+  @Post('items/:requestItemId/submissions/complete')
+  @RequireAnyPermission(
+    'documents:create',
+    'documents:update',
+    'documents:manage',
+  )
+  @UseInterceptors(
+    FilesInterceptor('files', 24, {
+      limits: { files: 24, fileSize: 25 * 1024 * 1024 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['commandId', 'files'],
+      properties: {
+        commandId: { type: 'string', format: 'uuid' },
+        files: { type: 'array', items: { type: 'string', format: 'binary' } },
+        sides: { type: 'string', example: 'front,back' },
+        pageNumbers: { type: 'string', example: '1,1' },
+      },
+    },
+  })
+  uploadAndComplete(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('requestItemId', new ParseUUIDPipe({ version: '4' }))
+    requestItemId: string,
+    @UploadedFiles() files: UploadedDocumentFile[] | undefined,
+    @Body() body: UploadDocumentSubmissionDto,
+  ) {
+    if (!files?.length) throw validationError('Envie ao menos um arquivo.');
+    const metadata = parseFileMetadata(body, files.length);
+    return this.documents.uploadAndComplete(current, requestItemId, {
+      commandId: body.commandId,
+      files: files.map((file, index) => ({
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+        content: file.buffer,
+        side: metadata[index].side,
+        pageNumber: metadata[index].pageNumber,
+      })),
+    });
+  }
+
   @Post('submissions/:submissionId/complete')
   @RequireAnyPermission(
     'documents:create',
@@ -386,11 +432,8 @@ export class DocumentManagementController {
     response.setHeader('Content-Type', 'application/zip');
     response.setHeader(
       'Content-Disposition',
-      contentDisposition(
-        `arquivos-documentais-${subjectUserId}.zip`,
-        'attachment',
-      ),
+      contentDisposition(file.fileName, 'attachment'),
     );
-    return new StreamableFile(file);
+    return new StreamableFile(file.content);
   }
 }

@@ -234,6 +234,17 @@ export class UpdateUserDto {
   dependents?: UserDependentDto[];
 }
 
+export class DeleteUserDto {
+  @ApiProperty({
+    description: 'Senha atual do administrador que confirma a exclusão.',
+    writeOnly: true,
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(72)
+  password!: string;
+}
+
 export class ListUsersQueryDto {
   @ApiPropertyOptional({ default: 1, minimum: 1 })
   @IsOptional()

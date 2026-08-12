@@ -204,6 +204,32 @@ function safeArchiveName(value: string): string {
   );
 }
 
+function saoPauloCalendarDate(at = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at);
+  const value = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+function uploadedFileSignature(
+  files: readonly {
+    sha256: string;
+    side: DocumentFileSide;
+    pageNumber: number;
+  }[],
+): string {
+  return files
+    .map((file) => `${file.side}:${file.pageNumber}:${file.sha256}`)
+    .sort()
+    .join('|');
+}
+
 function deterministicCommandId(
   batchCommandId: string,
   subjectUserId: string,
@@ -1538,6 +1564,7 @@ export class DocumentManagementUseCase {
         principal.permissions.includes('documents:manage'));
     const where: Prisma.DocumentRequestWhereInput = {
       companyId: principal.companyId,
+      subject: { deletedAt: null },
       ...(!canManage ? { subjectUserId: principal.id } : {}),
       ...(query.subjectUserId && canManage
         ? { subjectUserId: query.subjectUserId }
@@ -1828,7 +1855,16 @@ export class DocumentManagementUseCase {
       where: {
         id_companyId: { id: requestItemId, companyId: principal.companyId },
       },
-      include: { request: true, documentType: true },
+      include: {
+        request: true,
+        documentType: true,
+        submissions: {
+          where: { status: { not: PrismaDocumentItemStatus.CANCELLED } },
+          orderBy: { version: 'desc' },
+          take: 1,
+          include: { files: { where: { deletedAt: null } } },
+        },
+      },
     });
     if (!item) throw notFound('Item documental');
     this.assertOwnOrManage(principal, item.request.subjectUserId);
@@ -1873,6 +1909,37 @@ export class DocumentManagementUseCase {
           : item.documentType.requiresFrontBack,
     };
     const files = validateDocumentUpload(input.files, policy);
+    const previousSubmission = item.submissions?.[0];
+    const isRepeatedFileSet =
+      previousSubmission &&
+      uploadedFileSignature(files) ===
+        uploadedFileSignature(
+          previousSubmission.files.map((file) => ({
+            sha256: file.sha256,
+            side: sidesFromPrisma[file.side],
+            pageNumber: file.pageNumber,
+          })),
+        );
+    if (isRepeatedFileSet) {
+      if (
+        (
+          [
+            PrismaDocumentItemStatus.REJECTED,
+            PrismaDocumentItemStatus.RESUBMISSION_REQUIRED,
+            PrismaDocumentItemStatus.EXPIRED,
+          ] as PrismaDocumentItemStatus[]
+        ).includes(previousSubmission.status)
+      ) {
+        throw conflict(
+          'Este arquivo já foi analisado. Selecione um arquivo diferente para o novo envio.',
+        );
+      }
+      return {
+        request: await this.getRequestById(principal, item.requestId),
+        submissionId: previousSubmission.id,
+        idempotent: true,
+      };
+    }
     assertDocumentItemTransition(currentStatus, 'submitted');
 
     const submissionId = await this.prisma.$transaction(async (transaction) => {
@@ -1976,6 +2043,15 @@ export class DocumentManagementUseCase {
       submissionId,
       idempotent: false,
     };
+  }
+
+  async uploadAndComplete(
+    principal: AuthenticatedPrincipal,
+    requestItemId: string,
+    input: Parameters<DocumentManagementUseCase['upload']>[2],
+  ) {
+    const uploaded = await this.upload(principal, requestItemId, input);
+    return this.completeSubmission(principal, uploaded.submissionId);
   }
 
   async completeSubmission(
@@ -3168,9 +3244,9 @@ export class DocumentManagementUseCase {
       where: {
         id_companyId: { id: subjectUserId, companyId: principal.companyId },
       },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, deletedAt: true },
     });
-    if (!subject) throw notFound('Usuário titular');
+    if (!subject || subject.deletedAt) throw notFound('Usuário titular');
     const files = await this.prisma.documentFile.findMany({
       where: {
         companyId: principal.companyId,
@@ -3190,9 +3266,17 @@ export class DocumentManagementUseCase {
       ],
     });
     const zip = new JSZip();
-    const manifest = files.map((file) => {
-      const folder = `${safeArchiveName(file.submission.requestItem.documentType.code)}/v${file.submission.version}`;
-      const archivePath = `${folder}/${file.id}_${safeArchiveName(file.fileName)}`;
+    const downloadDate = saoPauloCalendarDate();
+    const rootFolder = `${safeArchiveName(subject.name)}_${downloadDate}`;
+    const bundleVersion = Math.max(
+      1,
+      ...files.map((file) => file.submission.version),
+    );
+    const documentsFolder = `${rootFolder}/documentos_v${bundleVersion}`;
+    const manifest = files.map((file, index) => {
+      const side = sidesFromPrisma[file.side];
+      const sideSuffix = side === 'single' ? '' : `_${side}`;
+      const archivePath = `${documentsFolder}/${String(index + 1).padStart(2, '0')}_${safeArchiveName(file.submission.requestItem.documentType.code)}${sideSuffix}_${safeArchiveName(file.fileName)}`;
       zip.file(archivePath, Buffer.from(file.content));
       return {
         archivePath,
@@ -3207,7 +3291,7 @@ export class DocumentManagementUseCase {
       };
     });
     zip.file(
-      'manifesto.json',
+      `${documentsFolder}/manifesto.json`,
       JSON.stringify(
         { subject, generatedAt: new Date().toISOString(), files: manifest },
         null,
@@ -3225,7 +3309,10 @@ export class DocumentManagementUseCase {
       subjectUserId,
       { fileCount: files.length },
     );
-    return content;
+    return {
+      content,
+      fileName: `${rootFolder}.zip`,
+    };
   }
 
   private async getRequestById(
@@ -3235,6 +3322,7 @@ export class DocumentManagementUseCase {
     const row = await this.prisma.documentRequest.findUnique({
       where: {
         id_companyId: { id: requestId, companyId: principal.companyId },
+        subject: { deletedAt: null },
       },
       include: requestDetailInclude,
     });

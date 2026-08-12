@@ -635,6 +635,11 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
       'HTTP_MAX_JSON_BODY_BYTES',
       1_048_576,
     ),
+    API_USAGE_RETENTION_DAYS: positiveInteger(
+      config,
+      'API_USAGE_RETENTION_DAYS',
+      90,
+    ),
     DOCUMENT_REVIEW_ENABLED: documentReviewEnabled,
     DOCUMENT_REVIEW_PROVIDER: documentReviewProvider,
     OPENAI_API_KEY: openAiApiKey,
