@@ -511,11 +511,17 @@ describe('DocumentManagementUseCase.exportXlsx', () => {
         findMany: vi.fn().mockResolvedValue([
           {
             version: 2,
-            confirmedData: { fullName: { value: 'TAIANE KARINE' } },
+            confirmedData: {
+              fullName: { value: 'TAIANE KARINE' },
+              cpf: { value: '12345678900' },
+            },
             requestItem: {
               configSnapshot: {
                 extractionSchema: {
-                  fields: [{ key: 'fullName', label: 'Nome completo' }],
+                  fields: [
+                    { key: 'fullName', label: 'Nome completo' },
+                    { key: 'cpf', label: 'CPF' },
+                  ],
                 },
               },
               documentType: { name: 'CNH' },
@@ -531,18 +537,6 @@ describe('DocumentManagementUseCase.exportXlsx', () => {
             validUntil: null,
             documentType: { code: 'rg', name: 'RG' },
             submissions: [],
-          },
-        ]),
-      },
-      documentStatusHistory: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            createdAt: new Date('2026-08-12T12:00:00.000Z'),
-            action: 'submission.created',
-            fromStatus: 'pending-upload',
-            toStatus: 'pending-human-review',
-            reason: null,
-            actor: { name: 'Taiane Karine' },
           },
         ]),
       },
@@ -564,21 +558,17 @@ describe('DocumentManagementUseCase.exportXlsx', () => {
     await workbook.xlsx.load(result.content);
     const documents = workbook.getWorksheet('Documentos')!;
     const employee = workbook.getWorksheet('Dados do funcionário')!;
-    const history = workbook.getWorksheet('Histórico')!;
 
     expect(result.fileName).toBe('dados documentais Taiane Karine.xlsx');
     expect(documents.getRow(2).values).toEqual(
       expect.arrayContaining(['RG', 'Aguardando envio', 'Obrigatório']),
     );
     expect(documents.getRow(1).values).not.toContain('Código');
-    expect(history.getRow(2).values).toEqual(
-      expect.arrayContaining([
-        'Arquivo enviado',
-        'Aguardando envio',
-        'Aguardando revisão',
-      ]),
-    );
-    expect(employee.getColumn(1).values).toContain('Nome completo');
+    expect(workbook.getWorksheet('Histórico')).toBeUndefined();
+    expect(employee.getColumn(1).values).not.toContain('Nome completo');
+    expect(
+      employee.getColumn(1).values.filter((value) => value === 'CPF'),
+    ).toHaveLength(1);
     expect(employee.getColumn(2).values).toEqual(
       expect.arrayContaining(['Não informada', 'Pendente de confirmação']),
     );

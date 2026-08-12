@@ -97,4 +97,27 @@ describe('document workflow', () => {
       ),
     ).toThrow(/par completo de frente e verso/);
   });
+
+  it('does not reject a document because it exceeds a configured byte value', () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0x00]);
+    const file = {
+      originalName: 'ctps.jpg',
+      mimeType: 'image/jpeg',
+      sizeBytes: 30 * 1024 * 1024,
+      content: jpeg,
+      side: 'single' as const,
+      pageNumber: 1,
+    };
+
+    expect(() =>
+      validateDocumentUpload([file], {
+        acceptedMimeTypes: ['image/jpeg'],
+        maxFileSizeBytes: 1024,
+        minFiles: 1,
+        maxFiles: 1,
+        allowsMultiplePages: false,
+        requiresFrontBack: false,
+      }),
+    ).not.toThrow();
+  });
 });
