@@ -233,36 +233,9 @@ const MILITARY_STATUS_EXPORT_LABELS: Readonly<
   'pending-confirmation': 'Pendente de confirmação',
 };
 
-const DOCUMENT_HISTORY_ACTION_LABELS: Readonly<Record<string, string>> = {
-  'request.created': 'Solicitação criada',
-  'request.batch-created': 'Solicitação criada para vários funcionários',
-  'request.batch-merged': 'Solicitação existente atualizada',
-  'request.batch-already-covered': 'Documentos já incluídos na solicitação',
-  'item.manually-added': 'Documento incluído manualmente',
-  'item.policy-changed': 'Exigência do documento alterada',
-  'item.reopened-by-batch-request': 'Documento solicitado novamente',
-  'item.satisfied-by-dossier-document':
-    'Documento atendido pelo dossiê existente',
-  'submission.created': 'Arquivo enviado',
-  'submission.removed': 'Arquivo removido',
-  'validation.completed': 'Pré-validação concluída',
-  'renewal.created': 'Renovação solicitada',
-};
-
 function documentStatusExportLabel(value: string | null): string {
   if (!value) return '';
   return DOCUMENT_STATUS_EXPORT_LABELS[value] ?? humanizeTechnicalLabel(value);
-}
-
-function documentHistoryActionLabel(value: string): string {
-  if (value.startsWith('review.')) {
-    return value === 'review.approved'
-      ? 'Documento aprovado'
-      : value === 'review.rejected'
-        ? 'Documento recusado'
-        : 'Novo envio solicitado';
-  }
-  return DOCUMENT_HISTORY_ACTION_LABELS[value] ?? humanizeTechnicalLabel(value);
 }
 
 function humanizeTechnicalLabel(value: string): string {
@@ -285,6 +258,24 @@ function extractionFieldLabel(config: unknown, field: string): string {
     }
   }
   return humanizeTechnicalLabel(field);
+}
+
+function canonicalExportField(value: string): string {
+  const normalized = value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '')
+    .toLocaleLowerCase('pt-BR');
+  if (['fullname', 'nomecompleto', 'name', 'nome'].includes(normalized)) {
+    return 'nome';
+  }
+  if (['email', 'emailaddress', 'enderecodeemail'].includes(normalized)) {
+    return 'email';
+  }
+  if (['cpf', 'cpfnumber', 'numerodocpf'].includes(normalized)) {
+    return 'cpf';
+  }
+  return normalized;
 }
 
 function safeDownloadPersonName(value: string): string {
@@ -3201,24 +3192,14 @@ export class DocumentManagementUseCase {
       },
       orderBy: { submittedAt: 'desc' },
     });
-    const [items, history] = await Promise.all([
-      this.prisma.documentRequestItem.findMany({
-        where: { companyId: principal.companyId, request: { subjectUserId } },
-        include: {
-          documentType: { select: { code: true, name: true } },
-          submissions: { orderBy: { version: 'desc' }, take: 1 },
-        },
-        orderBy: [{ request: { createdAt: 'desc' } }, { position: 'asc' }],
-      }),
-      this.prisma.documentStatusHistory.findMany({
-        where: {
-          companyId: principal.companyId,
-          request: { subjectUserId },
-        },
-        include: { actor: { select: { name: true } } },
-        orderBy: { createdAt: 'asc' },
-      }),
-    ]);
+    const items = await this.prisma.documentRequestItem.findMany({
+      where: { companyId: principal.companyId, request: { subjectUserId } },
+      include: {
+        documentType: { select: { code: true, name: true } },
+        submissions: { orderBy: { version: 'desc' }, take: 1 },
+      },
+      orderBy: [{ request: { createdAt: 'desc' } }, { position: 'asc' }],
+    });
     const workbook = new ExcelJS.Workbook();
     const employee = workbook.addWorksheet('Dados do funcionário');
     employee.columns = [
@@ -3226,7 +3207,7 @@ export class DocumentManagementUseCase {
       { header: 'Valor validado', key: 'value', width: 60 },
       { header: 'Documento de origem', key: 'source', width: 42 },
     ];
-    for (const row of [
+    const employeeRows = [
       { field: 'Nome', value: subject.name, source: 'Cadastro' },
       { field: 'E-mail', value: subject.email, source: 'Cadastro' },
       { field: 'CPF', value: subject.cpfNormalized ?? '', source: 'Cadastro' },
@@ -3250,9 +3231,13 @@ export class DocumentManagementUseCase {
           ],
         source: 'Cadastro',
       },
-    ]) {
+    ];
+    for (const row of employeeRows) {
       employee.addRow(row);
     }
+    const exportedFields = new Set(
+      employeeRows.map((row) => canonicalExportField(row.field)),
+    );
     const documents = workbook.addWorksheet('Documentos');
     documents.columns = [
       { header: 'Documento', key: 'name', width: 42 },
@@ -3293,37 +3278,33 @@ export class DocumentManagementUseCase {
         relationship: spreadsheetValue(dependent.relationship),
       });
     }
-    const historySheet = workbook.addWorksheet('Histórico');
-    historySheet.columns = [
-      { header: 'Data', key: 'date', width: 24 },
-      { header: 'Ação', key: 'action', width: 34 },
-      { header: 'Status anterior', key: 'from', width: 24 },
-      { header: 'Novo status', key: 'to', width: 24 },
-      { header: 'Motivo', key: 'reason', width: 48 },
-      { header: 'Responsável', key: 'actor', width: 32 },
-    ];
-    for (const entry of history) {
-      historySheet.addRow({
-        date: entry.createdAt.toLocaleString('pt-BR', {
-          timeZone: 'America/Sao_Paulo',
-        }),
-        action: documentHistoryActionLabel(entry.action),
-        from: documentStatusExportLabel(entry.fromStatus),
-        to: documentStatusExportLabel(entry.toStatus),
-        reason: entry.reason ?? '',
-        actor: entry.actor?.name ?? 'Sistema',
-      });
-    }
     for (const submission of submissions) {
       const confirmed = jsonRecord(submission.confirmedData);
       for (const field of Object.keys(confirmed)) {
         const confirmedRecord = jsonRecord(confirmed[field]);
+        const label = extractionFieldLabel(
+          submission.requestItem.configSnapshot,
+          field,
+        );
+        const fieldIdentities = new Set([
+          canonicalExportField(field),
+          canonicalExportField(label),
+        ]);
+        const value = spreadsheetValue(
+          confirmedRecord.value ?? confirmed[field],
+        );
+        if (
+          !value ||
+          [...fieldIdentities].some(
+            (identity) => !identity || exportedFields.has(identity),
+          )
+        ) {
+          continue;
+        }
+        for (const identity of fieldIdentities) exportedFields.add(identity);
         employee.addRow({
-          field: extractionFieldLabel(
-            submission.requestItem.configSnapshot,
-            field,
-          ),
-          value: spreadsheetValue(confirmedRecord.value ?? confirmed[field]),
+          field: label,
+          value,
           source: `${submission.requestItem.documentType.name} · v${submission.version}`,
         });
       }

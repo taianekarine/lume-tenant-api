@@ -202,7 +202,7 @@ export class DocumentManagementController {
   )
   @UseInterceptors(
     FilesInterceptor('files', 24, {
-      limits: { files: 24, fileSize: 25 * 1024 * 1024 },
+      limits: { files: 24 },
     }),
   )
   @ApiConsumes('multipart/form-data')
@@ -248,7 +248,7 @@ export class DocumentManagementController {
   )
   @UseInterceptors(
     FilesInterceptor('files', 24, {
-      limits: { files: 24, fileSize: 25 * 1024 * 1024 },
+      limits: { files: 24 },
     }),
   )
   @ApiConsumes('multipart/form-data')

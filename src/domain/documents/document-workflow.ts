@@ -202,10 +202,8 @@ export function validateDocumentUpload(
     if (!policy.acceptedMimeTypes.includes(file.mimeType)) {
       throw validationError(`Formato não permitido: ${file.mimeType}.`);
     }
-    if (file.sizeBytes <= 0 || file.sizeBytes > policy.maxFileSizeBytes) {
-      throw validationError(
-        'O arquivo excede o limite configurado ou está vazio.',
-      );
+    if (file.sizeBytes <= 0) {
+      throw validationError('O arquivo está vazio.');
     }
     const signature = signatures[file.mimeType];
     if (!signature || !signature(file.content)) {
