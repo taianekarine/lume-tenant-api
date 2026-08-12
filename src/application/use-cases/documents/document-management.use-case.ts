@@ -190,9 +190,114 @@ function jsonRecord(value: unknown): Readonly<Record<string, unknown>> {
 function spreadsheetValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean')
-    return String(value);
+  if (typeof value === 'boolean') return value ? 'Sim' : 'Não';
+  if (typeof value === 'number') return String(value);
   return JSON.stringify(value);
+}
+
+const DOCUMENT_STATUS_EXPORT_LABELS: Readonly<Record<string, string>> = {
+  draft: 'Rascunho',
+  'pending-upload': 'Aguardando envio',
+  'partially-submitted': 'Enviado parcialmente',
+  submitted: 'Enviado',
+  'automatic-validation': 'Em validação automática',
+  'pending-human-review': 'Aguardando revisão',
+  'resubmission-required': 'Novo envio solicitado',
+  approved: 'Aprovado',
+  rejected: 'Recusado',
+  expired: 'Vencido',
+  waived: 'Dispensado',
+  cancelled: 'Cancelado',
+};
+
+const DOCUMENT_REQUIREMENT_EXPORT_LABELS: Readonly<Record<string, string>> = {
+  required: 'Obrigatório',
+  optional: 'Opcional',
+  conditional: 'Condicional',
+};
+
+const MARITAL_STATUS_EXPORT_LABELS: Readonly<Record<MaritalStatus, string>> = {
+  single: 'Solteiro(a)',
+  married: 'Casado(a)',
+  'stable-union': 'União estável',
+  divorced: 'Divorciado(a)',
+  widowed: 'Viúvo(a)',
+  'not-informed': 'Não informada',
+};
+
+const MILITARY_STATUS_EXPORT_LABELS: Readonly<
+  Record<MilitaryDocumentStatus, string>
+> = {
+  applicable: 'Aplicável',
+  'not-applicable': 'Não aplicável',
+  'pending-confirmation': 'Pendente de confirmação',
+};
+
+const DOCUMENT_HISTORY_ACTION_LABELS: Readonly<Record<string, string>> = {
+  'request.created': 'Solicitação criada',
+  'request.batch-created': 'Solicitação criada para vários funcionários',
+  'request.batch-merged': 'Solicitação existente atualizada',
+  'request.batch-already-covered': 'Documentos já incluídos na solicitação',
+  'item.manually-added': 'Documento incluído manualmente',
+  'item.policy-changed': 'Exigência do documento alterada',
+  'item.reopened-by-batch-request': 'Documento solicitado novamente',
+  'item.satisfied-by-dossier-document':
+    'Documento atendido pelo dossiê existente',
+  'submission.created': 'Arquivo enviado',
+  'submission.removed': 'Arquivo removido',
+  'validation.completed': 'Pré-validação concluída',
+  'renewal.created': 'Renovação solicitada',
+};
+
+function documentStatusExportLabel(value: string | null): string {
+  if (!value) return '';
+  return DOCUMENT_STATUS_EXPORT_LABELS[value] ?? humanizeTechnicalLabel(value);
+}
+
+function documentHistoryActionLabel(value: string): string {
+  if (value.startsWith('review.')) {
+    return value === 'review.approved'
+      ? 'Documento aprovado'
+      : value === 'review.rejected'
+        ? 'Documento recusado'
+        : 'Novo envio solicitado';
+  }
+  return DOCUMENT_HISTORY_ACTION_LABELS[value] ?? humanizeTechnicalLabel(value);
+}
+
+function humanizeTechnicalLabel(value: string): string {
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[._-]+/g, ' ')
+    .trim();
+  return normalized
+    ? `${normalized.charAt(0).toLocaleUpperCase('pt-BR')}${normalized.slice(1)}`
+    : 'Não informado';
+}
+
+function extractionFieldLabel(config: unknown, field: string): string {
+  const schema = jsonRecord(jsonRecord(config).extractionSchema);
+  const fields = Array.isArray(schema.fields) ? schema.fields : [];
+  for (const definition of fields) {
+    const record = jsonRecord(definition);
+    if (record.key === field && typeof record.label === 'string') {
+      return record.label;
+    }
+  }
+  return humanizeTechnicalLabel(field);
+}
+
+function safeDownloadPersonName(value: string): string {
+  return (
+    value
+      .split('')
+      .filter((character) => character.charCodeAt(0) >= 32)
+      .join('')
+      .replace(/[<>:"/\\|?*]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 100) || 'funcionário'
+  );
 }
 
 function safeArchiveName(value: string): string {
@@ -1582,7 +1687,9 @@ export class DocumentManagementUseCase {
           checklist: {
             select: { id: true, code: true, name: true, version: true },
           },
-          items: { select: { status: true, requirement: true } },
+          items: {
+            select: { status: true, requirement: true, currentVersion: true },
+          },
         },
         orderBy: [{ deadline: 'asc' }, { createdAt: 'desc' }],
         skip: (query.page - 1) * query.pageSize,
@@ -1601,6 +1708,11 @@ export class DocumentManagementUseCase {
         checklist: row.checklist,
         progress: {
           total: row.items.length,
+          uploaded: row.items.filter(
+            (item) =>
+              item.currentVersion > 0 &&
+              item.status !== PrismaDocumentItemStatus.PENDING_UPLOAD,
+          ).length,
           approved: row.items.filter(
             (item) =>
               item.status === PrismaDocumentItemStatus.APPROVED ||
@@ -3125,12 +3237,17 @@ export class DocumentManagementUseCase {
       },
       {
         field: 'Situação civil',
-        value: subject.maritalStatus ?? 'não informada',
+        value: subject.maritalStatus
+          ? MARITAL_STATUS_EXPORT_LABELS[subject.maritalStatus as MaritalStatus]
+          : 'Não informada',
         source: 'Cadastro',
       },
       {
         field: 'Documentação militar',
-        value: subject.militaryDocumentStatus,
+        value:
+          MILITARY_STATUS_EXPORT_LABELS[
+            subject.militaryDocumentStatus as MilitaryDocumentStatus
+          ],
         source: 'Cadastro',
       },
     ]) {
@@ -3138,23 +3255,26 @@ export class DocumentManagementUseCase {
     }
     const documents = workbook.addWorksheet('Documentos');
     documents.columns = [
-      { header: 'Código', key: 'code', width: 28 },
       { header: 'Documento', key: 'name', width: 42 },
-      { header: 'Status', key: 'status', width: 24 },
+      { header: 'Situação', key: 'status', width: 28 },
       { header: 'Obrigatoriedade', key: 'requirement', width: 20 },
       { header: 'Validade', key: 'validUntil', width: 22 },
       { header: 'Versão atual', key: 'version', width: 14 },
-      { header: 'Solicitação', key: 'requestId', width: 38 },
     ];
     for (const item of items) {
       documents.addRow({
-        code: item.documentType.code,
         name: item.documentType.name,
-        status: itemStatusFromPrisma[item.status],
-        requirement: requirementsFromPrisma[item.requirement],
-        validUntil: item.validUntil?.toISOString() ?? '',
+        status: documentStatusExportLabel(itemStatusFromPrisma[item.status]),
+        requirement:
+          DOCUMENT_REQUIREMENT_EXPORT_LABELS[
+            requirementsFromPrisma[item.requirement]
+          ],
+        validUntil: item.validUntil
+          ? item.validUntil.toLocaleDateString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+            })
+          : '',
         version: item.submissions[0]?.version ?? 0,
-        requestId: item.requestId,
       });
     }
     const dependentSheet = workbook.addWorksheet('Dependentes');
@@ -3181,17 +3301,17 @@ export class DocumentManagementUseCase {
       { header: 'Novo status', key: 'to', width: 24 },
       { header: 'Motivo', key: 'reason', width: 48 },
       { header: 'Responsável', key: 'actor', width: 32 },
-      { header: 'Solicitação', key: 'requestId', width: 38 },
     ];
     for (const entry of history) {
       historySheet.addRow({
-        date: entry.createdAt.toISOString(),
-        action: entry.action,
-        from: entry.fromStatus ?? '',
-        to: entry.toStatus,
+        date: entry.createdAt.toLocaleString('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+        }),
+        action: documentHistoryActionLabel(entry.action),
+        from: documentStatusExportLabel(entry.fromStatus),
+        to: documentStatusExportLabel(entry.toStatus),
         reason: entry.reason ?? '',
         actor: entry.actor?.name ?? 'Sistema',
-        requestId: entry.requestId ?? '',
       });
     }
     for (const submission of submissions) {
@@ -3199,7 +3319,10 @@ export class DocumentManagementUseCase {
       for (const field of Object.keys(confirmed)) {
         const confirmedRecord = jsonRecord(confirmed[field]);
         employee.addRow({
-          field,
+          field: extractionFieldLabel(
+            submission.requestItem.configSnapshot,
+            field,
+          ),
           value: spreadsheetValue(confirmedRecord.value ?? confirmed[field]),
           source: `${submission.requestItem.documentType.name} · v${submission.version}`,
         });
@@ -3224,7 +3347,10 @@ export class DocumentManagementUseCase {
         subjectUserId: subjectUserId ?? null,
       },
     );
-    return Buffer.from(buffer);
+    return {
+      content: Buffer.from(buffer),
+      fileName: `dados documentais ${safeDownloadPersonName(subject.name)}.xlsx`,
+    };
   }
 
   async exportUserFiles(

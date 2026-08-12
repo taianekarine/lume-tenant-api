@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 
 import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
@@ -351,6 +352,85 @@ describe('DocumentManagementUseCase.review', () => {
   });
 });
 
+describe('DocumentManagementUseCase.listRequests', () => {
+  it('separates files sent from documents approved in the progress summary', async () => {
+    const createdAt = new Date('2026-08-12T12:00:00.000Z');
+    const prisma = {
+      documentRequest: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: 'request-id',
+            context: 'ADMISSION',
+            status: 'PENDING_HUMAN_REVIEW',
+            deadline: null,
+            version: 1,
+            subject: {
+              id: 'subject-id',
+              name: 'Pessoa',
+              email: 'pessoa@example.com',
+            },
+            checklist: {
+              id: 'checklist-id',
+              code: 'general',
+              name: 'Geral',
+              version: 1,
+            },
+            items: [
+              {
+                status: 'PENDING_UPLOAD',
+                requirement: 'REQUIRED',
+                currentVersion: 0,
+              },
+              {
+                status: 'PENDING_UPLOAD',
+                requirement: 'REQUIRED',
+                currentVersion: 1,
+              },
+              {
+                status: 'PENDING_HUMAN_REVIEW',
+                requirement: 'REQUIRED',
+                currentVersion: 1,
+              },
+              {
+                status: 'APPROVED',
+                requirement: 'REQUIRED',
+                currentVersion: 1,
+              },
+            ],
+            createdAt,
+            updatedAt: createdAt,
+          },
+        ]),
+        count: vi.fn().mockResolvedValue(1),
+      },
+      $transaction: vi.fn((values: readonly Promise<unknown>[]) =>
+        Promise.all(values),
+      ),
+    };
+    const principal = {
+      id: 'admin-id',
+      companyId: 'company-id',
+      isAdministrator: true,
+      departments: ['management'],
+      permissions: ['documents:manage'],
+    } as AuthenticatedPrincipal;
+
+    const result = await new DocumentManagementUseCase(
+      prisma as never,
+    ).listRequests(principal, {
+      page: 1,
+      pageSize: 20,
+    });
+
+    expect(result.data[0].progress).toEqual({
+      total: 4,
+      uploaded: 2,
+      approved: 1,
+      pending: 3,
+    });
+  });
+});
+
 describe('DocumentManagementUseCase.exportUserFiles', () => {
   it('places every file and the manifest in one versioned employee folder', async () => {
     const createdAt = new Date('2026-08-11T12:00:00.000Z');
@@ -408,6 +488,99 @@ describe('DocumentManagementUseCase.exportUserFiles', () => {
         `${rootFolder}/documentos_v3/01_rg_front_identidade.jpg`,
         `${rootFolder}/documentos_v3/manifesto.json`,
       ]),
+    );
+  });
+});
+
+describe('DocumentManagementUseCase.exportXlsx', () => {
+  it('uses human labels and the employee name without technical identifiers', async () => {
+    const prisma = {
+      user: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: 'subject-id',
+          name: 'Taiane Karine',
+          email: 'taiane@example.com',
+          cpfNormalized: '12345678900',
+          jobTitle: 'Motorista',
+          maritalStatus: 'not-informed',
+          militaryDocumentStatus: 'pending-confirmation',
+          dependents: [],
+        }),
+      },
+      documentSubmission: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            version: 2,
+            confirmedData: { fullName: { value: 'TAIANE KARINE' } },
+            requestItem: {
+              configSnapshot: {
+                extractionSchema: {
+                  fields: [{ key: 'fullName', label: 'Nome completo' }],
+                },
+              },
+              documentType: { name: 'CNH' },
+            },
+          },
+        ]),
+      },
+      documentRequestItem: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            status: 'PENDING_UPLOAD',
+            requirement: 'REQUIRED',
+            validUntil: null,
+            documentType: { code: 'rg', name: 'RG' },
+            submissions: [],
+          },
+        ]),
+      },
+      documentStatusHistory: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            createdAt: new Date('2026-08-12T12:00:00.000Z'),
+            action: 'submission.created',
+            fromStatus: 'pending-upload',
+            toStatus: 'pending-human-review',
+            reason: null,
+            actor: { name: 'Taiane Karine' },
+          },
+        ]),
+      },
+      tenantAuditLog: { create: vi.fn().mockResolvedValue({}) },
+      $transaction: vi.fn((values: unknown) => values),
+    };
+    const principal = {
+      id: 'admin-id',
+      companyId: 'company-id',
+      isAdministrator: true,
+      departments: ['management'],
+      permissions: ['documents:manage', 'documents:export'],
+    } as AuthenticatedPrincipal;
+
+    const result = await new DocumentManagementUseCase(
+      prisma as never,
+    ).exportXlsx(principal, 'subject-id');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(result.content);
+    const documents = workbook.getWorksheet('Documentos')!;
+    const employee = workbook.getWorksheet('Dados do funcionário')!;
+    const history = workbook.getWorksheet('Histórico')!;
+
+    expect(result.fileName).toBe('dados documentais Taiane Karine.xlsx');
+    expect(documents.getRow(2).values).toEqual(
+      expect.arrayContaining(['RG', 'Aguardando envio', 'Obrigatório']),
+    );
+    expect(documents.getRow(1).values).not.toContain('Código');
+    expect(history.getRow(2).values).toEqual(
+      expect.arrayContaining([
+        'Arquivo enviado',
+        'Aguardando envio',
+        'Aguardando revisão',
+      ]),
+    );
+    expect(employee.getColumn(1).values).toContain('Nome completo');
+    expect(employee.getColumn(2).values).toEqual(
+      expect.arrayContaining(['Não informada', 'Pendente de confirmação']),
     );
   });
 });
