@@ -294,6 +294,7 @@ model Company {
   documentValidations           DocumentValidation[]
   documentReviews               DocumentReview[]
   documentStatusHistory         DocumentStatusHistory[]
+  apiRequestMetrics             ApiRequestMetric[]
 
   @@map("companies")
 }
@@ -323,6 +324,7 @@ model User {
   suspendedUntil         DateTime?          @map("suspended_until")
   suspensionReason       String?            @map("suspension_reason") @db.VarChar(500)
   isActive               Boolean            @default(true) @map("is_active")
+  deletedAt              DateTime?          @map("deleted_at") @db.Timestamptz(3)
   tokenVersion           Int                @default(1) @map("token_version")
   lastLoginAt            DateTime?          @map("last_login_at")
   createdAt              DateTime           @default(now()) @map("created_at")
@@ -350,10 +352,12 @@ model User {
   uploadedDocumentFiles         DocumentFile[]                   @relation("DocumentFileUploader")
   documentReviews               DocumentReview[]                 @relation("DocumentReviewer")
   documentStatusChanges         DocumentStatusHistory[]          @relation("DocumentStatusActor")
+  apiRequestMetrics             ApiRequestMetric[]
 
   @@unique([id, companyId])
   @@index([companyId])
   @@index([companyId, status, name])
+  @@index([companyId, deletedAt])
   @@index([departments], type: Gin)
   @@index([permissionCodes], type: Gin)
   @@map("users")
@@ -365,9 +369,9 @@ model PasswordChangeChallenge {
   userId     String               @map("user_id") @db.Uuid
   tokenHash  String               @unique @map("token_hash") @db.Char(64)
   reason     PasswordChangeReason
-  expiresAt  DateTime             @map("expires_at")
-  consumedAt DateTime?            @map("consumed_at")
-  createdAt  DateTime             @default(now()) @map("created_at")
+  expiresAt  DateTime             @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime?            @map("consumed_at") @db.Timestamptz(3)
+  createdAt  DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId, companyId], references: [id, companyId], onDelete: Cascade)
@@ -424,6 +428,28 @@ model TenantAuditLog {
   @@index([companyId, createdAt])
   @@index([actorUserId, createdAt])
   @@map("tenant_audit_logs")
+}
+
+model ApiRequestMetric {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  method        String   @db.VarChar(10)
+  route         String   @db.VarChar(240)
+  statusCode    Int      @map("status_code")
+  requestBytes  Int      @default(0) @map("request_bytes")
+  responseBytes Int      @default(0) @map("response_bytes")
+  durationMs    Int      @map("duration_ms")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@index([companyId, createdAt(sort: Desc)])
+  @@index([companyId, userId, createdAt(sort: Desc)])
+  @@index([companyId, route, createdAt(sort: Desc)])
+  @@index([companyId, statusCode, createdAt(sort: Desc)])
+  @@map("api_request_metrics")
 }
 
 model TenantDepartment {

@@ -116,6 +116,15 @@ export class CreateUserDto {
   @IsIn(['standard', 'document-portal'])
   documentAccessMode: 'standard' | 'document-portal' = 'standard';
 
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Cria a solicitação documental inicial. Obrigatório para candidatos.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  requestDocuments?: boolean;
+
   @ApiProperty({
     enum: userClassifications,
     default: 'Geral',
@@ -223,6 +232,17 @@ export class UpdateUserDto {
   @ValidateNested({ each: true })
   @Type(() => UserDependentDto)
   dependents?: UserDependentDto[];
+}
+
+export class DeleteUserDto {
+  @ApiProperty({
+    description: 'Senha atual do administrador que confirma a exclusão.',
+    writeOnly: true,
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(72)
+  password!: string;
 }
 
 export class ListUsersQueryDto {

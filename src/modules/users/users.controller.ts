@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -23,6 +24,7 @@ import { GetUserUseCase } from '../../application/use-cases/users/get-user.use-c
 import { ListUsersUseCase } from '../../application/use-cases/users/list-users.use-case';
 import { UpdateUserUseCase } from '../../application/use-cases/users/update-user.use-case';
 import { UpdateUserStatusUseCase } from '../../application/use-cases/users/update-user-status.use-case';
+import { DeleteUserUseCase } from '../../application/use-cases/users/delete-user.use-case';
 import {
   ChangeOwnPasswordUseCase,
   RequestAdminPasswordResetUseCase,
@@ -39,6 +41,7 @@ import {
   CreateUserDto,
   ChangeOwnPasswordDto,
   ListUsersQueryDto,
+  DeleteUserDto,
   UpdateProfilePictureDto,
   UpdateUserStatusDto,
   UpdateUserDto,
@@ -64,6 +67,7 @@ export class UsersController {
     private readonly getUser: GetUserUseCase,
     private readonly updateUser: UpdateUserUseCase,
     private readonly updateUserStatus: UpdateUserStatusUseCase,
+    private readonly deleteUser: DeleteUserUseCase,
     private readonly changeOwnPassword: ChangeOwnPasswordUseCase,
     private readonly requestPasswordReset: RequestAdminPasswordResetUseCase,
     private readonly getProfile: GetProfileUseCase,
@@ -84,18 +88,26 @@ export class UsersController {
     const {
       initialDocumentChecklistCode: legacyChecklistCode,
       initialDocumentRequestCommandId,
+      requestDocuments,
       ...userInput
     } = body;
     void legacyChecklistCode;
+    const shouldRequestDocuments =
+      requestDocuments ?? Boolean(initialDocumentRequestCommandId);
     if (
       body.documentAccessMode === 'document-portal' &&
-      !initialDocumentRequestCommandId
+      !shouldRequestDocuments
     ) {
       throw validationError(
-        'Identificador da solicitação documental não informado.',
+        'A solicitação de documentação é obrigatória para candidatos.',
       );
     }
-    if (initialDocumentRequestCommandId) {
+    if (shouldRequestDocuments && !initialDocumentRequestCommandId) {
+      throw validationError(
+        'Não foi possível iniciar a solicitação documental. Tente novamente.',
+      );
+    }
+    if (shouldRequestDocuments) {
       await this.documents.ensureInitialDocumentCatalog(current);
     }
     const user = await this.createUser.execute({
@@ -103,9 +115,9 @@ export class UsersController {
       companyId: current.companyId,
       actorUserId: current.id,
     });
-    const initialDocumentRequest = initialDocumentRequestCommandId
+    const initialDocumentRequest = shouldRequestDocuments
       ? await this.documents.createAdmissionRequest(current, {
-          commandId: initialDocumentRequestCommandId,
+          commandId: initialDocumentRequestCommandId!,
           subjectUserId: user.id,
           checklistCode: 'employee-documents-dynamic',
         })
@@ -127,7 +139,6 @@ export class UsersController {
     @CurrentUser() current: AuthenticatedPrincipal,
     @Query() query: ListUsersQueryDto,
   ) {
-    assertPeopleOperationsCreationAccess(current);
     const role = resolveUserManagementRole(current);
     return this.listUsers.execute(current.companyId, {
       ...query,
@@ -273,6 +284,22 @@ export class UsersController {
       companyId: current.companyId,
       actorUserId: current.id,
       userId,
+    });
+  }
+
+  @Delete(':id')
+  @RequireAnyPermission('users:manage')
+  @ApiOkResponse({ description: 'Usuário excluído pelo administrador.' })
+  delete(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) userId: string,
+    @Body() body: DeleteUserDto,
+  ) {
+    return this.deleteUser.execute({
+      companyId: current.companyId,
+      actorUserId: current.id,
+      userId,
+      password: body.password,
     });
   }
 }

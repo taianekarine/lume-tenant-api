@@ -190,9 +190,105 @@ function jsonRecord(value: unknown): Readonly<Record<string, unknown>> {
 function spreadsheetValue(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean')
-    return String(value);
+  if (typeof value === 'boolean') return value ? 'Sim' : 'Não';
+  if (typeof value === 'number') return String(value);
   return JSON.stringify(value);
+}
+
+const DOCUMENT_STATUS_EXPORT_LABELS: Readonly<Record<string, string>> = {
+  draft: 'Rascunho',
+  'pending-upload': 'Aguardando envio',
+  'partially-submitted': 'Enviado parcialmente',
+  submitted: 'Enviado',
+  'automatic-validation': 'Em validação automática',
+  'pending-human-review': 'Aguardando revisão',
+  'resubmission-required': 'Novo envio solicitado',
+  approved: 'Aprovado',
+  rejected: 'Recusado',
+  expired: 'Vencido',
+  waived: 'Dispensado',
+  cancelled: 'Cancelado',
+};
+
+const DOCUMENT_REQUIREMENT_EXPORT_LABELS: Readonly<Record<string, string>> = {
+  required: 'Obrigatório',
+  optional: 'Opcional',
+  conditional: 'Condicional',
+};
+
+const MARITAL_STATUS_EXPORT_LABELS: Readonly<Record<MaritalStatus, string>> = {
+  single: 'Solteiro(a)',
+  married: 'Casado(a)',
+  'stable-union': 'União estável',
+  divorced: 'Divorciado(a)',
+  widowed: 'Viúvo(a)',
+  'not-informed': 'Não informada',
+};
+
+const MILITARY_STATUS_EXPORT_LABELS: Readonly<
+  Record<MilitaryDocumentStatus, string>
+> = {
+  applicable: 'Aplicável',
+  'not-applicable': 'Não aplicável',
+  'pending-confirmation': 'Pendente de confirmação',
+};
+
+function documentStatusExportLabel(value: string | null): string {
+  if (!value) return '';
+  return DOCUMENT_STATUS_EXPORT_LABELS[value] ?? humanizeTechnicalLabel(value);
+}
+
+function humanizeTechnicalLabel(value: string): string {
+  const normalized = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[._-]+/g, ' ')
+    .trim();
+  return normalized
+    ? `${normalized.charAt(0).toLocaleUpperCase('pt-BR')}${normalized.slice(1)}`
+    : 'Não informado';
+}
+
+function extractionFieldLabel(config: unknown, field: string): string {
+  const schema = jsonRecord(jsonRecord(config).extractionSchema);
+  const fields = Array.isArray(schema.fields) ? schema.fields : [];
+  for (const definition of fields) {
+    const record = jsonRecord(definition);
+    if (record.key === field && typeof record.label === 'string') {
+      return record.label;
+    }
+  }
+  return humanizeTechnicalLabel(field);
+}
+
+function canonicalExportField(value: string): string {
+  const normalized = value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '')
+    .toLocaleLowerCase('pt-BR');
+  if (['fullname', 'nomecompleto', 'name', 'nome'].includes(normalized)) {
+    return 'nome';
+  }
+  if (['email', 'emailaddress', 'enderecodeemail'].includes(normalized)) {
+    return 'email';
+  }
+  if (['cpf', 'cpfnumber', 'numerodocpf'].includes(normalized)) {
+    return 'cpf';
+  }
+  return normalized;
+}
+
+function safeDownloadPersonName(value: string): string {
+  return (
+    value
+      .split('')
+      .filter((character) => character.charCodeAt(0) >= 32)
+      .join('')
+      .replace(/[<>:"/\\|?*]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 100) || 'funcionário'
+  );
 }
 
 function safeArchiveName(value: string): string {
@@ -202,6 +298,32 @@ function safeArchiveName(value: string): string {
       .replace(/[^a-zA-Z0-9._-]+/g, '_')
       .slice(0, 120) || 'arquivo'
   );
+}
+
+function saoPauloCalendarDate(at = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(at);
+  const value = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+function uploadedFileSignature(
+  files: readonly {
+    sha256: string;
+    side: DocumentFileSide;
+    pageNumber: number;
+  }[],
+): string {
+  return files
+    .map((file) => `${file.side}:${file.pageNumber}:${file.sha256}`)
+    .sort()
+    .join('|');
 }
 
 function deterministicCommandId(
@@ -1538,6 +1660,7 @@ export class DocumentManagementUseCase {
         principal.permissions.includes('documents:manage'));
     const where: Prisma.DocumentRequestWhereInput = {
       companyId: principal.companyId,
+      subject: { deletedAt: null },
       ...(!canManage ? { subjectUserId: principal.id } : {}),
       ...(query.subjectUserId && canManage
         ? { subjectUserId: query.subjectUserId }
@@ -1555,7 +1678,9 @@ export class DocumentManagementUseCase {
           checklist: {
             select: { id: true, code: true, name: true, version: true },
           },
-          items: { select: { status: true, requirement: true } },
+          items: {
+            select: { status: true, requirement: true, currentVersion: true },
+          },
         },
         orderBy: [{ deadline: 'asc' }, { createdAt: 'desc' }],
         skip: (query.page - 1) * query.pageSize,
@@ -1574,6 +1699,11 @@ export class DocumentManagementUseCase {
         checklist: row.checklist,
         progress: {
           total: row.items.length,
+          uploaded: row.items.filter(
+            (item) =>
+              item.currentVersion > 0 &&
+              item.status !== PrismaDocumentItemStatus.PENDING_UPLOAD,
+          ).length,
           approved: row.items.filter(
             (item) =>
               item.status === PrismaDocumentItemStatus.APPROVED ||
@@ -1828,7 +1958,16 @@ export class DocumentManagementUseCase {
       where: {
         id_companyId: { id: requestItemId, companyId: principal.companyId },
       },
-      include: { request: true, documentType: true },
+      include: {
+        request: true,
+        documentType: true,
+        submissions: {
+          where: { status: { not: PrismaDocumentItemStatus.CANCELLED } },
+          orderBy: { version: 'desc' },
+          take: 1,
+          include: { files: { where: { deletedAt: null } } },
+        },
+      },
     });
     if (!item) throw notFound('Item documental');
     this.assertOwnOrManage(principal, item.request.subjectUserId);
@@ -1873,6 +2012,37 @@ export class DocumentManagementUseCase {
           : item.documentType.requiresFrontBack,
     };
     const files = validateDocumentUpload(input.files, policy);
+    const previousSubmission = item.submissions?.[0];
+    const isRepeatedFileSet =
+      previousSubmission &&
+      uploadedFileSignature(files) ===
+        uploadedFileSignature(
+          previousSubmission.files.map((file) => ({
+            sha256: file.sha256,
+            side: sidesFromPrisma[file.side],
+            pageNumber: file.pageNumber,
+          })),
+        );
+    if (isRepeatedFileSet) {
+      if (
+        (
+          [
+            PrismaDocumentItemStatus.REJECTED,
+            PrismaDocumentItemStatus.RESUBMISSION_REQUIRED,
+            PrismaDocumentItemStatus.EXPIRED,
+          ] as PrismaDocumentItemStatus[]
+        ).includes(previousSubmission.status)
+      ) {
+        throw conflict(
+          'Este arquivo já foi analisado. Selecione um arquivo diferente para o novo envio.',
+        );
+      }
+      return {
+        request: await this.getRequestById(principal, item.requestId),
+        submissionId: previousSubmission.id,
+        idempotent: true,
+      };
+    }
     assertDocumentItemTransition(currentStatus, 'submitted');
 
     const submissionId = await this.prisma.$transaction(async (transaction) => {
@@ -1976,6 +2146,15 @@ export class DocumentManagementUseCase {
       submissionId,
       idempotent: false,
     };
+  }
+
+  async uploadAndComplete(
+    principal: AuthenticatedPrincipal,
+    requestItemId: string,
+    input: Parameters<DocumentManagementUseCase['upload']>[2],
+  ) {
+    const uploaded = await this.upload(principal, requestItemId, input);
+    return this.completeSubmission(principal, uploaded.submissionId);
   }
 
   async completeSubmission(
@@ -3013,24 +3192,14 @@ export class DocumentManagementUseCase {
       },
       orderBy: { submittedAt: 'desc' },
     });
-    const [items, history] = await Promise.all([
-      this.prisma.documentRequestItem.findMany({
-        where: { companyId: principal.companyId, request: { subjectUserId } },
-        include: {
-          documentType: { select: { code: true, name: true } },
-          submissions: { orderBy: { version: 'desc' }, take: 1 },
-        },
-        orderBy: [{ request: { createdAt: 'desc' } }, { position: 'asc' }],
-      }),
-      this.prisma.documentStatusHistory.findMany({
-        where: {
-          companyId: principal.companyId,
-          request: { subjectUserId },
-        },
-        include: { actor: { select: { name: true } } },
-        orderBy: { createdAt: 'asc' },
-      }),
-    ]);
+    const items = await this.prisma.documentRequestItem.findMany({
+      where: { companyId: principal.companyId, request: { subjectUserId } },
+      include: {
+        documentType: { select: { code: true, name: true } },
+        submissions: { orderBy: { version: 'desc' }, take: 1 },
+      },
+      orderBy: [{ request: { createdAt: 'desc' } }, { position: 'asc' }],
+    });
     const workbook = new ExcelJS.Workbook();
     const employee = workbook.addWorksheet('Dados do funcionário');
     employee.columns = [
@@ -3038,7 +3207,7 @@ export class DocumentManagementUseCase {
       { header: 'Valor validado', key: 'value', width: 60 },
       { header: 'Documento de origem', key: 'source', width: 42 },
     ];
-    for (const row of [
+    const employeeRows = [
       { field: 'Nome', value: subject.name, source: 'Cadastro' },
       { field: 'E-mail', value: subject.email, source: 'Cadastro' },
       { field: 'CPF', value: subject.cpfNormalized ?? '', source: 'Cadastro' },
@@ -3049,36 +3218,48 @@ export class DocumentManagementUseCase {
       },
       {
         field: 'Situação civil',
-        value: subject.maritalStatus ?? 'não informada',
+        value: subject.maritalStatus
+          ? MARITAL_STATUS_EXPORT_LABELS[subject.maritalStatus as MaritalStatus]
+          : 'Não informada',
         source: 'Cadastro',
       },
       {
         field: 'Documentação militar',
-        value: subject.militaryDocumentStatus,
+        value:
+          MILITARY_STATUS_EXPORT_LABELS[
+            subject.militaryDocumentStatus as MilitaryDocumentStatus
+          ],
         source: 'Cadastro',
       },
-    ]) {
+    ];
+    for (const row of employeeRows) {
       employee.addRow(row);
     }
+    const exportedFields = new Set(
+      employeeRows.map((row) => canonicalExportField(row.field)),
+    );
     const documents = workbook.addWorksheet('Documentos');
     documents.columns = [
-      { header: 'Código', key: 'code', width: 28 },
       { header: 'Documento', key: 'name', width: 42 },
-      { header: 'Status', key: 'status', width: 24 },
+      { header: 'Situação', key: 'status', width: 28 },
       { header: 'Obrigatoriedade', key: 'requirement', width: 20 },
       { header: 'Validade', key: 'validUntil', width: 22 },
       { header: 'Versão atual', key: 'version', width: 14 },
-      { header: 'Solicitação', key: 'requestId', width: 38 },
     ];
     for (const item of items) {
       documents.addRow({
-        code: item.documentType.code,
         name: item.documentType.name,
-        status: itemStatusFromPrisma[item.status],
-        requirement: requirementsFromPrisma[item.requirement],
-        validUntil: item.validUntil?.toISOString() ?? '',
+        status: documentStatusExportLabel(itemStatusFromPrisma[item.status]),
+        requirement:
+          DOCUMENT_REQUIREMENT_EXPORT_LABELS[
+            requirementsFromPrisma[item.requirement]
+          ],
+        validUntil: item.validUntil
+          ? item.validUntil.toLocaleDateString('pt-BR', {
+              timeZone: 'America/Sao_Paulo',
+            })
+          : '',
         version: item.submissions[0]?.version ?? 0,
-        requestId: item.requestId,
       });
     }
     const dependentSheet = workbook.addWorksheet('Dependentes');
@@ -3097,34 +3278,33 @@ export class DocumentManagementUseCase {
         relationship: spreadsheetValue(dependent.relationship),
       });
     }
-    const historySheet = workbook.addWorksheet('Histórico');
-    historySheet.columns = [
-      { header: 'Data', key: 'date', width: 24 },
-      { header: 'Ação', key: 'action', width: 34 },
-      { header: 'Status anterior', key: 'from', width: 24 },
-      { header: 'Novo status', key: 'to', width: 24 },
-      { header: 'Motivo', key: 'reason', width: 48 },
-      { header: 'Responsável', key: 'actor', width: 32 },
-      { header: 'Solicitação', key: 'requestId', width: 38 },
-    ];
-    for (const entry of history) {
-      historySheet.addRow({
-        date: entry.createdAt.toISOString(),
-        action: entry.action,
-        from: entry.fromStatus ?? '',
-        to: entry.toStatus,
-        reason: entry.reason ?? '',
-        actor: entry.actor?.name ?? 'Sistema',
-        requestId: entry.requestId ?? '',
-      });
-    }
     for (const submission of submissions) {
       const confirmed = jsonRecord(submission.confirmedData);
       for (const field of Object.keys(confirmed)) {
         const confirmedRecord = jsonRecord(confirmed[field]);
-        employee.addRow({
+        const label = extractionFieldLabel(
+          submission.requestItem.configSnapshot,
           field,
-          value: spreadsheetValue(confirmedRecord.value ?? confirmed[field]),
+        );
+        const fieldIdentities = new Set([
+          canonicalExportField(field),
+          canonicalExportField(label),
+        ]);
+        const value = spreadsheetValue(
+          confirmedRecord.value ?? confirmed[field],
+        );
+        if (
+          !value ||
+          [...fieldIdentities].some(
+            (identity) => !identity || exportedFields.has(identity),
+          )
+        ) {
+          continue;
+        }
+        for (const identity of fieldIdentities) exportedFields.add(identity);
+        employee.addRow({
+          field: label,
+          value,
           source: `${submission.requestItem.documentType.name} · v${submission.version}`,
         });
       }
@@ -3148,7 +3328,10 @@ export class DocumentManagementUseCase {
         subjectUserId: subjectUserId ?? null,
       },
     );
-    return Buffer.from(buffer);
+    return {
+      content: Buffer.from(buffer),
+      fileName: `dados documentais ${safeDownloadPersonName(subject.name)}.xlsx`,
+    };
   }
 
   async exportUserFiles(
@@ -3168,9 +3351,9 @@ export class DocumentManagementUseCase {
       where: {
         id_companyId: { id: subjectUserId, companyId: principal.companyId },
       },
-      select: { id: true, name: true, email: true },
+      select: { id: true, name: true, email: true, deletedAt: true },
     });
-    if (!subject) throw notFound('Usuário titular');
+    if (!subject || subject.deletedAt) throw notFound('Usuário titular');
     const files = await this.prisma.documentFile.findMany({
       where: {
         companyId: principal.companyId,
@@ -3190,9 +3373,17 @@ export class DocumentManagementUseCase {
       ],
     });
     const zip = new JSZip();
-    const manifest = files.map((file) => {
-      const folder = `${safeArchiveName(file.submission.requestItem.documentType.code)}/v${file.submission.version}`;
-      const archivePath = `${folder}/${file.id}_${safeArchiveName(file.fileName)}`;
+    const downloadDate = saoPauloCalendarDate();
+    const rootFolder = `${safeArchiveName(subject.name)}_${downloadDate}`;
+    const bundleVersion = Math.max(
+      1,
+      ...files.map((file) => file.submission.version),
+    );
+    const documentsFolder = `${rootFolder}/documentos_v${bundleVersion}`;
+    const manifest = files.map((file, index) => {
+      const side = sidesFromPrisma[file.side];
+      const sideSuffix = side === 'single' ? '' : `_${side}`;
+      const archivePath = `${documentsFolder}/${String(index + 1).padStart(2, '0')}_${safeArchiveName(file.submission.requestItem.documentType.code)}${sideSuffix}_${safeArchiveName(file.fileName)}`;
       zip.file(archivePath, Buffer.from(file.content));
       return {
         archivePath,
@@ -3207,7 +3398,7 @@ export class DocumentManagementUseCase {
       };
     });
     zip.file(
-      'manifesto.json',
+      `${documentsFolder}/manifesto.json`,
       JSON.stringify(
         { subject, generatedAt: new Date().toISOString(), files: manifest },
         null,
@@ -3225,7 +3416,10 @@ export class DocumentManagementUseCase {
       subjectUserId,
       { fileCount: files.length },
     );
-    return content;
+    return {
+      content,
+      fileName: `${rootFolder}.zip`,
+    };
   }
 
   private async getRequestById(
@@ -3235,6 +3429,7 @@ export class DocumentManagementUseCase {
     const row = await this.prisma.documentRequest.findUnique({
       where: {
         id_companyId: { id: requestId, companyId: principal.companyId },
+        subject: { deletedAt: null },
       },
       include: requestDetailInclude,
     });

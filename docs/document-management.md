@@ -100,17 +100,39 @@ Prefixo `/api/v1/document-management`:
 - `POST /requests/:id/items` (inclusão manual);
 - `POST /items/:id/policy` (obrigatório, opcional ou dispensado, com motivo);
 - `POST /items/:id/submissions` (multipart);
+- `POST /items/:id/submissions/complete` (multipart; envio e pré-validação em
+  uma única requisição);
 - `POST /submissions/:id/complete`;
 - `DELETE /submissions/:id` (remoção lógica e auditada);
 - `POST /submissions/:id/reviews`;
+
+O endpoint combinado é o contrato preferencial do Tenant Web. O `commandId`
+mantém idempotência e um conjunto de arquivos idêntico já aguardando revisão é
+reutilizado sem uma nova chamada ao agente. Um arquivo anteriormente recusado
+precisa ser substituído antes de uma nova análise.
+
+Solicitações cujo titular foi excluído logicamente não aparecem nas listas de
+acompanhamento nem podem ser abertas por URL antiga. A auditoria e os históricos
+permanecem preservados no banco.
+
+O pacote ZIP individual contém uma raiz `nome_do_funcionario_AAAA-MM-DD` e,
+dentro dela, apenas a pasta `documentos_vN`, com todos os arquivos consolidados
+e o `manifesto.json`, sem subpastas por tipo ou por envio.
+
 - `GET /files/:id/content`;
 - `GET /expiring`;
 - `POST /items/:id/renewal`;
 - `GET /users/:id/export.xlsx` e `GET /users/:id/files.zip`.
 
 O XLSX é sempre individual e contém as abas `Dados do funcionário`,
-`Documentos`, `Dependentes` e `Histórico`. Não há consolidação global de
-funcionários em uma linha por pessoa.
+`Documentos` e `Dependentes`. Os dados confirmados são consolidados por campo:
+quando CPF, nome ou outro campo aparece em mais de um documento, somente o
+valor confirmado mais recente é exportado. O histórico operacional permanece
+no sistema e não é incluído na planilha.
+
+O envio documental não aplica um limite funcional por tamanho de arquivo. PDF,
+JPEG e PNG são transmitidos sem duplicação pelo Tenant Web; a quantidade e a
+estrutura exigidas para cada tipo documental continuam validadas.
 
 Criação, envio e revisão recebem `commandId`. Atualizações concorrentes de itens
 usam a versão persistida.

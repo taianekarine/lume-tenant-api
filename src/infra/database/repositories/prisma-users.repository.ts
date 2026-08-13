@@ -124,6 +124,7 @@ export class PrismaUsersRepository extends UsersRepository {
       where: {
         ...(companyId ? { companyId } : {}),
         ...(userId ? { id: userId } : {}),
+        deletedAt: null,
         status: PrismaUserAccountStatus.SUSPENDED,
         suspendedUntil: { lte: new Date() },
       },
@@ -160,6 +161,7 @@ export class PrismaUsersRepository extends UsersRepository {
 
     const match = await this.prisma.user.findFirst({
       where: {
+        deletedAt: null,
         OR: alternatives,
         ...(input.exceptUserId ? { NOT: { id: input.exceptUserId } } : {}),
       },
@@ -185,6 +187,7 @@ export class PrismaUsersRepository extends UsersRepository {
   async findByLoginIdentifier(identifier: string): Promise<UserRecord | null> {
     let row = await this.prisma.user.findFirst({
       where: {
+        deletedAt: null,
         OR: [
           { usernameNormalized: identifier },
           { emailNormalized: identifier },
@@ -198,8 +201,8 @@ export class PrismaUsersRepository extends UsersRepository {
       row.suspendedUntil <= new Date()
     ) {
       await this.reactivateExpiredSuspensions(row.companyId, row.id);
-      row = await this.prisma.user.findUnique({
-        where: { id_companyId: { id: row.id, companyId: row.companyId } },
+      row = await this.prisma.user.findFirst({
+        where: { id: row.id, companyId: row.companyId, deletedAt: null },
         select: userRecordSelect,
       });
     }
@@ -212,8 +215,8 @@ export class PrismaUsersRepository extends UsersRepository {
     userId: string,
   ): Promise<UserRecord | null> {
     await this.reactivateExpiredSuspensions(companyId, userId);
-    const row = await this.prisma.user.findUnique({
-      where: { id_companyId: { id: userId, companyId } },
+    const row = await this.prisma.user.findFirst({
+      where: { id: userId, companyId, deletedAt: null },
       select: userRecordSelect,
     });
 
@@ -224,8 +227,8 @@ export class PrismaUsersRepository extends UsersRepository {
     companyId: string,
     userId: string,
   ): Promise<UserProfileRecord | null> {
-    const row = await this.prisma.user.findUnique({
-      where: { id_companyId: { id: userId, companyId } },
+    const row = await this.prisma.user.findFirst({
+      where: { id: userId, companyId, deletedAt: null },
       select: userProfileSelect,
     });
 
@@ -295,6 +298,7 @@ export class PrismaUsersRepository extends UsersRepository {
     }
     const where: Prisma.UserWhereInput = {
       companyId,
+      deletedAt: null,
       ...(query.excludeUserId ? { id: { not: query.excludeUserId } } : {}),
       ...(query.excludeAdministrators ? { isAdministrator: false } : {}),
       ...(accessFilters.length > 0 ? { AND: accessFilters } : {}),
@@ -497,6 +501,76 @@ export class PrismaUsersRepository extends UsersRepository {
     );
   }
 
+  async softDelete(
+    companyId: string,
+    userId: string,
+    deletedAt: Date,
+  ): Promise<boolean> {
+    return this.retrySerializable(() =>
+      this.prisma.$transaction(
+        async (transaction) => {
+          const target = await transaction.user.findFirst({
+            where: { id: userId, companyId, deletedAt: null },
+            select: { isAdministrator: true },
+          });
+          if (!target) return false;
+
+          if (target.isAdministrator) {
+            const activeAdministrators = await transaction.user.count({
+              where: {
+                companyId,
+                deletedAt: null,
+                isAdministrator: true,
+                isActive: true,
+                status: PrismaUserAccountStatus.ACTIVE,
+              },
+            });
+            if (activeAdministrators <= 1) return false;
+          }
+
+          const anonymizedIdentifier = `excluido-${userId.slice(0, 24)}`;
+          const anonymizedEmail = `excluido+${userId}@invalid.local`;
+          const changed = await transaction.user.updateMany({
+            where: { id: userId, companyId, deletedAt: null },
+            data: {
+              name: 'Usuário excluído',
+              username: anonymizedIdentifier,
+              usernameNormalized: anonymizedIdentifier,
+              email: anonymizedEmail,
+              emailNormalized: anonymizedEmail,
+              cpfNormalized: null,
+              profilePicture: null,
+              profilePictureMime: null,
+              isAdministrator: false,
+              departments: [],
+              permissionCodes: [],
+              status: PrismaUserAccountStatus.INACTIVE,
+              isActive: false,
+              suspendedUntil: null,
+              suspensionReason: null,
+              deletedAt,
+              tokenVersion: { increment: 1 },
+            },
+          });
+          if (changed.count !== 1) return false;
+
+          await Promise.all([
+            transaction.refreshToken.updateMany({
+              where: { companyId, userId, revokedAt: null },
+              data: { revokedAt: deletedAt },
+            }),
+            transaction.passwordChangeChallenge.updateMany({
+              where: { companyId, userId, consumedAt: null },
+              data: { consumedAt: deletedAt },
+            }),
+          ]);
+          return true;
+        },
+        { isolationLevel: 'Serializable' },
+      ),
+    );
+  }
+
   async markLastLogin(
     companyId: string,
     userId: string,
@@ -512,6 +586,7 @@ export class PrismaUsersRepository extends UsersRepository {
     return this.prisma.user.count({
       where: {
         companyId,
+        deletedAt: null,
         isActive: true,
         status: PrismaUserAccountStatus.ACTIVE,
         isAdministrator: true,
