@@ -34,14 +34,17 @@ O Compose monta `lume_tenant_whatsapp_imports` em
 `/app/var/imports/whatsapp`; inclua esse volume na rotina de limpeza e backup.
 Rascunhos expiram após `WHATSAPP_HISTORY_IMPORT_RETENTION_HOURS`.
 
-Referências de imagens, áudios, vídeos e documentos existentes no ZIP são
-preservadas nos metadados das mensagens. O importador oficial atual só persiste
-o binário de PDFs de propostas listados em `DocumentosImportacao`; por isso os
-demais anexos históricos recebem `retentionStatus=unavailable` e não são
-publicados como mídia navegável. Essa sinalização evita que o painel tente
-recuperar o arquivo na Evolution, onde ele nunca existiu. Arquivos
-citados no texto, mas ausentes do ZIP, são sinalizados para conferência e nunca
-simulados como recuperáveis.
+Imagens, áudios, vídeos, figurinhas, contatos e documentos presentes no ZIP são
+copiados para o armazenamento durável de mídias e vinculados à mensagem
+importada. Assim, a visualização autenticada usa a cópia própria da aplicação e
+continua disponível depois que o lote temporário expira. Arquivos citados no
+texto, mas ausentes do ZIP, são sinalizados para conferência e nunca simulados
+como recuperáveis.
+
+Aplicar novamente um lote ou combinar uma conversa já importada com novas
+conversas é idempotente: as mensagens já confirmadas são reconhecidas por seus
+identificadores determinísticos, não invalidam o restante do lote e não são
+duplicadas.
 
 ## Diretório privado
 

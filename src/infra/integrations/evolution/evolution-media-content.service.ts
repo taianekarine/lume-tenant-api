@@ -25,6 +25,7 @@ const MEDIA_KINDS = new Set<MessageKind>([
   MessageKind.AUDIO,
   MessageKind.VIDEO,
   MessageKind.STICKER,
+  MessageKind.CONTACT,
 ]);
 
 const MIME_EXTENSIONS: Readonly<Record<string, string>> = {
@@ -40,6 +41,8 @@ const MIME_EXTENSIONS: Readonly<Record<string, string>> = {
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
   'text/plain': '.txt',
   'text/csv': '.csv',
+  'text/vcard': '.vcf',
+  'text/x-vcard': '.vcf',
   'audio/ogg': '.ogg',
   'audio/mpeg': '.mp3',
   'audio/mp4': '.m4a',
@@ -64,7 +67,8 @@ export interface WhatsAppMediaContent {
   readonly content: Buffer;
   readonly fileName: string;
   readonly mimeType: string;
-  readonly kind: 'image' | 'document' | 'audio' | 'video' | 'sticker';
+  readonly kind:
+    'image' | 'document' | 'audio' | 'video' | 'sticker' | 'contact';
 }
 
 interface MediaMessageRow {
@@ -120,6 +124,8 @@ function canonicalKind(kind: MessageKind): WhatsAppMediaContent['kind'] {
       return 'video';
     case MessageKind.STICKER:
       return 'sticker';
+    case MessageKind.CONTACT:
+      return 'contact';
     default:
       throw notFound('Conteúdo da mídia');
   }
@@ -136,6 +142,8 @@ function isMimeCompatible(kind: MessageKind, mimeType: string): boolean {
       return mimeType.startsWith('video/');
     case MessageKind.DOCUMENT:
       return true;
+    case MessageKind.CONTACT:
+      return mimeType === 'text/vcard' || mimeType === 'text/x-vcard';
     default:
       return false;
   }
@@ -259,12 +267,14 @@ export class EvolutionMediaContentService {
       config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ?? 52_428_800;
     this.requestTimeoutMs =
       config.get<number>('EVOLUTION_MEDIA_CONTENT_TIMEOUT_MS') ?? 30_000;
-    this.allowedMimeTypes = new Set(
-      (config.get<string>('WHATSAPP_ALLOWED_MIME_TYPES') ?? '')
+    this.allowedMimeTypes = new Set([
+      ...(config.get<string>('WHATSAPP_ALLOWED_MIME_TYPES') ?? '')
         .split(',')
         .map((item) => normalizeMimeType(item))
         .filter(Boolean),
-    );
+      'text/vcard',
+      'text/x-vcard',
+    ]);
   }
 
   async getContent(
@@ -283,6 +293,8 @@ export class EvolutionMediaContentService {
     ) {
       return this.proposalContent(message);
     }
+    const stored = await this.readStoredContent(message);
+    if (stored) return stored;
     if (message.direction !== MessageDirection.INBOUND) {
       throw unavailableMedia();
     }

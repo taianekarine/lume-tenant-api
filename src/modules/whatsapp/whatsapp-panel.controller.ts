@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+
 import {
   Body,
   Controller,
@@ -9,9 +11,14 @@ import {
   Query,
   Res,
   StreamableFile,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
+  ApiConsumes,
   ApiCreatedResponse,
   ApiOkResponse,
   ApiOperation,
@@ -19,6 +26,7 @@ import {
 } from '@nestjs/swagger';
 import type { Response } from 'express';
 
+import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
 import type { AuthenticatedPrincipal } from '../../application/presenters/user.presenter';
 import {
   CreateHumanOutboundWhatsAppUseCase,
@@ -34,6 +42,7 @@ import {
   CloseConversationDto,
   ConversationListQueryDto,
   CreateHumanOutboundMessageDto,
+  CreateHumanOutboundMediaDto,
   ForwardConversationDto,
   MessageListQueryDto,
   TransitionListQueryDto,
@@ -50,6 +59,8 @@ function contentDisposition(fileName: string): string {
   return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
 
+const MAXIMUM_PANEL_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+
 @ApiTags('Painel WhatsApp')
 @ApiBearerAuth()
 @RequireAnyPermission(
@@ -63,6 +74,8 @@ export class WhatsAppPanelController {
     private readonly transition: TransitionWhatsAppConversationUseCase,
     private readonly createHumanOutbound: CreateHumanOutboundWhatsAppUseCase,
     private readonly mediaContent: EvolutionMediaContentService,
+    private readonly mediaStorage: WhatsAppMediaStorage,
+    private readonly config: ConfigService,
   ) {}
 
   @Get()
@@ -229,6 +242,109 @@ export class WhatsAppPanelController {
       conversationId,
       actorUserId: current.id,
     });
+  }
+
+  @Post(':conversationId/media-messages')
+  @RequireAnyPermission('whatsapp-conversations:manage')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: {
+        files: 1,
+        fileSize: MAXIMUM_PANEL_ATTACHMENT_BYTES,
+      },
+    }),
+  )
+  async createMediaMessage(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('conversationId', new ParseUUIDPipe()) conversationId: string,
+    @Body() body: CreateHumanOutboundMediaDto,
+    @UploadedFile()
+    file:
+      | {
+          originalname: string;
+          mimetype: string;
+          size: number;
+          buffer: Buffer;
+        }
+      | undefined,
+  ) {
+    if (!file?.buffer?.length || file.size !== file.buffer.byteLength) {
+      throw validationError('Selecione um arquivo válido para enviar.');
+    }
+    const mimeType = file.mimetype.trim().toLowerCase().split(';')[0];
+    const allowed = new Set([
+      ...(this.config.get<string>('WHATSAPP_ALLOWED_MIME_TYPES') ?? '')
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+      'text/vcard',
+      'text/x-vcard',
+    ]);
+    if (!allowed.has(mimeType)) {
+      throw validationError('Este formato de arquivo não pode ser enviado.');
+    }
+    const configuredMaximum =
+      this.config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ??
+      MAXIMUM_PANEL_ATTACHMENT_BYTES;
+    if (
+      file.size > Math.min(configuredMaximum, MAXIMUM_PANEL_ATTACHMENT_BYTES)
+    ) {
+      throw validationError(
+        'O arquivo ultrapassa o tamanho aceito pelo WhatsApp.',
+      );
+    }
+
+    const fileName = (file.originalname.split(/[\\/]/).pop() ?? 'arquivo')
+      .split('')
+      .map((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint <= 31 || codePoint === 127 ? '_' : character;
+      })
+      .join('')
+      .replace(/[<>:"|?*]/g, '_')
+      .slice(0, 200);
+    const messageId = randomUUID();
+    const sha256 = createHash('sha256').update(file.buffer).digest('hex');
+    const storageKey = [
+      'v1',
+      current.companyId,
+      conversationId,
+      messageId,
+      sha256,
+    ].join('/');
+    const kind = mimeType.startsWith('image/')
+      ? 'image'
+      : mimeType.startsWith('video/')
+        ? 'video'
+        : mimeType.startsWith('audio/')
+          ? 'audio'
+          : mimeType === 'text/vcard' || mimeType === 'text/x-vcard'
+            ? 'contact'
+            : 'document';
+
+    await this.mediaStorage.write({ storageKey, content: file.buffer });
+    try {
+      return await this.createHumanOutbound.execute({
+        ...body,
+        companyId: current.companyId,
+        conversationId,
+        actorUserId: current.id,
+        text: body.caption,
+        attachment: {
+          messageId,
+          kind,
+          fileName,
+          mimeType,
+          sizeBytes: file.size,
+          sha256,
+          storageKey,
+        },
+      });
+    } catch (error) {
+      await this.mediaStorage.delete(storageKey).catch(() => undefined);
+      throw error;
+    }
   }
 
   @Get(':conversationId/quote-request')

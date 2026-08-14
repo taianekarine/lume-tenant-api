@@ -18,8 +18,19 @@ export interface EvolutionOutboundDocumentInput extends EvolutionOutboundBaseInp
   readonly caption?: string;
 }
 
+export interface EvolutionOutboundMediaInput extends EvolutionOutboundBaseInput {
+  readonly kind: 'media';
+  readonly mediaType: 'image' | 'video' | 'audio' | 'document';
+  readonly fileName: string;
+  readonly mimeType: string;
+  readonly content: Buffer;
+  readonly caption?: string;
+}
+
 export type EvolutionOutboundInput =
-  EvolutionOutboundTextInput | EvolutionOutboundDocumentInput;
+  | EvolutionOutboundTextInput
+  | EvolutionOutboundDocumentInput
+  | EvolutionOutboundMediaInput;
 
 export interface EvolutionOutboundConfirmedResult {
   readonly outcome: 'confirmed';

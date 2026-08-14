@@ -265,6 +265,18 @@ export class CreateHumanOutboundMessageDto extends VersionedCommandDto {
   text!: string;
 }
 
+export class CreateHumanOutboundMediaDto extends VersionedCommandDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  idempotencyKey!: string;
+
+  @ApiPropertyOptional({ maxLength: 10_000 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10_000)
+  caption?: string;
+}
+
 export class ClaimEvolutionDispatchDto {
   @ApiProperty({ format: 'uuid' })
   @IsUUID()
