@@ -29,6 +29,7 @@ const validWhatsAppEnvironment = {
   EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
   EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
   WHATSAPP_AI_OPENAI_API_KEY: 'openai-key-with-at-least-20-characters',
+  MILENIUM_DIRECTOR_PHONE: '5534999999900',
   MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5534999999901',
   MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5534999999902',
   MILENIUM_DEPARTMENT_DP_PHONE: '5534999999903',
@@ -50,6 +51,7 @@ describe('validateEnvironment', () => {
       JWT_REFRESH_TTL_DAYS: 7,
       JWT_REFRESH_REMEMBER_TTL_DAYS: 30,
       HTTP_MAX_JSON_BODY_BYTES: 1_048_576,
+      WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES: 104_857_600,
       PASSWORD_RESET_MIN_RESPONSE_MS: 750,
       INSTALLATION_ID: validEnvironment.INSTALLATION_ID,
       SWAGGER_ENABLED: true,
@@ -209,6 +211,7 @@ describe('validateEnvironment', () => {
         EVOLUTION_API_KEY: 'evolution-key-with-16-characters',
         EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
         WHATSAPP_AI_OPENAI_API_KEY: 'openai-key-with-at-least-20-characters',
+        MILENIUM_DIRECTOR_PHONE: '5534999999900',
         MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5534999999901',
         MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5534999999902',
         MILENIUM_DEPARTMENT_DP_PHONE: '5534999999903',
@@ -253,9 +256,9 @@ describe('validateEnvironment', () => {
       validateEnvironment({
         ...validEnvironment,
         ...apiProviderEnvironment,
-        MILENIUM_DEPARTMENT_OPERATIONAL_PHONE: '',
+        MILENIUM_DIRECTOR_PHONE: '',
       }),
-    ).toThrow('MILENIUM_DEPARTMENT_*_PHONE');
+    ).toThrow('Diretoria e os oito departamentos');
 
     expect(() =>
       validateEnvironment({
@@ -308,6 +311,7 @@ describe('validateEnvironment', () => {
       EVOLUTION_WEBHOOK_SECRET: 'evolution-secret-with-32-characters',
       WHATSAPP_MEDIA_STORAGE_PATH: absoluteWhatsappMediaStoragePath,
       WHATSAPP_AI_OPENAI_API_KEY: 'openai-key-with-at-least-20-characters',
+      MILENIUM_DIRECTOR_PHONE: '5534999999900',
       MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5534999999901',
       MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5534999999902',
       MILENIUM_DEPARTMENT_DP_PHONE: '5534999999903',

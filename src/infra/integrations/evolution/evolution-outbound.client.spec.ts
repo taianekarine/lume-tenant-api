@@ -181,6 +181,78 @@ describe('HttpEvolutionOutboundGateway', () => {
     });
   });
 
+  it('envia imagem pelo endpoint de mídia com legenda', async () => {
+    const fetchMock = mockFetch(
+      Response.json({ key: { id: 'image-id' } }, { status: 201 }),
+    );
+
+    await gateway().send({
+      kind: 'media',
+      mediaType: 'image',
+      recipientPhone: '5534999999999',
+      fileName: 'foto.jpg',
+      mimeType: 'image/jpeg',
+      content: Buffer.from('imagem'),
+      caption: 'Foto solicitada',
+    });
+
+    const [url, request] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(
+      'https://evolution.example.test/message/sendMedia/lume%20tenant',
+    );
+    const form = request?.body as FormData;
+    expect(form.get('mediatype')).toBe('image');
+    expect(form.get('caption')).toBe('Foto solicitada');
+    expect(form.get('fileName')).toBe('foto.jpg');
+  });
+
+  it('envia áudio pelo endpoint próprio da Evolution', async () => {
+    const fetchMock = mockFetch(
+      Response.json({ key: { id: 'audio-id' } }, { status: 201 }),
+    );
+
+    await gateway().send({
+      kind: 'media',
+      mediaType: 'audio',
+      recipientPhone: '5534999999999',
+      fileName: 'audio.ogg',
+      mimeType: 'audio/ogg',
+      content: Buffer.from('audio'),
+    });
+
+    const [url, request] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(
+      'https://evolution.example.test/message/sendWhatsAppAudio/lume%20tenant',
+    );
+    expect(JSON.parse(request?.body as string)).toEqual({
+      number: '5534999999999',
+      audio: 'data:audio/ogg;base64,YXVkaW8=',
+    });
+  });
+
+  it('envia figurinha WebP pelo endpoint próprio da Evolution', async () => {
+    const fetchMock = mockFetch(
+      Response.json({ key: { id: 'sticker-id' } }, { status: 201 }),
+    );
+
+    await gateway().send({
+      kind: 'sticker',
+      recipientPhone: '5534999999999',
+      fileName: 'figurinha.webp',
+      mimeType: 'image/webp',
+      content: Buffer.from('sticker'),
+    });
+
+    const [url, request] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(
+      'https://evolution.example.test/message/sendSticker/lume%20tenant',
+    );
+    expect(JSON.parse(request?.body as string)).toEqual({
+      number: '5534999999999',
+      sticker: 'data:image/webp;base64,c3RpY2tlcg==',
+    });
+  });
+
   it('trata HTTP não 2xx como ambíguo e nunca repete o envio', async () => {
     const fetchMock = mockFetch(
       new Response(JSON.stringify({ internal: 'must-not-leak' }), {
@@ -278,7 +350,7 @@ describe('HttpEvolutionOutboundGateway', () => {
       recipientPhone: '5534999999999',
       fileName: 'arquivo.jpg',
       mimeType: 'image/jpeg',
-      content: Buffer.from('imagem'),
+      content: Buffer.alloc(0),
     });
 
     expect(fetchMock).not.toHaveBeenCalled();

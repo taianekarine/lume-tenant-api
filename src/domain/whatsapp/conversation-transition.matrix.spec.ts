@@ -192,6 +192,27 @@ describe('matriz MVP de conversas WhatsApp', () => {
     ).toThrow('departamento de destino');
   });
 
+  it('permite coletar o contato da Diretoria a partir do menu Comercial', () => {
+    const commercialMenu: ConversationSnapshot = {
+      ...initial,
+      department: 'commercial',
+      flowStep: 'commercial-menu',
+    };
+
+    expect(
+      resolveConversationTransition({
+        current: commercialMenu,
+        name: 'start-department-contact',
+        targetDepartment: 'management',
+        departmentOption: 'commercial-continuous-director',
+      }),
+    ).toMatchObject({
+      department: 'management',
+      conversationState: 'bot-active',
+      flowStep: 'main-menu',
+    });
+  });
+
   it('aplica ações humanas e encaminhamento sem inventar destinos', () => {
     const taken = transition(initial, 'take-over');
     const returned = transition(taken, 'return-to-bot');
@@ -325,8 +346,8 @@ describe('matriz MVP de conversas WhatsApp', () => {
     expect(returned.flowStep).toBe('quote-data-collection');
   });
 
-  it('não permite mutar conversa encerrada', () => {
-    expect(() =>
+  it('permite iniciar um novo atendimento humano na conversa encerrada', () => {
+    expect(
       transition(
         {
           ...initial,
@@ -335,7 +356,11 @@ describe('matriz MVP de conversas WhatsApp', () => {
         },
         'take-over',
       ),
-    ).toThrow('encerrada');
+    ).toMatchObject({
+      conversationState: 'human-active',
+      flowStep: 'human-service',
+      resumeFlowStep: 'main-menu',
+    });
   });
 
   it('encerra somente atendimentos cuja proposta foi recusada', () => {

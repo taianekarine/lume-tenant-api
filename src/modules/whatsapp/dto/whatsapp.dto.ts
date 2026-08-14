@@ -42,6 +42,18 @@ export class VersionedCommandDto {
   expectedVersion!: number;
 }
 
+export class StartHumanConversationDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  commandId!: string;
+
+  @ApiProperty({ example: '(34) 99999-9999' })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(30)
+  phone!: string;
+}
+
 export class CloseConversationDto extends VersionedCommandDto {
   @ApiPropertyOptional({
     nullable: true,
@@ -263,6 +275,23 @@ export class CreateHumanOutboundMessageDto extends VersionedCommandDto {
   @IsString()
   @MaxLength(10_000)
   text!: string;
+}
+
+export class CreateHumanOutboundMediaDto extends VersionedCommandDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  idempotencyKey!: string;
+
+  @ApiPropertyOptional({ maxLength: 10_000 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10_000)
+  caption?: string;
+
+  @ApiPropertyOptional({ enum: ['auto', 'sticker'] })
+  @IsOptional()
+  @IsIn(['auto', 'sticker'])
+  mediaKind?: 'auto' | 'sticker';
 }
 
 export class ClaimEvolutionDispatchDto {
@@ -487,6 +516,12 @@ export class MessageListQueryDto {
   @Min(1)
   @Max(100)
   pageSize = 50;
+
+  @ApiPropertyOptional({ maxLength: 160 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  search?: string;
 }
 
 export class TransitionListQueryDto {

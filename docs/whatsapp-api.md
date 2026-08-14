@@ -15,6 +15,26 @@ A Tenant API é a única responsável pelo fluxo de WhatsApp. O módulo concentr
 O Tenant Web consome somente os endpoints autenticados da Tenant API. Segredos
 da Evolution e dos provedores de IA permanecem no servidor.
 
+## Importação de históricos
+
+O subfluxo `whatsapp/history-imports` recebe backups ZIP exportados pelo
+WhatsApp, mantém um manifesto privado por empresa e gera uma planilha no
+contrato do importador oficial. Todas as rotas exigem
+`whatsapp-conversations:manage`:
+
+- `GET /channels`: canais disponíveis no tenant;
+- `POST /`: inicia um lote idempotente por `commandId`;
+- `GET /:batchId`: consulta totais, erros e revisões;
+- `POST /:batchId/archives`: valida um ZIP por vez;
+- `PATCH /:batchId/archives/:archiveId`: confirma identidade e estado;
+- `GET /:batchId/workbook`: baixa a planilha consolidada;
+- `POST /:batchId/apply`: valida e aplica pelo importador existente.
+
+O lote não dispara respostas, IA, menus ou outbox. Depois da aplicação, as
+conversas passam a usar exatamente as mesmas entidades, transições e regras do
+fluxo corrente. Anexos realmente contidos no ZIP são retidos no volume próprio
+de mídias; referências ausentes permanecem identificadas como indisponíveis.
+
 ## Garantias de processamento
 
 Cada webhook usa o identificador externo e o hash do conteúdo para deduplicação.
@@ -41,6 +61,11 @@ atendente; qualquer estado legado incompatível é normalizado pela migração.
 
 O envio humano de uma proposta em PDF assume o usuário remetente como atendente
 ativo antes de enfileirar o documento e registra a transição no histórico.
+O mesmo compositor autenticado pode enviar texto, imagem, áudio, vídeo,
+documento ou contato por
+`POST /api/v1/whatsapp/conversations/:conversationId/media-messages`. O arquivo
+é armazenado antes de entrar na outbox e é removido se a persistência da
+mensagem falhar.
 
 ## Conteúdo de mídia
 

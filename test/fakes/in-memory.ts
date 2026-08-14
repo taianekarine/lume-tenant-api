@@ -235,12 +235,15 @@ export class InMemoryUsersRepository extends UsersRepository {
           ? current.props.cpfNormalized
           : input.cpfNormalized,
       isAdministrator: input.isAdministrator ?? current.props.isAdministrator,
+      documentAccessMode:
+        input.documentAccessMode ?? current.props.documentAccessMode,
       departments: input.departments ?? current.props.departments,
       permissionCodes: input.permissionCodes ?? current.props.permissionCodes,
       tokenVersion:
         input.permissionCodes !== undefined ||
         input.departments !== undefined ||
-        input.isAdministrator !== undefined
+        input.isAdministrator !== undefined ||
+        input.documentAccessMode !== undefined
           ? current.props.tokenVersion + 1
           : current.props.tokenVersion,
       updatedAt: new Date(),

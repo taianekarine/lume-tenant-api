@@ -25,6 +25,7 @@ export interface PersistInboundInput {
   payloadHash: string;
   phoneNormalized: string;
   displayName?: string;
+  profilePictureUrl?: string;
   occurredAt: Date;
   kind: MessageKind;
   text?: string;
@@ -102,7 +103,19 @@ export interface CreateHumanOutboundInput {
   idempotencyKey: string;
   expectedVersion: number;
   actorUserId: string;
-  text: string;
+  text?: string;
+  attachment?: {
+    messageId: string;
+    kind: Extract<
+      MessageKind,
+      'image' | 'document' | 'audio' | 'video' | 'contact' | 'sticker'
+    >;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    sha256: string;
+    storageKey: string;
+  };
 }
 
 export interface ClaimEvolutionDispatchInput {
@@ -174,9 +187,17 @@ export interface ConversationListQuery {
   search?: string;
 }
 
+export interface EnsureWhatsAppConversationResult {
+  readonly id: string;
+  readonly version: number;
+  readonly conversationState: ConversationState;
+  readonly assignedTo: { readonly id: string; readonly name: string } | null;
+}
+
 export interface MessageListQuery {
   page: number;
   pageSize: number;
+  search?: string;
 }
 
 export interface TransitionListQuery {
@@ -285,6 +306,10 @@ export abstract class WhatsAppRepository {
     input: PersistInboundInput,
   ): Promise<PersistInboundResult>;
   abstract transition(input: TransitionCommand): Promise<unknown>;
+  abstract ensureConversationForPhone(
+    companyId: string,
+    phoneNormalized: string,
+  ): Promise<EnsureWhatsAppConversationResult>;
   abstract patchQuoteRequest(
     companyId: string,
     quoteRequestId: string,

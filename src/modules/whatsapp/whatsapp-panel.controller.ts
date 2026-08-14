@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+
 import {
   Body,
   Controller,
@@ -9,9 +11,14 @@ import {
   Query,
   Res,
   StreamableFile,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
+  ApiConsumes,
   ApiCreatedResponse,
   ApiOkResponse,
   ApiOperation,
@@ -19,23 +26,36 @@ import {
 } from '@nestjs/swagger';
 import type { Response } from 'express';
 
+import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
 import type { AuthenticatedPrincipal } from '../../application/presenters/user.presenter';
 import {
   CreateHumanOutboundWhatsAppUseCase,
+  EnsureWhatsAppConversationUseCase,
   QueryWhatsAppUseCase,
   TransitionWhatsAppConversationUseCase,
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
-import { forbidden, validationError } from '../../core/errors/app-error';
+import {
+  conflict,
+  forbidden,
+  validationError,
+} from '../../core/errors/app-error';
 import { normalizeUserDepartment } from '../../domain/access/access.constants';
+import {
+  MAXIMUM_PANEL_ATTACHMENT_BYTES,
+  PANEL_ARCHIVE_MIME_TYPES,
+} from '../../domain/whatsapp/whatsapp-media-policy';
 import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
+import { normalizeWhatsAppPhone } from '../../shared/utils/normalization';
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
   CloseConversationDto,
   ConversationListQueryDto,
   CreateHumanOutboundMessageDto,
+  CreateHumanOutboundMediaDto,
   ForwardConversationDto,
   MessageListQueryDto,
+  StartHumanConversationDto,
   TransitionListQueryDto,
   VersionedCommandDto,
 } from './dto/whatsapp.dto';
@@ -60,10 +80,55 @@ function contentDisposition(fileName: string): string {
 export class WhatsAppPanelController {
   constructor(
     private readonly queryUseCase: QueryWhatsAppUseCase,
+    private readonly ensureConversation: EnsureWhatsAppConversationUseCase,
     private readonly transition: TransitionWhatsAppConversationUseCase,
     private readonly createHumanOutbound: CreateHumanOutboundWhatsAppUseCase,
     private readonly mediaContent: EvolutionMediaContentService,
+    private readonly mediaStorage: WhatsAppMediaStorage,
+    private readonly config: ConfigService,
   ) {}
+
+  @Post()
+  @RequireAnyPermission('whatsapp-conversations:manage')
+  @ApiCreatedResponse({
+    description:
+      'Cria ou reutiliza a conversa can\u00f4nica do n\u00famero e inicia o atendimento humano.',
+  })
+  async startConversation(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Body() body: StartHumanConversationDto,
+  ) {
+    let phoneNormalized: string;
+    try {
+      phoneNormalized = normalizeWhatsAppPhone(body.phone);
+    } catch {
+      throw validationError(
+        'Informe um n\u00famero de WhatsApp v\u00e1lido com DDD.',
+      );
+    }
+
+    const conversation = await this.ensureConversation.execute(
+      current.companyId,
+      phoneNormalized,
+    );
+    if (conversation.conversationState === 'human-active') {
+      if (conversation.assignedTo?.id === current.id) return conversation;
+      throw conflict(
+        'Esta conversa j\u00e1 est\u00e1 em atendimento por outra pessoa.',
+      );
+    }
+
+    return this.transition.execute({
+      companyId: current.companyId,
+      conversationId: conversation.id,
+      commandId: body.commandId,
+      expectedVersion: conversation.version,
+      name: 'take-over',
+      actorType: 'user',
+      actorUserId: current.id,
+      metadata: { source: 'panel-new-conversation' },
+    });
+  }
 
   @Get()
   list(
@@ -229,6 +294,118 @@ export class WhatsAppPanelController {
       conversationId,
       actorUserId: current.id,
     });
+  }
+
+  @Post(':conversationId/media-messages')
+  @RequireAnyPermission('whatsapp-conversations:manage')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: {
+        files: 1,
+        fileSize: MAXIMUM_PANEL_ATTACHMENT_BYTES,
+      },
+    }),
+  )
+  async createMediaMessage(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('conversationId', new ParseUUIDPipe()) conversationId: string,
+    @Body() body: CreateHumanOutboundMediaDto,
+    @UploadedFile()
+    file:
+      | {
+          originalname: string;
+          mimetype: string;
+          size: number;
+          buffer: Buffer;
+        }
+      | undefined,
+  ) {
+    if (!file?.buffer?.length || file.size !== file.buffer.byteLength) {
+      throw validationError('Selecione um arquivo válido para enviar.');
+    }
+    const mimeType = file.mimetype.trim().toLowerCase().split(';')[0];
+    const allowed = new Set([
+      ...(this.config.get<string>('WHATSAPP_ALLOWED_MIME_TYPES') ?? '')
+        .split(',')
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+      'text/vcard',
+      'text/x-vcard',
+      ...PANEL_ARCHIVE_MIME_TYPES,
+    ]);
+    if (!allowed.has(mimeType)) {
+      throw validationError('Este formato de arquivo não pode ser enviado.');
+    }
+    const configuredMaximum =
+      this.config.get<number>('WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES') ??
+      MAXIMUM_PANEL_ATTACHMENT_BYTES;
+    if (
+      file.size > Math.min(configuredMaximum, MAXIMUM_PANEL_ATTACHMENT_BYTES)
+    ) {
+      throw validationError(
+        'O arquivo ultrapassa o tamanho aceito pelo WhatsApp.',
+      );
+    }
+
+    const fileName = (file.originalname.split(/[\\/]/).pop() ?? 'arquivo')
+      .split('')
+      .map((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint <= 31 || codePoint === 127 ? '_' : character;
+      })
+      .join('')
+      .replace(/[<>:"|?*]/g, '_')
+      .slice(0, 200);
+    const messageId = randomUUID();
+    const sha256 = createHash('sha256').update(file.buffer).digest('hex');
+    const storageKey = [
+      'v1',
+      current.companyId,
+      conversationId,
+      messageId,
+      sha256,
+    ].join('/');
+    if (body.mediaKind === 'sticker' && mimeType !== 'image/webp') {
+      throw validationError('Figurinhas devem ser enviadas no formato WebP.');
+    }
+    const kind =
+      body.mediaKind === 'sticker'
+        ? 'sticker'
+        : mimeType.startsWith('image/')
+          ? 'image'
+          : mimeType.startsWith('video/')
+            ? 'video'
+            : mimeType.startsWith('audio/')
+              ? 'audio'
+              : mimeType === 'text/vcard' || mimeType === 'text/x-vcard'
+                ? 'contact'
+                : 'document';
+
+    await this.mediaStorage.write({ storageKey, content: file.buffer });
+    try {
+      return await this.createHumanOutbound.execute({
+        commandId: body.commandId,
+        idempotencyKey: body.idempotencyKey,
+        expectedVersion: body.expectedVersion,
+        companyId: current.companyId,
+        conversationId,
+        actorUserId: current.id,
+        text: body.caption,
+        attachment: {
+          messageId,
+          kind,
+          fileName,
+          mimeType,
+          sizeBytes: file.size,
+          sha256,
+          storageKey,
+        },
+      });
+    } catch (error) {
+      await this.mediaStorage.delete(storageKey).catch(() => undefined);
+      throw error;
+    }
   }
 
   @Get(':conversationId/quote-request')

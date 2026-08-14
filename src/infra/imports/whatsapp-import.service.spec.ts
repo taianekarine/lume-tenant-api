@@ -7,10 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DepartmentCode,
+  Prisma,
   UserAccountStatus,
 } from '../database/prisma/generated/client';
 import type { PrismaService } from '../database/prisma/prisma.service';
-import { WhatsAppImportService } from './whatsapp-import.service';
+import {
+  importedMediaMetadata,
+  WhatsAppImportService,
+} from './whatsapp-import.service';
 import {
   CONVERSATION_HEADERS,
   DOCUMENT_HEADERS,
@@ -374,6 +378,38 @@ describe('WhatsAppImportService.validate', () => {
     );
   });
 
+  it('aceita mensagem sem corpo quando o conteúdo não foi identificado', async () => {
+    const message = blanks(MESSAGE_HEADERS.length);
+    message[0] = 'legacy-1';
+    message[1] = 'legacy-message-empty';
+    message[2] = 'inbound';
+    message[3] = 'unknown';
+    message[4] = new Date('2026-07-29T12:00:00.000Z');
+    message[5] = 'received';
+    const fixture = await packageWithRows({
+      conversations: [conversationRow('legacy-1')],
+      messages: [message],
+    });
+    const service = new WhatsAppImportService(
+      readOnlyPrisma(vi.fn()),
+      fixture.root,
+    );
+
+    const report = await service.validate({
+      companyId: testCompanyId,
+      channelId: testChannelId,
+      actorUsername: 'admin',
+      batchName: 'batch-empty-message',
+      packagePath: fixture.packagePath,
+      cutoffAt: new Date('2026-07-30T00:00:00.000Z'),
+    });
+
+    expect(report.valid).toBe(true);
+    expect(report.issues).not.toContainEqual(
+      expect.objectContaining({ code: 'TEXT_REQUIRED' }),
+    );
+  });
+
   it('rejeita códigos de departamento fora dos nove publicados', async () => {
     const row = conversationRow('legacy-1');
     row[5] = 'information-technology';
@@ -433,5 +469,73 @@ describe('WhatsAppImportService.validate', () => {
       conversationsToCreate: 1,
     });
     expect(writeAttempt).not.toHaveBeenCalled();
+  });
+});
+
+describe('WhatsAppImportService.apply', () => {
+  it('marca anexos de exportação sem binário retido como indisponíveis', () => {
+    expect(
+      importedMediaMetadata(
+        'whatsapp-export://arquivo/foto%20da%20viagem.jpg',
+        'mensagem-001',
+      ),
+    ).toEqual({
+      legacyReference: 'whatsapp-export://arquivo/foto%20da%20viagem.jpg',
+      legacyCorrelationId: 'mensagem-001',
+      fileName: 'foto da viagem.jpg',
+      retentionStatus: 'unavailable',
+    });
+  });
+
+  it('preserva referências legadas de outros importadores sem alterar a retenção', () => {
+    expect(importedMediaMetadata('legacy://media/001', null)).toEqual({
+      legacyReference: 'legacy://media/001',
+    });
+  });
+
+  it('permite tempo suficiente para persistir históricos extensos', async () => {
+    const fixture = await packageWithRows({
+      conversations: [conversationRow('legacy-large-history')],
+    });
+    const prisma = readOnlyPrisma(vi.fn());
+    const transactionError = new Error('transação de teste iniciada');
+    const transaction = vi.fn().mockRejectedValue(transactionError);
+    Object.assign(prisma.user, {
+      findFirstOrThrow: vi.fn().mockResolvedValue({ id: 'actor' }),
+    });
+    Object.assign(prisma.integrationOutbox, {
+      count: vi.fn().mockResolvedValue(0),
+    });
+    Object.assign(prisma, {
+      whatsAppImportBatch: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      whatsAppImportRecord: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+      $transaction: transaction,
+    });
+    const service = new WhatsAppImportService(prisma, fixture.root);
+
+    await expect(
+      service.apply({
+        companyId: testCompanyId,
+        channelId: testChannelId,
+        actorUsername: 'admin',
+        batchName: 'batch-large-history',
+        batchId: '00000000-0000-4000-8000-000000000004',
+        packagePath: fixture.packagePath,
+        cutoffAt: new Date('2026-07-30T00:00:00.000Z'),
+        confirmation: 'APPLY:00000000-0000-4000-8000-000000000004',
+      }),
+    ).rejects.toBe(transactionError);
+
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 10_000,
+      timeout: 120_000,
+    });
   });
 });

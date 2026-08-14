@@ -5,6 +5,22 @@ de uso em `src/application` e composição HTTP em `src/modules/documents`.
 Solicitações guardam snapshots de checklists versionados para que alterações
 futuras não modifiquem processos iniciados.
 
+## Pipeline de históricos do WhatsApp
+
+A importação assistida é uma camada de preparação, não um segundo importador.
+O controller recebe um ZIP por requisição, o parser produz mensagens ordenadas
+e metadados de anexos, e o revisor confirma o mapeamento. O gerador consolida
+todos os itens nas tabelas `AtendimentosImportacao`, `MensagensImportacao` e
+`DocumentosImportacao`. A gravação final delega ao `WhatsAppImportService`, que
+continua sendo a única implementação das regras de associação, idempotência,
+transação e reconciliação.
+
+Manifestos e arquivos temporários são isolados por `companyId` e `batchId`, com
+nomes derivados de hash e escrita atômica. A API limita entradas, tamanho
+compactado e descompactado, rejeita caminhos absolutos, travessia de diretório,
+symlinks e arquivos corrompidos. Somente um arquivo é analisado por vez; erros
+ficam associados ao item e não cancelam o lote.
+
 ## Instância única por cliente
 
 ```text
@@ -93,6 +109,13 @@ O módulo WhatsApp mantém a matriz pura em `src/domain/whatsapp`, casos de uso 
 portas em `src/application`, transações Prisma e integrações em `src/infra` e
 controllers/DTOs em `src/modules/whatsapp`.
 
+`POST /whatsapp/conversations` normaliza o telefone, escolhe o canal ativo da
+empresa e cria ou reutiliza a conversa canônica daquele contato. O mesmo
+comando aplica `take-over`, bloqueia o bot e atribui o usuário autenticado como
+atendente. `take-over` também pode reabrir uma conversa encerrada sem criar um
+segundo histórico para o mesmo número. O envio documental pelo painel aceita os
+MIME types configurados e inclui ZIP, RAR e 7z como documentos.
+
 ## Contas e perfil
 
 - `POST /auth/login` nunca autentica com a senha inicial. Depois de validar essa
@@ -105,6 +128,9 @@ controllers/DTOs em `src/modules/whatsapp`.
 - `POST /users/:id/password-reset` é restrito a `users:update`;
 - `POST /users` e `PATCH /users/:id` recebem departamentos e permissões
   individuais;
+- `PATCH /users/:id` também permite promover um acesso `document-portal` para
+  `standard`; o modo padrão exige ao menos um departamento e volta a usar as
+  permissões efetivas desse vínculo;
 - `GET /users` pagina e filtra por `search`, `department`, `permission` e
   `status`; o filtro de permissão usa a permissão efetiva, inclui as implícitas
   e ignora valores diretos armazenados fora do teto departamental;

@@ -5,6 +5,47 @@ O importador é executado exclusivamente pela Tenant API. Ele não carrega o
 dispatcher de outbox, retenção, cache, Evolution API, webhook ou envio de
 notificações.
 
+## Importação assistida de históricos exportados
+
+Usuários com `whatsapp-conversations:manage` também podem usar **Painel
+WhatsApp > Importar históricos**. A interface aceita vários backups ZIP
+individuais exportados pelo WhatsApp e conduz o mesmo contrato oficial abaixo:
+
+1. cada ZIP é validado separadamente e uma falha não cancela os demais;
+2. o parser reconhece os formatos Android e iOS, mensagens multilinha, emojis,
+   avisos do sistema, mensagens apagadas e referências de mídia;
+3. telefone, participante que representa a empresa, departamento e estado
+   final são revisados explicitamente antes da carga;
+4. é gerada uma única planilha consolidada com as três tabelas oficiais;
+5. o botão de aplicar executa `validate` e `apply` do importador existente.
+
+Não há associação por semelhança de nome. O telefone confirmado é a identidade
+canônica e dois backups que apontem para o mesmo número são rejeitados no mesmo
+lote. O estado final nunca é deduzido arbitrariamente; enquanto houver dado
+obrigatório sem revisão, o lote permanece bloqueado para aplicação.
+
+As datas sem fuso no arquivo exportado são interpretadas como horário civil de
+`America/Sao_Paulo` e persistidas em UTC. Identificadores de conversa e mensagem
+são determinísticos, portanto validar ou aplicar novamente o mesmo conteúdo não
+duplica registros.
+
+O ZIP é mantido em armazenamento privado somente durante a preparação do lote.
+O Compose monta `lume_tenant_whatsapp_imports` em
+`/app/var/imports/whatsapp`; inclua esse volume na rotina de limpeza e backup.
+Rascunhos expiram após `WHATSAPP_HISTORY_IMPORT_RETENTION_HOURS`.
+
+Imagens, áudios, vídeos, figurinhas, contatos e documentos presentes no ZIP são
+copiados para o armazenamento durável de mídias e vinculados à mensagem
+importada. Assim, a visualização autenticada usa a cópia própria da aplicação e
+continua disponível depois que o lote temporário expira. Arquivos citados no
+texto, mas ausentes do ZIP, são sinalizados para conferência e nunca simulados
+como recuperáveis.
+
+Aplicar novamente um lote ou combinar uma conversa já importada com novas
+conversas é idempotente: as mensagens já confirmadas são reconhecidas por seus
+identificadores determinísticos, não invalidam o restante do lote e não são
+duplicadas.
+
 ## Diretório privado
 
 O valor padrão é:
@@ -134,10 +175,12 @@ alteração do rollback é confirmada.
 
 ## Limites e validações
 
-- 10 MiB para a planilha e para cada PDF;
+- 128 MiB para a planilha e 10 MiB para cada PDF de proposta;
 - 100 MiB de PDFs por pacote e no máximo 20 PDFs por conversa;
-- 64 MiB descompactados e no máximo 2.000 entradas ZIP;
-- 500 atendimentos, 1.000 mensagens e 500 documentos;
+- 1 GiB descompactado e no máximo 10.000 entradas na planilha XLSX;
+- 10.000 atendimentos, 500.000 mensagens e 50.000 documentos na planilha;
+- na importação assistida, até 5.000 backups, 512 MiB por ZIP, 5.000 entradas,
+  2 GiB descompactados e 128 MiB para o arquivo de conversa;
 - datas do Excel interpretadas como horário civil de `America/Sao_Paulo` e
   persistidas em UTC;
 - datas de saída e retorno podem ser posteriores ao corte; fatos históricos

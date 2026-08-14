@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { HttpEvolutionOutboundGateway } from '../evolution/evolution-outbound.client';
 import type { EvolutionOutboundInput } from '../../../application/contracts/evolution-outbound.gateway';
+import { WhatsAppMediaStorage } from '../../../application/contracts/whatsapp-media.storage';
 import type { WhatsAppConversationAgentInput } from '../../../application/contracts/whatsapp-conversation-agent';
 import {
   type ClaimedWhatsAppAutomationEvent,
@@ -103,6 +104,7 @@ export class ApiWhatsAppAutomationProvider extends WhatsAppAutomationProvider {
     private readonly checkpointStore: WhatsAppAutomationCheckpointStore,
     private readonly decisionStore: WhatsAppAutomationDecisionStore,
     private readonly evolution: HttpEvolutionOutboundGateway,
+    private readonly mediaStorage: WhatsAppMediaStorage,
     config: ConfigService,
   ) {
     super();
@@ -120,6 +122,8 @@ export class ApiWhatsAppAutomationProvider extends WhatsAppAutomationProvider {
       ),
     );
     this.departmentPhones = {
+      MILENIUM_DIRECTOR_PHONE:
+        config.get<string>('MILENIUM_DIRECTOR_PHONE') ?? '',
       MILENIUM_DEPARTMENT_PURCHASES_PHONE:
         config.get<string>('MILENIUM_DEPARTMENT_PURCHASES_PHONE') ?? '',
       MILENIUM_DEPARTMENT_CONTROLLING_PHONE:
@@ -479,21 +483,55 @@ export class ApiWhatsAppAutomationProvider extends WhatsAppAutomationProvider {
       };
     } else if (message.kind === 'document') {
       const media = asRecord(message.media);
-      const documentId = requiredString(media.documentId, 'documentId');
-      const document = asRecord(
-        await this.repository.getQuoteProposalDocument(
-          event.companyId,
-          documentId,
-        ),
-      );
-      outboundInput = {
-        kind: 'document',
-        recipientPhone: payload.contact.phone,
-        fileName: requiredString(document.fileName, 'fileName'),
-        mimeType: requiredString(document.mimeType, 'mimeType'),
-        content: bufferValue(document.content),
-        ...(message.text?.trim() ? { caption: message.text } : {}),
-      };
+      if (typeof media.storageKey === 'string' && media.storageKey) {
+        outboundInput = await this.storedOutboundMedia(
+          payload.contact.phone,
+          'document',
+          media,
+          message.text,
+        );
+      } else {
+        const documentId = requiredString(media.documentId, 'documentId');
+        const document = asRecord(
+          await this.repository.getQuoteProposalDocument(
+            event.companyId,
+            documentId,
+          ),
+        );
+        outboundInput = {
+          kind: 'document',
+          recipientPhone: payload.contact.phone,
+          fileName: requiredString(document.fileName, 'fileName'),
+          mimeType: requiredString(document.mimeType, 'mimeType'),
+          content: bufferValue(document.content),
+          ...(message.text?.trim() ? { caption: message.text } : {}),
+        };
+      }
+    } else if (
+      message.kind === 'image' ||
+      message.kind === 'video' ||
+      message.kind === 'audio' ||
+      message.kind === 'contact' ||
+      message.kind === 'sticker'
+    ) {
+      const media = asRecord(message.media);
+      if (message.kind === 'sticker') {
+        const storageKey = requiredString(media.storageKey, 'storageKey');
+        outboundInput = {
+          kind: 'sticker',
+          recipientPhone: payload.contact.phone,
+          fileName: requiredString(media.fileName, 'fileName'),
+          mimeType: 'image/webp',
+          content: await this.mediaStorage.read(storageKey),
+        };
+      } else {
+        outboundInput = await this.storedOutboundMedia(
+          payload.contact.phone,
+          message.kind === 'contact' ? 'document' : message.kind,
+          media,
+          message.text,
+        );
+      }
     } else {
       throw new WhatsAppAutomationExecutionError(
         'terminal-failure',
@@ -510,6 +548,24 @@ export class ApiWhatsAppAutomationProvider extends WhatsAppAutomationProvider {
       recipientPhone: payload.contact.phone,
       input: outboundInput,
     });
+  }
+
+  private async storedOutboundMedia(
+    recipientPhone: string,
+    mediaType: 'image' | 'video' | 'audio' | 'document',
+    media: Readonly<Record<string, unknown>>,
+    caption: string | null,
+  ): Promise<Extract<EvolutionOutboundInput, { kind: 'media' }>> {
+    const storageKey = requiredString(media.storageKey, 'storageKey');
+    return {
+      kind: 'media',
+      recipientPhone,
+      mediaType,
+      fileName: requiredString(media.fileName, 'fileName'),
+      mimeType: requiredString(media.mimeType, 'mimeType'),
+      content: await this.mediaStorage.read(storageKey),
+      ...(caption?.trim() ? { caption } : {}),
+    };
   }
 
   private async deliverPersistedMessage(

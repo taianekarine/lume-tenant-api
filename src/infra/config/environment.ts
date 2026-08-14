@@ -422,6 +422,7 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     );
   }
   const departmentPhoneKeys = [
+    'MILENIUM_DIRECTOR_PHONE',
     'MILENIUM_DEPARTMENT_PURCHASES_PHONE',
     'MILENIUM_DEPARTMENT_CONTROLLING_PHONE',
     'MILENIUM_DEPARTMENT_DP_PHONE',
@@ -444,7 +445,7 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     )
   ) {
     throw new Error(
-      'WHATSAPP_ENABLED=true exige telefones válidos nas oito variáveis MILENIUM_DEPARTMENT_*_PHONE.',
+      'WHATSAPP_ENABLED=true exige telefones válidos para a Diretoria e os oito departamentos.',
     );
   }
   const emailDeliveryEnabled = booleanValue(
@@ -725,10 +726,15 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
       'WHATSAPP_MAX_ATTACHMENT_BYTES',
       52_428_800,
     ),
+    WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES: positiveInteger(
+      config,
+      'WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES',
+      104_857_600,
+    ),
     WHATSAPP_ALLOWED_MIME_TYPES: optionalString(
       config,
       'WHATSAPP_ALLOWED_MIME_TYPES',
-      'image/jpeg,image/png,image/webp,image/gif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/octet-stream,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/wav,video/mp4,video/webm,video/quicktime',
+      'image/jpeg,image/png,image/webp,image/gif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,text/vcard,text/x-vcard,application/octet-stream,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/wav,video/mp4,video/webm,video/quicktime',
     ),
     WHATSAPP_RETENTION_DAYS: positiveInteger(
       config,

@@ -102,9 +102,30 @@ export class HttpEvolutionOutboundGateway extends EvolutionOutboundGateway {
     const invalidInput = this.validateInput(input);
     if (invalidInput) return invalidInput;
 
-    return input.kind === 'text'
-      ? this.sendText(input)
-      : this.sendDocument(input);
+    if (input.kind === 'text') return this.sendText(input);
+    if (input.kind === 'document') return this.sendDocument(input);
+    if (input.kind === 'sticker') return this.sendSticker(input);
+    return this.sendMedia(input);
+  }
+
+  private async sendSticker(
+    input: Extract<EvolutionOutboundInput, { kind: 'sticker' }>,
+  ): Promise<EvolutionOutboundResult> {
+    return this.sendOnce(
+      `${this.baseUrl}/message/sendSticker/${encodeURIComponent(this.instanceName)}`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: this.apiKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          number: input.recipientPhone,
+          sticker: `data:${input.mimeType};base64,${input.content.toString('base64')}`,
+        }),
+      },
+      this.documentTimeoutMs,
+    );
   }
 
   private async sendText(
@@ -133,9 +154,37 @@ export class HttpEvolutionOutboundGateway extends EvolutionOutboundGateway {
   private async sendDocument(
     input: Extract<EvolutionOutboundInput, { kind: 'document' }>,
   ): Promise<EvolutionOutboundResult> {
+    return this.sendMedia({
+      ...input,
+      kind: 'media',
+      mediaType: 'document',
+    });
+  }
+
+  private async sendMedia(
+    input: Extract<EvolutionOutboundInput, { kind: 'media' }>,
+  ): Promise<EvolutionOutboundResult> {
+    if (input.mediaType === 'audio') {
+      return this.sendOnce(
+        `${this.baseUrl}/message/sendWhatsAppAudio/${encodeURIComponent(this.instanceName)}`,
+        {
+          method: 'POST',
+          headers: {
+            apikey: this.apiKey,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            number: input.recipientPhone,
+            audio: `data:${input.mimeType};base64,${input.content.toString('base64')}`,
+          }),
+        },
+        this.documentTimeoutMs,
+      );
+    }
+
     const form = new FormData();
     form.set('number', input.recipientPhone);
-    form.set('mediatype', 'document');
+    form.set('mediatype', input.mediaType);
     form.set('mimetype', input.mimeType);
     form.set('fileName', input.fileName);
     form.set('caption', input.caption?.trim() ?? '');
@@ -263,7 +312,7 @@ export class HttpEvolutionOutboundGateway extends EvolutionOutboundGateway {
       input.kind === 'text'
         ? input.text.trim().length > 0
         : input.fileName.trim().length > 0 &&
-          input.mimeType === 'application/pdf' &&
+          input.mimeType.trim().length > 0 &&
           input.content.byteLength > 0;
 
     if (validPhone && validContent) return undefined;

@@ -53,6 +53,8 @@ const OPEN_STATES = new Set([
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IMPORT_BATCH_LEASE_MS = 5 * 60 * 1_000;
+const IMPORT_TRANSACTION_MAX_WAIT_MS = 10_000;
+const IMPORT_TRANSACTION_TIMEOUT_MS = 120_000;
 
 const DEPARTMENT_TO_PRISMA: Record<string, DepartmentCode> = {
   commercial: DepartmentCode.COMMERCIAL,
@@ -208,6 +210,34 @@ function externalKey(sourceSystem: string, externalId: string): string {
 
 function asJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
+}
+
+export function importedMediaMetadata(
+  mediaReference: string | null | undefined,
+  correlationId: string | null | undefined,
+): Prisma.InputJsonValue | undefined {
+  if (!mediaReference && !correlationId) return undefined;
+
+  let fileName: string | undefined;
+  const isWhatsAppExport =
+    mediaReference?.startsWith('whatsapp-export://') ?? false;
+  if (isWhatsAppExport && mediaReference) {
+    const encodedFileName = mediaReference.split('/').at(-1);
+    if (encodedFileName) {
+      try {
+        fileName = decodeURIComponent(encodedFileName);
+      } catch {
+        fileName = encodedFileName;
+      }
+    }
+  }
+
+  return asJson({
+    ...(mediaReference ? { legacyReference: mediaReference } : {}),
+    ...(correlationId ? { legacyCorrelationId: correlationId } : {}),
+    ...(fileName ? { fileName } : {}),
+    ...(isWhatsAppExport ? { retentionStatus: 'unavailable' } : {}),
+  });
 }
 
 function issue(
@@ -2251,7 +2281,11 @@ export class WhatsAppImportService {
               messages,
               documents,
             ),
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+            timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
+          },
         );
         if (result.created) {
           appliedCounts.conversationsToCreate += 1;
@@ -2849,6 +2883,10 @@ export class WhatsAppImportService {
             select: { id: true },
           })
         : undefined;
+      const mediaMetadata = importedMediaMetadata(
+        message.mediaReference,
+        message.correlationId,
+      );
       const persisted = await transaction.whatsAppMessage.create({
         data: {
           companyId: input.companyId,
@@ -2861,18 +2899,7 @@ export class WhatsAppImportService {
           deliveryStatus: DELIVERY_TO_PRISMA[message.deliveryStatus],
           kind: KIND_TO_PRISMA[message.kind],
           text: message.text,
-          ...(message.mediaReference || message.correlationId
-            ? {
-                media: asJson({
-                  ...(message.mediaReference
-                    ? { legacyReference: message.mediaReference }
-                    : {}),
-                  ...(message.correlationId
-                    ? { legacyCorrelationId: message.correlationId }
-                    : {}),
-                }),
-              }
-            : {}),
+          ...(mediaMetadata !== undefined ? { media: mediaMetadata } : {}),
           correlationId: deterministicCorrelation(
             row.sourceSystem,
             message.externalMessageId,
@@ -3916,8 +3943,8 @@ export class WhatsAppImportService {
         },
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-          maxWait: 10_000,
-          timeout: 120_000,
+          maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+          timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
         },
       );
       return {

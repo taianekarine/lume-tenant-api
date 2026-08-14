@@ -3,8 +3,9 @@
 ## Preparação
 
 1. Copie `.env.production.example` para um gerenciador de segredos.
-2. Configure banco, JWT, licença, e-mail, canal WhatsApp, Evolution, o diretório
-   persistente `WHATSAPP_MEDIA_STORAGE_PATH` e ao menos um provedor de IA.
+2. Configure banco, JWT, licença, e-mail, canal WhatsApp, Evolution, os diretórios
+   persistentes `WHATSAPP_MEDIA_STORAGE_PATH` e `WHATSAPP_IMPORT_ROOT` e ao menos
+   um provedor de IA.
 3. Use HTTPS para CORS, redefinição de senha e `EVOLUTION_BASE_URL`.
 4. Mantenha `SWAGGER_ENABLED=false` salvo durante diagnóstico controlado.
 5. Execute `npm ci`, `npm run prisma:deploy`, `npm run build` e `npm test`.
@@ -22,6 +23,16 @@ contato. Faça backup e confira o plano em homologação antes do deploy.
 A migração `20260807000100_retain_whatsapp_media_content` adiciona os metadados
 da cópia própria. Monte o volume antes de liberar o webhook. Banco e volume de
 mídias devem participar da mesma política de backup e restauração.
+
+O volume `lume_tenant_whatsapp_imports` armazena ZIPs e manifestos dos lotes
+assistidos. Ele não substitui o backup do banco. Monitore espaço, mantenha a
+retenção de rascunhos configurada e remova somente lotes expirados; nunca use a
+camada gravável efêmera do container para esse diretório.
+
+O serviço transitório `storage-init` do Compose prepara os volumes de mídias e
+importações com permissão de escrita para o usuário da API antes da
+inicialização. Mantenha essa dependência ao criar ou restaurar os volumes; sem
+ela, o primeiro lote pode falhar antes mesmo de receber o arquivo ZIP.
 
 Suba uma única versão consumidora da outbox. Durante rolling deploy, garanta que
 as instâncias usam a mesma versão do contrato e os mesmos limites. O lock no

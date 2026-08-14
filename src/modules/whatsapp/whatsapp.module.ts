@@ -4,12 +4,14 @@ import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media
 import { WhatsAppRepository } from '../../application/contracts/whatsapp.repository';
 import {
   CreateHumanOutboundWhatsAppUseCase,
+  EnsureWhatsAppConversationUseCase,
   QuoteProposalUseCase,
   QueryWhatsAppUseCase,
   TransitionWhatsAppConversationUseCase,
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
 import { EvolutionWebhookService } from '../../infra/integrations/evolution/evolution-webhook.service';
 import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
+import { EvolutionProfilePictureService } from '../../infra/integrations/evolution/evolution-profile-picture.service';
 import { HttpEvolutionOutboundGateway } from '../../infra/integrations/evolution/evolution-outbound.client';
 import { ApiWhatsAppAutomationProvider } from '../../infra/integrations/whatsapp/api-whatsapp-automation.provider';
 import { WhatsAppAutomationDecisionStore } from '../../infra/integrations/whatsapp/whatsapp-automation-decision.store';
@@ -18,11 +20,13 @@ import { WhatsAppAutomationDispatcher } from '../../infra/integrations/whatsapp/
 import { WhatsAppAutomationEventStore } from '../../infra/integrations/whatsapp/whatsapp-automation-event.store';
 import { OpenAiCompatibleWhatsAppConversationAgent } from '../../infra/integrations/whatsapp-ai/openai-compatible-whatsapp-conversation-agent';
 import { WhatsAppRetentionService } from '../../infra/retention/whatsapp-retention.service';
+import { WhatsAppHistoryImportService } from '../../infra/imports/whatsapp-history-import.service';
 import { FileSystemWhatsAppMediaStorage } from '../../infra/storage/file-system-whatsapp-media.storage';
 import { EvolutionWebhookController } from './evolution-webhook.controller';
 import { NotificationsController } from './notifications.controller';
 import { QuoteProposalController } from './quote-proposal.controller';
 import { WhatsAppPanelController } from './whatsapp-panel.controller';
+import { WhatsAppHistoryImportController } from './whatsapp-history-import.controller';
 
 @Module({
   controllers: [
@@ -30,10 +34,12 @@ import { WhatsAppPanelController } from './whatsapp-panel.controller';
     WhatsAppPanelController,
     QuoteProposalController,
     NotificationsController,
+    WhatsAppHistoryImportController,
   ],
   providers: [
     EvolutionWebhookService,
     EvolutionMediaContentService,
+    EvolutionProfilePictureService,
     FileSystemWhatsAppMediaStorage,
     {
       provide: WhatsAppMediaStorage,
@@ -47,6 +53,13 @@ import { WhatsAppPanelController } from './whatsapp-panel.controller';
     WhatsAppAutomationEventStore,
     WhatsAppAutomationDispatcher,
     WhatsAppRetentionService,
+    WhatsAppHistoryImportService,
+    {
+      provide: EnsureWhatsAppConversationUseCase,
+      useFactory: (repository: WhatsAppRepository) =>
+        new EnsureWhatsAppConversationUseCase(repository),
+      inject: [WhatsAppRepository],
+    },
     {
       provide: TransitionWhatsAppConversationUseCase,
       useFactory: (repository: WhatsAppRepository) =>

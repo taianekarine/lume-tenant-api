@@ -138,9 +138,12 @@ export function resolveConversationTransition(
 
     case 'start-department-contact':
       assertState(current, ['bot-active'], name);
-      if (current.flowStep !== 'main-menu') {
+      if (
+        current.flowStep !== 'main-menu' &&
+        current.flowStep !== 'commercial-menu'
+      ) {
         throw validationError(
-          'A seleção de departamento só é permitida no menu principal.',
+          'A seleção de departamento só é permitida nos menus de atendimento.',
         );
       }
       if (!input.targetDepartment) {
@@ -148,9 +151,13 @@ export function resolveConversationTransition(
           'Informe o departamento de destino antes de coletar os dados.',
         );
       }
-      if (!input.departmentOption || !/^[2-9]$/.test(input.departmentOption)) {
+      if (
+        !input.departmentOption ||
+        (!/^[2-9]$/.test(input.departmentOption) &&
+          input.departmentOption !== 'commercial-continuous-director')
+      ) {
         throw validationError(
-          'A opção de departamento deve estar entre 2 e 9.',
+          'A opção de departamento informada não é válida.',
         );
       }
       return {
@@ -317,7 +324,6 @@ export function resolveConversationTransition(
       };
 
     case 'take-over':
-      assertOpen(current);
       return {
         ...current,
         conversationState: 'human-active',

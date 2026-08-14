@@ -194,6 +194,11 @@ function createSubject(input?: {
     checkpointStore as unknown as WhatsAppAutomationCheckpointStore,
     decisionStore as unknown as WhatsAppAutomationDecisionStore,
     evolution as unknown as HttpEvolutionOutboundGateway,
+    {
+      read: vi.fn(),
+      write: vi.fn(),
+      delete: vi.fn(),
+    },
     new ConfigService({
       WHATSAPP_API_DEBOUNCE_MS: 2_000,
       WHATSAPP_API_DEPARTMENT_COLLECTION_MS: 120_000,

@@ -13,6 +13,7 @@ import {
   type CreateQuoteProposalInput,
   type DecideQuoteProposalInput,
   type EvolutionResultInput,
+  type EnsureWhatsAppConversationResult,
   type MarkEvolutionDispatchUnknownInput,
   type MessageListQuery,
   type PersistInboundInput,
@@ -782,6 +783,65 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
     });
   }
 
+  async ensureConversationForPhone(
+    companyId: string,
+    phoneNormalized: string,
+  ): Promise<EnsureWhatsAppConversationResult> {
+    return this.prisma.$transaction(async (transaction) => {
+      const channel = await transaction.whatsAppChannel.findFirst({
+        where: {
+          companyId,
+          enabled: true,
+          provider: { enabled: true },
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      });
+      if (!channel) {
+        throw validationError(
+          'Nenhum canal de WhatsApp est\u00e1 dispon\u00edvel para iniciar a conversa.',
+        );
+      }
+
+      const contact = await transaction.whatsAppContact.upsert({
+        where: {
+          companyId_phoneNormalized: { companyId, phoneNormalized },
+        },
+        create: {
+          companyId,
+          phoneNormalized,
+          displayName: phoneNormalized,
+        },
+        update: {},
+        select: { id: true },
+      });
+
+      const conversation = await transaction.whatsAppConversation.upsert({
+        where: {
+          companyId_channelId_contactId: {
+            companyId,
+            channelId: channel.id,
+            contactId: contact.id,
+          },
+        },
+        create: {
+          companyId,
+          channelId: channel.id,
+          contactId: contact.id,
+        },
+        update: {},
+        select: { id: true },
+      });
+
+      const current = await this.findConversationOrThrow(
+        transaction,
+        companyId,
+        conversation.id,
+      );
+      return presentConversation(current);
+    });
+  }
+
   async persistInbound(
     input: PersistInboundInput,
   ): Promise<PersistInboundResult> {
@@ -836,8 +896,14 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             companyId: input.channel.companyId,
             phoneNormalized: input.phoneNormalized,
             displayName: input.displayName,
+            profilePictureUrl: input.profilePictureUrl,
           },
-          update: input.displayName ? { displayName: input.displayName } : {},
+          update: {
+            ...(input.displayName ? { displayName: input.displayName } : {}),
+            ...(input.profilePictureUrl
+              ? { profilePictureUrl: input.profilePictureUrl }
+              : {}),
+          },
         });
 
         // Serializa o primeiro contato por tenant/canal/contato. O índice
@@ -1618,7 +1684,12 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             ...(closureMessageText
               ? { lastMessagePreview: closureMessageText.slice(0, 240) }
               : {}),
-            closedAt: closing ? transitionedAt : conversation.closedAt,
+            closedAt:
+              input.name === 'take-over'
+                ? null
+                : closing
+                  ? transitionedAt
+                  : conversation.closedAt,
             version: { increment: 1 },
           },
         });
@@ -2191,9 +2262,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
   }
 
   async createHumanOutbound(input: CreateHumanOutboundInput): Promise<unknown> {
+    const normalizedText = input.text?.trim() ?? '';
     const inputHash = commandFingerprint({
       ...input,
-      text: input.text.trim(),
+      text: normalizedText,
     });
     try {
       return await this.prisma.$transaction(async (transaction) => {
@@ -2203,8 +2275,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           'panel.outbound-command',
           input.idempotencyKey,
         );
-        const normalizedText = input.text.trim();
-        if (!normalizedText) {
+        if (!normalizedText && !input.attachment) {
           throw validationError('A mensagem humana não pode estar vazia.');
         }
 
@@ -2274,8 +2345,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           },
         });
 
+        const attachment = input.attachment;
         const message = await transaction.whatsAppMessage.create({
           data: {
+            ...(attachment ? { id: attachment.messageId } : {}),
             companyId: input.companyId,
             conversationId: input.conversationId,
             channelId: conversation.channelId,
@@ -2283,8 +2356,24 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             actorUserId: input.actorUserId,
             direction: MessageDirection.OUTBOUND,
             deliveryStatus: DeliveryStatus.PENDING,
-            kind: MessageKind.TEXT,
-            text: normalizedText,
+            kind: attachment ? kindToPrisma[attachment.kind] : MessageKind.TEXT,
+            text: normalizedText || null,
+            ...(attachment
+              ? {
+                  media: {
+                    fileName: attachment.fileName,
+                    mimeType: attachment.mimeType,
+                    size: attachment.sizeBytes,
+                    retentionStatus: 'stored',
+                  },
+                  mediaStorageKey: attachment.storageKey,
+                  mediaMimeType: attachment.mimeType,
+                  mediaSizeBytes: attachment.sizeBytes,
+                  mediaOriginalName: attachment.fileName,
+                  mediaSha256: attachment.sha256,
+                  mediaStoredAt: new Date(),
+                }
+              : {}),
             recipientPhone: conversation.contact.phoneNormalized,
             correlationId: messageCorrelation,
             occurredAt: new Date(),
@@ -2305,7 +2394,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             version: input.expectedVersion,
           },
           data: {
-            lastMessagePreview: normalizedText.slice(0, 240),
+            lastMessagePreview: (
+              normalizedText ||
+              (attachment ? `Arquivo: ${attachment.fileName}` : '')
+            ).slice(0, 240),
             version: { increment: 1 },
           },
         });
@@ -2354,9 +2446,16 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
               providerMessageId: null,
               direction: 'outbound',
               deliveryStatus: 'pending',
-              kind: 'text',
-              text: normalizedText,
-              media: null,
+              kind: attachment?.kind ?? 'text',
+              text: normalizedText || null,
+              media: attachment
+                ? {
+                    storageKey: attachment.storageKey,
+                    fileName: attachment.fileName,
+                    mimeType: attachment.mimeType,
+                    size: attachment.sizeBytes,
+                  }
+                : null,
               occurredAt: message.occurredAt.toISOString(),
             },
             conversation: {
@@ -6030,12 +6129,32 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       select: { id: true },
     });
     if (!conversation) throw notFound('Conversa');
-    const where = {
+    const search = query.search?.trim();
+    const where: Prisma.WhatsAppMessageWhereInput = {
       companyId,
       conversationId,
-      OR: [
-        { automationPurpose: null },
-        { automationPurpose: { not: 'department-notification' } },
+      AND: [
+        {
+          OR: [
+            { automationPurpose: null },
+            { automationPurpose: { not: 'department-notification' } },
+          ],
+        },
+        ...(search
+          ? [
+              {
+                OR: [
+                  { text: { contains: search, mode: 'insensitive' as const } },
+                  {
+                    mediaOriginalName: {
+                      contains: search,
+                      mode: 'insensitive' as const,
+                    },
+                  },
+                ],
+              },
+            ]
+          : []),
       ],
     };
     const [rows, total] = await this.prisma.$transaction([
