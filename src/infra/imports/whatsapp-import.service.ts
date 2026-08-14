@@ -53,6 +53,8 @@ const OPEN_STATES = new Set([
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IMPORT_BATCH_LEASE_MS = 5 * 60 * 1_000;
+const IMPORT_TRANSACTION_MAX_WAIT_MS = 10_000;
+const IMPORT_TRANSACTION_TIMEOUT_MS = 120_000;
 
 const DEPARTMENT_TO_PRISMA: Record<string, DepartmentCode> = {
   commercial: DepartmentCode.COMMERCIAL,
@@ -2251,7 +2253,11 @@ export class WhatsAppImportService {
               messages,
               documents,
             ),
-          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+            maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+            timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
+          },
         );
         if (result.created) {
           appliedCounts.conversationsToCreate += 1;
@@ -3916,8 +3922,8 @@ export class WhatsAppImportService {
         },
         {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-          maxWait: 10_000,
-          timeout: 120_000,
+          maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+          timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
         },
       );
       return {
