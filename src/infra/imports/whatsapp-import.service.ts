@@ -212,6 +212,34 @@ function asJson(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
 }
 
+export function importedMediaMetadata(
+  mediaReference: string | null | undefined,
+  correlationId: string | null | undefined,
+): Prisma.InputJsonValue | undefined {
+  if (!mediaReference && !correlationId) return undefined;
+
+  let fileName: string | undefined;
+  const isWhatsAppExport =
+    mediaReference?.startsWith('whatsapp-export://') ?? false;
+  if (isWhatsAppExport && mediaReference) {
+    const encodedFileName = mediaReference.split('/').at(-1);
+    if (encodedFileName) {
+      try {
+        fileName = decodeURIComponent(encodedFileName);
+      } catch {
+        fileName = encodedFileName;
+      }
+    }
+  }
+
+  return asJson({
+    ...(mediaReference ? { legacyReference: mediaReference } : {}),
+    ...(correlationId ? { legacyCorrelationId: correlationId } : {}),
+    ...(fileName ? { fileName } : {}),
+    ...(isWhatsAppExport ? { retentionStatus: 'unavailable' } : {}),
+  });
+}
+
 function issue(
   issues: ImportIssue[],
   table: ImportIssue['table'],
@@ -2855,6 +2883,10 @@ export class WhatsAppImportService {
             select: { id: true },
           })
         : undefined;
+      const mediaMetadata = importedMediaMetadata(
+        message.mediaReference,
+        message.correlationId,
+      );
       const persisted = await transaction.whatsAppMessage.create({
         data: {
           companyId: input.companyId,
@@ -2867,18 +2899,7 @@ export class WhatsAppImportService {
           deliveryStatus: DELIVERY_TO_PRISMA[message.deliveryStatus],
           kind: KIND_TO_PRISMA[message.kind],
           text: message.text,
-          ...(message.mediaReference || message.correlationId
-            ? {
-                media: asJson({
-                  ...(message.mediaReference
-                    ? { legacyReference: message.mediaReference }
-                    : {}),
-                  ...(message.correlationId
-                    ? { legacyCorrelationId: message.correlationId }
-                    : {}),
-                }),
-              }
-            : {}),
+          ...(mediaMetadata !== undefined ? { media: mediaMetadata } : {}),
           correlationId: deterministicCorrelation(
             row.sourceSystem,
             message.externalMessageId,

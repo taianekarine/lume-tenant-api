@@ -37,7 +37,9 @@ Rascunhos expiram após `WHATSAPP_HISTORY_IMPORT_RETENTION_HOURS`.
 Referências de imagens, áudios, vídeos e documentos existentes no ZIP são
 preservadas nos metadados das mensagens. O importador oficial atual só persiste
 o binário de PDFs de propostas listados em `DocumentosImportacao`; por isso os
-demais anexos históricos não são publicados como mídia navegável. Arquivos
+demais anexos históricos recebem `retentionStatus=unavailable` e não são
+publicados como mídia navegável. Essa sinalização evita que o painel tente
+recuperar o arquivo na Evolution, onde ele nunca existiu. Arquivos
 citados no texto, mas ausentes do ZIP, são sinalizados para conferência e nunca
 simulados como recuperáveis.
 
