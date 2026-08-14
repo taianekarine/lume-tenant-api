@@ -30,12 +30,18 @@ import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media
 import type { AuthenticatedPrincipal } from '../../application/presenters/user.presenter';
 import {
   CreateHumanOutboundWhatsAppUseCase,
+  EnsureWhatsAppConversationUseCase,
   QueryWhatsAppUseCase,
   TransitionWhatsAppConversationUseCase,
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
-import { forbidden, validationError } from '../../core/errors/app-error';
+import {
+  conflict,
+  forbidden,
+  validationError,
+} from '../../core/errors/app-error';
 import { normalizeUserDepartment } from '../../domain/access/access.constants';
 import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
+import { normalizeWhatsAppPhone } from '../../shared/utils/normalization';
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
@@ -45,6 +51,7 @@ import {
   CreateHumanOutboundMediaDto,
   ForwardConversationDto,
   MessageListQueryDto,
+  StartHumanConversationDto,
   TransitionListQueryDto,
   VersionedCommandDto,
 } from './dto/whatsapp.dto';
@@ -60,6 +67,15 @@ function contentDisposition(fileName: string): string {
 }
 
 const MAXIMUM_PANEL_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+const PANEL_ARCHIVE_MIME_TYPES = [
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/vnd.rar',
+  'application/x-rar',
+  'application/x-rar-compressed',
+  'application/x-7z-compressed',
+  'application/octet-stream',
+] as const;
 
 @ApiTags('Painel WhatsApp')
 @ApiBearerAuth()
@@ -71,12 +87,55 @@ const MAXIMUM_PANEL_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 export class WhatsAppPanelController {
   constructor(
     private readonly queryUseCase: QueryWhatsAppUseCase,
+    private readonly ensureConversation: EnsureWhatsAppConversationUseCase,
     private readonly transition: TransitionWhatsAppConversationUseCase,
     private readonly createHumanOutbound: CreateHumanOutboundWhatsAppUseCase,
     private readonly mediaContent: EvolutionMediaContentService,
     private readonly mediaStorage: WhatsAppMediaStorage,
     private readonly config: ConfigService,
   ) {}
+
+  @Post()
+  @RequireAnyPermission('whatsapp-conversations:manage')
+  @ApiCreatedResponse({
+    description:
+      'Cria ou reutiliza a conversa can\u00f4nica do n\u00famero e inicia o atendimento humano.',
+  })
+  async startConversation(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Body() body: StartHumanConversationDto,
+  ) {
+    let phoneNormalized: string;
+    try {
+      phoneNormalized = normalizeWhatsAppPhone(body.phone);
+    } catch {
+      throw validationError(
+        'Informe um n\u00famero de WhatsApp v\u00e1lido com DDD.',
+      );
+    }
+
+    const conversation = await this.ensureConversation.execute(
+      current.companyId,
+      phoneNormalized,
+    );
+    if (conversation.conversationState === 'human-active') {
+      if (conversation.assignedTo?.id === current.id) return conversation;
+      throw conflict(
+        'Esta conversa j\u00e1 est\u00e1 em atendimento por outra pessoa.',
+      );
+    }
+
+    return this.transition.execute({
+      companyId: current.companyId,
+      conversationId: conversation.id,
+      commandId: body.commandId,
+      expectedVersion: conversation.version,
+      name: 'take-over',
+      actorType: 'user',
+      actorUserId: current.id,
+      metadata: { source: 'panel-new-conversation' },
+    });
+  }
 
   @Get()
   list(
@@ -280,6 +339,7 @@ export class WhatsAppPanelController {
         .filter(Boolean),
       'text/vcard',
       'text/x-vcard',
+      ...PANEL_ARCHIVE_MIME_TYPES,
     ]);
     if (!allowed.has(mimeType)) {
       throw validationError('Este formato de arquivo não pode ser enviado.');

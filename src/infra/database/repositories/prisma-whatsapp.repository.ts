@@ -13,6 +13,7 @@ import {
   type CreateQuoteProposalInput,
   type DecideQuoteProposalInput,
   type EvolutionResultInput,
+  type EnsureWhatsAppConversationResult,
   type MarkEvolutionDispatchUnknownInput,
   type MessageListQuery,
   type PersistInboundInput,
@@ -779,6 +780,65 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         ignoreFromMe: true,
         enabled: true,
       },
+    });
+  }
+
+  async ensureConversationForPhone(
+    companyId: string,
+    phoneNormalized: string,
+  ): Promise<EnsureWhatsAppConversationResult> {
+    return this.prisma.$transaction(async (transaction) => {
+      const channel = await transaction.whatsAppChannel.findFirst({
+        where: {
+          companyId,
+          enabled: true,
+          provider: { enabled: true },
+        },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      });
+      if (!channel) {
+        throw validationError(
+          'Nenhum canal de WhatsApp est\u00e1 dispon\u00edvel para iniciar a conversa.',
+        );
+      }
+
+      const contact = await transaction.whatsAppContact.upsert({
+        where: {
+          companyId_phoneNormalized: { companyId, phoneNormalized },
+        },
+        create: {
+          companyId,
+          phoneNormalized,
+          displayName: phoneNormalized,
+        },
+        update: {},
+        select: { id: true },
+      });
+
+      const conversation = await transaction.whatsAppConversation.upsert({
+        where: {
+          companyId_channelId_contactId: {
+            companyId,
+            channelId: channel.id,
+            contactId: contact.id,
+          },
+        },
+        create: {
+          companyId,
+          channelId: channel.id,
+          contactId: contact.id,
+        },
+        update: {},
+        select: { id: true },
+      });
+
+      const current = await this.findConversationOrThrow(
+        transaction,
+        companyId,
+        conversation.id,
+      );
+      return presentConversation(current);
     });
   }
 
@@ -1624,7 +1684,12 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             ...(closureMessageText
               ? { lastMessagePreview: closureMessageText.slice(0, 240) }
               : {}),
-            closedAt: closing ? transitionedAt : conversation.closedAt,
+            closedAt:
+              input.name === 'take-over'
+                ? null
+                : closing
+                  ? transitionedAt
+                  : conversation.closedAt,
             version: { increment: 1 },
           },
         });

@@ -122,6 +122,8 @@ export class UpdateUserUseCase {
 
     const finalIsAdministrator =
       input.isAdministrator ?? target.user.props.isAdministrator;
+    const finalDocumentAccessMode =
+      input.documentAccessMode ?? target.user.props.documentAccessMode;
     const administratorChanged =
       finalIsAdministrator !== target.user.props.isAdministrator;
 
@@ -155,7 +157,11 @@ export class UpdateUserUseCase {
       ? []
       : (permissionCodes ?? target.user.props.permissionCodes);
 
-    if (!finalIsAdministrator && finalDepartments.length === 0) {
+    if (
+      !finalIsAdministrator &&
+      finalDocumentAccessMode === 'standard' &&
+      finalDepartments.length === 0
+    ) {
       throw validationError('Informe ao menos um departamento para o usuário.');
     }
     const allowedPermissions = new Set(
