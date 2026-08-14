@@ -208,7 +208,7 @@ Consulte [architecture.md](docs/architecture.md),
 [edge-contract.md](docs/edge-contract.md) e
 [whatsapp-mvp.md](docs/whatsapp-mvp.md). O contrato extensível de arquivos está
 em [data-exchange.md](docs/data-exchange.md). A carga silenciosa de atendimentos
-WhatsApp atuais por CLI está em
+WhatsApp atuais pela interface ou por CLI está em
 [whatsapp-conversation-import.md](docs/whatsapp-conversation-import.md). O
 runbook da migração controlada da automação está em
 [whatsapp-automation-migration.md](docs/whatsapp-automation-migration.md).

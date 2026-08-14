@@ -27,14 +27,14 @@ import {
   WHATSAPP_IMPORT_TABLES,
 } from './whatsapp-import.types';
 
-const MAX_WORKBOOK_BYTES = 10 * 1024 * 1024;
+const MAX_WORKBOOK_BYTES = 128 * 1024 * 1024;
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_PDF_BYTES = 100 * 1024 * 1024;
-const MAX_UNCOMPRESSED_XLSX_BYTES = 64 * 1024 * 1024;
-const MAX_XLSX_ENTRIES = 2_000;
-const MAX_CONVERSATIONS = 500;
-const MAX_MESSAGES = 1_000;
-const MAX_DOCUMENTS = 500;
+const MAX_UNCOMPRESSED_XLSX_BYTES = 1024 * 1024 * 1024;
+const MAX_XLSX_ENTRIES = 10_000;
+const MAX_CONVERSATIONS = 10_000;
+const MAX_MESSAGES = 500_000;
+const MAX_DOCUMENTS = 50_000;
 const IGNORED_VALIDATION_HEADERS = new Set([
   'validation_status',
   'validation_message',

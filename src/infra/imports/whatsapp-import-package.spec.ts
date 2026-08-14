@@ -156,7 +156,7 @@ describe('parseWhatsAppImportPackage', () => {
       Buffer.from([0x50, 0x4b, 0x01, 0x02]),
     );
     expect(centralHeaderOffset).toBeGreaterThanOrEqual(0);
-    workbook.writeUInt32LE(64 * 1024 * 1024 + 1, centralHeaderOffset + 24);
+    workbook.writeUInt32LE(1024 * 1024 * 1024 + 1, centralHeaderOffset + 24);
     await writeFile(fixture.workbookPath, workbook);
 
     await expect(
