@@ -230,6 +230,29 @@ describe('HttpEvolutionOutboundGateway', () => {
     });
   });
 
+  it('envia figurinha WebP pelo endpoint próprio da Evolution', async () => {
+    const fetchMock = mockFetch(
+      Response.json({ key: { id: 'sticker-id' } }, { status: 201 }),
+    );
+
+    await gateway().send({
+      kind: 'sticker',
+      recipientPhone: '5534999999999',
+      fileName: 'figurinha.webp',
+      mimeType: 'image/webp',
+      content: Buffer.from('sticker'),
+    });
+
+    const [url, request] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(
+      'https://evolution.example.test/message/sendSticker/lume%20tenant',
+    );
+    expect(JSON.parse(request?.body as string)).toEqual({
+      number: '5534999999999',
+      sticker: 'data:image/webp;base64,c3RpY2tlcg==',
+    });
+  });
+
   it('trata HTTP não 2xx como ambíguo e nunca repete o envio', async () => {
     const fetchMock = mockFetch(
       new Response(JSON.stringify({ internal: 'must-not-leak' }), {

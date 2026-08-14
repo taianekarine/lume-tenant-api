@@ -313,20 +313,28 @@ export class WhatsAppPanelController {
       messageId,
       sha256,
     ].join('/');
-    const kind = mimeType.startsWith('image/')
-      ? 'image'
-      : mimeType.startsWith('video/')
-        ? 'video'
-        : mimeType.startsWith('audio/')
-          ? 'audio'
-          : mimeType === 'text/vcard' || mimeType === 'text/x-vcard'
-            ? 'contact'
-            : 'document';
+    if (body.mediaKind === 'sticker' && mimeType !== 'image/webp') {
+      throw validationError('Figurinhas devem ser enviadas no formato WebP.');
+    }
+    const kind =
+      body.mediaKind === 'sticker'
+        ? 'sticker'
+        : mimeType.startsWith('image/')
+          ? 'image'
+          : mimeType.startsWith('video/')
+            ? 'video'
+            : mimeType.startsWith('audio/')
+              ? 'audio'
+              : mimeType === 'text/vcard' || mimeType === 'text/x-vcard'
+                ? 'contact'
+                : 'document';
 
     await this.mediaStorage.write({ storageKey, content: file.buffer });
     try {
       return await this.createHumanOutbound.execute({
-        ...body,
+        commandId: body.commandId,
+        idempotencyKey: body.idempotencyKey,
+        expectedVersion: body.expectedVersion,
         companyId: current.companyId,
         conversationId,
         actorUserId: current.id,

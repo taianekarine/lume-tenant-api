@@ -160,7 +160,7 @@ describe('fluxo de automação do WhatsApp', () => {
     },
   );
 
-  it('encaminha fretamento contínuo para humano sem chamar IA', () => {
+  it('coleta nome e motivo do fretamento contínuo antes de notificar a Diretoria', () => {
     const current = conversation({ flowStep: 'commercial-menu', version: 3 });
 
     expect(
@@ -168,12 +168,38 @@ describe('fluxo de automação do WhatsApp', () => {
     ).toMatchObject({
       kind: 'static-reply',
       aiMode: null,
-      transitionAfterSend: 'forward',
+      transitionBeforeAi: 'start-department-contact',
+      transitionAfterSend: null,
       transitionMetadata: {
-        targetDepartment: 'commercial',
-        reason: 'continuous-quote-requested',
+        targetDepartment: 'management',
+        departmentOption: 'commercial-continuous-director',
       },
-      reason: 'continuous-quote-requested',
+      reason: 'continuous-quote-director-contact-requested',
+    });
+  });
+
+  it('notifica a Diretoria depois que o cliente informa nome e motivo', () => {
+    const current = conversation({
+      flowStep: 'main-menu',
+      department: 'management',
+      departmentContactOption: 'commercial-continuous-director',
+      version: 4,
+    });
+
+    expect(
+      decideAutomationPlan({
+        envelope: envelope(
+          'Maria - fretamento contínuo para colaboradores',
+          current,
+        ),
+      }),
+    ).toMatchObject({
+      kind: 'static-reply',
+      responseMessage: expect.stringContaining('Departamento: Diretoria'),
+      transitionAfterSend: 'return-to-main-menu',
+      outboundPurpose: 'department-notification',
+      outboundRecipientPhoneEnv: 'MILENIUM_DIRECTOR_PHONE',
+      reason: 'department-contact-forwarded',
     });
   });
 

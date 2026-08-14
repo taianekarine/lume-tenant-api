@@ -122,6 +122,8 @@ export class ApiWhatsAppAutomationProvider extends WhatsAppAutomationProvider {
       ),
     );
     this.departmentPhones = {
+      MILENIUM_DIRECTOR_PHONE:
+        config.get<string>('MILENIUM_DIRECTOR_PHONE') ?? '',
       MILENIUM_DEPARTMENT_PURCHASES_PHONE:
         config.get<string>('MILENIUM_DEPARTMENT_PURCHASES_PHONE') ?? '',
       MILENIUM_DEPARTMENT_CONTROLLING_PHONE:
@@ -509,14 +511,27 @@ export class ApiWhatsAppAutomationProvider extends WhatsAppAutomationProvider {
       message.kind === 'image' ||
       message.kind === 'video' ||
       message.kind === 'audio' ||
-      message.kind === 'contact'
+      message.kind === 'contact' ||
+      message.kind === 'sticker'
     ) {
-      outboundInput = await this.storedOutboundMedia(
-        payload.contact.phone,
-        message.kind === 'contact' ? 'document' : message.kind,
-        asRecord(message.media),
-        message.text,
-      );
+      const media = asRecord(message.media);
+      if (message.kind === 'sticker') {
+        const storageKey = requiredString(media.storageKey, 'storageKey');
+        outboundInput = {
+          kind: 'sticker',
+          recipientPhone: payload.contact.phone,
+          fileName: requiredString(media.fileName, 'fileName'),
+          mimeType: 'image/webp',
+          content: await this.mediaStorage.read(storageKey),
+        };
+      } else {
+        outboundInput = await this.storedOutboundMedia(
+          payload.contact.phone,
+          message.kind === 'contact' ? 'document' : message.kind,
+          media,
+          message.text,
+        );
+      }
     } else {
       throw new WhatsAppAutomationExecutionError(
         'terminal-failure',

@@ -275,6 +275,11 @@ export class CreateHumanOutboundMediaDto extends VersionedCommandDto {
   @IsString()
   @MaxLength(10_000)
   caption?: string;
+
+  @ApiPropertyOptional({ enum: ['auto', 'sticker'] })
+  @IsOptional()
+  @IsIn(['auto', 'sticker'])
+  mediaKind?: 'auto' | 'sticker';
 }
 
 export class ClaimEvolutionDispatchDto {
@@ -499,6 +504,12 @@ export class MessageListQueryDto {
   @Min(1)
   @Max(100)
   pageSize = 50;
+
+  @ApiPropertyOptional({ maxLength: 160 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  search?: string;
 }
 
 export class TransitionListQueryDto {

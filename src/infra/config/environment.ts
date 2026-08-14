@@ -422,6 +422,7 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     );
   }
   const departmentPhoneKeys = [
+    'MILENIUM_DIRECTOR_PHONE',
     'MILENIUM_DEPARTMENT_PURCHASES_PHONE',
     'MILENIUM_DEPARTMENT_CONTROLLING_PHONE',
     'MILENIUM_DEPARTMENT_DP_PHONE',
@@ -444,7 +445,7 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     )
   ) {
     throw new Error(
-      'WHATSAPP_ENABLED=true exige telefones válidos nas oito variáveis MILENIUM_DEPARTMENT_*_PHONE.',
+      'WHATSAPP_ENABLED=true exige telefones válidos para a Diretoria e os oito departamentos.',
     );
   }
   const emailDeliveryEnabled = booleanValue(

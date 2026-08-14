@@ -12,6 +12,7 @@ import {
 import type { MessageKind } from '../../../domain/whatsapp/whatsapp.constants';
 import { normalizeWhatsAppPhone } from '../../../shared/utils/normalization';
 import { EvolutionMediaContentService } from './evolution-media-content.service';
+import { EvolutionProfilePictureService } from './evolution-profile-picture.service';
 
 type Headers = Readonly<Record<string, string | string[] | undefined>>;
 type JsonObject = Record<string, unknown>;
@@ -141,6 +142,7 @@ export class EvolutionWebhookService {
   constructor(
     private readonly repository: WhatsAppRepository,
     private readonly mediaContent: EvolutionMediaContentService,
+    private readonly profilePictures: EvolutionProfilePictureService,
     config: ConfigService,
   ) {
     this.webhookSecret = config.get<string>('EVOLUTION_WEBHOOK_SECRET') ?? '';
@@ -246,6 +248,10 @@ export class EvolutionWebhookService {
     const correlationId = `evolution:${createHash('sha256')
       .update(`${channel.id}:${providerMessageId}`)
       .digest('hex')}`;
+    const profilePictureUrl = await this.profilePictures.get(
+      channel.instanceName,
+      phoneNormalized,
+    );
 
     const persisted = await this.repository.persistInbound({
       channel,
@@ -258,6 +264,7 @@ export class EvolutionWebhookService {
         typeof data.pushName === 'string'
           ? data.pushName.trim().slice(0, 160)
           : undefined,
+      profilePictureUrl,
       occurredAt,
       kind: content.kind,
       text: content.text,
