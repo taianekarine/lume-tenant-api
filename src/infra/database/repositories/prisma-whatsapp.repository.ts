@@ -2191,9 +2191,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
   }
 
   async createHumanOutbound(input: CreateHumanOutboundInput): Promise<unknown> {
+    const normalizedText = input.text?.trim() ?? '';
     const inputHash = commandFingerprint({
       ...input,
-      text: input.text.trim(),
+      text: normalizedText,
     });
     try {
       return await this.prisma.$transaction(async (transaction) => {
@@ -2203,8 +2204,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           'panel.outbound-command',
           input.idempotencyKey,
         );
-        const normalizedText = input.text.trim();
-        if (!normalizedText) {
+        if (!normalizedText && !input.attachment) {
           throw validationError('A mensagem humana não pode estar vazia.');
         }
 
@@ -2274,8 +2274,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           },
         });
 
+        const attachment = input.attachment;
         const message = await transaction.whatsAppMessage.create({
           data: {
+            ...(attachment ? { id: attachment.messageId } : {}),
             companyId: input.companyId,
             conversationId: input.conversationId,
             channelId: conversation.channelId,
@@ -2283,8 +2285,24 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             actorUserId: input.actorUserId,
             direction: MessageDirection.OUTBOUND,
             deliveryStatus: DeliveryStatus.PENDING,
-            kind: MessageKind.TEXT,
-            text: normalizedText,
+            kind: attachment ? kindToPrisma[attachment.kind] : MessageKind.TEXT,
+            text: normalizedText || null,
+            ...(attachment
+              ? {
+                  media: {
+                    fileName: attachment.fileName,
+                    mimeType: attachment.mimeType,
+                    size: attachment.sizeBytes,
+                    retentionStatus: 'stored',
+                  },
+                  mediaStorageKey: attachment.storageKey,
+                  mediaMimeType: attachment.mimeType,
+                  mediaSizeBytes: attachment.sizeBytes,
+                  mediaOriginalName: attachment.fileName,
+                  mediaSha256: attachment.sha256,
+                  mediaStoredAt: new Date(),
+                }
+              : {}),
             recipientPhone: conversation.contact.phoneNormalized,
             correlationId: messageCorrelation,
             occurredAt: new Date(),
@@ -2305,7 +2323,10 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             version: input.expectedVersion,
           },
           data: {
-            lastMessagePreview: normalizedText.slice(0, 240),
+            lastMessagePreview: (
+              normalizedText ||
+              (attachment ? `Arquivo: ${attachment.fileName}` : '')
+            ).slice(0, 240),
             version: { increment: 1 },
           },
         });
@@ -2354,9 +2375,16 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
               providerMessageId: null,
               direction: 'outbound',
               deliveryStatus: 'pending',
-              kind: 'text',
-              text: normalizedText,
-              media: null,
+              kind: attachment?.kind ?? 'text',
+              text: normalizedText || null,
+              media: attachment
+                ? {
+                    storageKey: attachment.storageKey,
+                    fileName: attachment.fileName,
+                    mimeType: attachment.mimeType,
+                    size: attachment.sizeBytes,
+                  }
+                : null,
               occurredAt: message.occurredAt.toISOString(),
             },
             conversation: {

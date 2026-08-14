@@ -1,9 +1,12 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import JSZip from 'jszip';
 
+import { parseWhatsAppExportArchive } from './whatsapp-export-parser';
+import { identifyWhatsAppExportMessages } from './whatsapp-export-workbook';
 import { WhatsAppHistoryImportService } from './whatsapp-history-import.service';
 
 const COMPANY_ID = '11111111-1111-4111-8111-111111111111';
@@ -29,16 +32,31 @@ async function setup() {
         phoneNumber: '5534999999999',
       }),
     },
+    whatsAppImportExternalRef: { findMany: vi.fn().mockResolvedValue([]) },
+    whatsAppMessage: {
+      findMany: vi.fn().mockResolvedValue([]),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
   };
   const config = {
     get: vi.fn((key: string) =>
       key === 'WHATSAPP_IMPORT_ROOT' ? root : undefined,
     ),
   };
+  const mediaStorage = {
+    write: vi.fn(),
+    read: vi.fn(),
+    delete: vi.fn(),
+  };
   return {
     root,
     prisma,
-    service: new WhatsAppHistoryImportService(prisma as never, config as never),
+    mediaStorage,
+    service: new WhatsAppHistoryImportService(
+      prisma as never,
+      mediaStorage,
+      config as never,
+    ),
   };
 }
 
@@ -84,5 +102,86 @@ describe('WhatsAppHistoryImportService.create', () => {
         channelId: CHANNEL_ID,
       }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+describe('WhatsAppHistoryImportService media retention', () => {
+  it('stores a ZIP attachment and links it to the imported message', async () => {
+    const { root, prisma, mediaStorage, service } = await setup();
+    const zip = new JSZip();
+    zip.file(
+      'Conversa do WhatsApp com Cliente.txt',
+      '12/08/2026 09:00 - Cliente: foto.jpg (arquivo anexado)',
+    );
+    zip.file('foto.jpg', Buffer.from('imagem'));
+    const content = await zip.generateAsync({ type: 'nodebuffer' });
+    const parsed = await parseWhatsAppExportArchive('cliente.zip', content);
+    const mapping = {
+      archiveId: parsed.archiveId,
+      phoneE164: '5534988888888',
+      contactName: 'Cliente',
+      companySenderName: 'Milenium',
+      state: 'sent-to-human' as const,
+      departmentCode: 'commercial',
+      ownerUsername: null,
+    };
+    const identity = identifyWhatsAppExportMessages(
+      parsed,
+      mapping,
+      '5534999999999',
+    )[0];
+    if (!identity) throw new Error('A mensagem de teste não foi identificada.');
+    const messageId = '55555555-5555-4555-8555-555555555555';
+    const conversationId = '66666666-6666-4666-8666-666666666666';
+    prisma.whatsAppImportExternalRef.findMany.mockResolvedValue([
+      { externalId: identity.externalMessageId, internalId: messageId },
+    ]);
+    prisma.whatsAppMessage.findMany.mockResolvedValue([
+      { id: messageId, conversationId, media: {} },
+    ]);
+    const batchPath = join(root, 'history-batches', COMPANY_ID, COMMAND_ID);
+    await mkdir(batchPath, { recursive: true });
+    await writeFile(join(batchPath, `${parsed.archiveId}.zip`), content);
+
+    await (
+      service as unknown as {
+        retainImportedMedia(
+          manifest: unknown,
+          exports: unknown[],
+          mappings: unknown[],
+        ): Promise<void>;
+      }
+    ).retainImportedMedia(
+      {
+        id: COMMAND_ID,
+        companyId: COMPANY_ID,
+        channelPhoneE164: '5534999999999',
+        archives: [
+          {
+            archiveId: parsed.archiveId,
+            storageFileName: `${parsed.archiveId}.zip`,
+          },
+        ],
+      },
+      [parsed],
+      [mapping],
+    );
+
+    expect(mediaStorage.write).toHaveBeenCalledWith({
+      storageKey: expect.stringMatching(
+        new RegExp(`^v1/${COMPANY_ID}/${conversationId}/${messageId}/`),
+      ),
+      content: Buffer.from('imagem'),
+    });
+    expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: messageId, companyId: COMPANY_ID, conversationId },
+        data: expect.objectContaining({
+          mediaMimeType: 'image/jpeg',
+          mediaOriginalName: 'foto.jpg',
+          mediaSizeBytes: 6,
+        }),
+      }),
+    );
   });
 });

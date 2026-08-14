@@ -102,7 +102,19 @@ export interface CreateHumanOutboundInput {
   idempotencyKey: string;
   expectedVersion: number;
   actorUserId: string;
-  text: string;
+  text?: string;
+  attachment?: {
+    messageId: string;
+    kind: Extract<
+      MessageKind,
+      'image' | 'document' | 'audio' | 'video' | 'contact'
+    >;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    sha256: string;
+    storageKey: string;
+  };
 }
 
 export interface ClaimEvolutionDispatchInput {

@@ -1,26 +1,32 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import JSZip from 'jszip';
 
+import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
 import { notFound, validationError } from '../../core/errors/app-error';
+import { MessageKind, Prisma } from '../database/prisma/generated/client';
 import { PrismaService } from '../database/prisma/prisma.service';
 import {
   DEFAULT_WHATSAPP_EXPORT_LIMITS,
   normalizeBrazilianPhone,
   parseWhatsAppExportArchive,
+  WHATSAPP_EXPORT_SOURCE_SYSTEM,
   type ParsedWhatsAppExport,
   type WhatsAppExportParserLimits,
 } from './whatsapp-export-parser';
 import {
   createWhatsAppImportWorkbook,
+  identifyWhatsAppExportMessages,
   WHATSAPP_HISTORY_STATE_OPTIONS,
   type WhatsAppHistoryConversationMapping,
   type WhatsAppHistoryStateOption,
 } from './whatsapp-export-workbook';
 import { WhatsAppImportService } from './whatsapp-import.service';
+import { emptyImportCounts } from './whatsapp-import.types';
 
 const MANIFEST_VERSION = '1.0';
 const MANIFEST_FILE = 'manifest.json';
@@ -37,6 +43,18 @@ const IMPORT_DEPARTMENTS = new Set([
   'monitoring',
   'operations',
 ]);
+const EXTERNAL_REFERENCE_CHUNK_SIZE = 250;
+
+const MESSAGE_KIND_BY_EXPORT = {
+  text: MessageKind.TEXT,
+  image: MessageKind.IMAGE,
+  document: MessageKind.DOCUMENT,
+  audio: MessageKind.AUDIO,
+  video: MessageKind.VIDEO,
+  sticker: MessageKind.STICKER,
+  contact: MessageKind.CONTACT,
+  unknown: MessageKind.UNKNOWN,
+} as const;
 
 interface StoredArchive {
   archiveId: string;
@@ -207,6 +225,7 @@ export class WhatsAppHistoryImportService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly mediaStorage: WhatsAppMediaStorage,
     config: ConfigService,
   ) {
     this.root = resolve(
@@ -427,7 +446,24 @@ export class WhatsAppHistoryImportService {
       if (!Number.isFinite(cutoffAt.getTime())) {
         throw validationError('Informe uma data de corte válida.');
       }
-      const generated = await this.generateWorkbook(manifest);
+      const loaded = await this.loadExports(manifest);
+      const previouslyImported = await this.previouslyImportedArchives(
+        companyId,
+        loaded.exports,
+        loaded.mappings,
+        manifest.channelPhoneE164,
+      );
+      const exportsToImport = loaded.exports.filter(
+        (parsed) => !previouslyImported.has(parsed.archiveId),
+      );
+      const mappingsToImport = loaded.mappings.filter(
+        (mapping) => !previouslyImported.has(mapping.archiveId),
+      );
+      const generated = await createWhatsAppImportWorkbook(
+        exportsToImport,
+        mappingsToImport,
+        manifest.channelPhoneE164,
+      );
       const packagePath = resolve(
         this.batchPath(companyId, batchId),
         'package',
@@ -451,13 +487,34 @@ export class WhatsAppHistoryImportService {
         cutoffAt,
         confirmation: `APPLY:${batchId}`,
       };
-      const validation = await importer.validate(importInput);
-      if (!validation.valid) {
-        throw validationError(
-          'A revisão final encontrou dados inválidos. Corrija as conversas antes de importar.',
-        );
+      let result: Awaited<ReturnType<WhatsAppImportService['apply']>>;
+      if (exportsToImport.length === 0) {
+        result = {
+          schemaVersion: '1.0',
+          mode: 'apply',
+          batchId,
+          status: 'applied',
+          idempotentReplay: true,
+          counts: emptyImportCounts(),
+          outboxCreatedByImporter: 0,
+        };
+      } else {
+        const validation = await importer.validate(importInput);
+        if (!validation.valid) {
+          const details = validation.issues
+            .filter((issue) => issue.severity === 'error')
+            .slice(0, 3)
+            .map((issue) => issue.message.trim())
+            .filter(Boolean)
+            .join(' ');
+          throw validationError(
+            details ||
+              'A revisão final encontrou dados inválidos. Corrija as conversas antes de importar.',
+          );
+        }
+        result = await importer.apply(importInput);
       }
-      const result = await importer.apply(importInput);
+      await this.retainImportedMedia(manifest, loaded.exports, loaded.mappings);
       manifest.status = 'applied';
       manifest.appliedAt = new Date().toISOString();
       manifest.updatedAt = manifest.appliedAt;
@@ -467,6 +524,18 @@ export class WhatsAppHistoryImportService {
   }
 
   private async generateWorkbook(manifest: StoredManifest) {
+    const loaded = await this.loadExports(manifest);
+    return createWhatsAppImportWorkbook(
+      loaded.exports,
+      loaded.mappings,
+      manifest.channelPhoneE164,
+    );
+  }
+
+  private async loadExports(manifest: StoredManifest): Promise<{
+    readonly exports: ParsedWhatsAppExport[];
+    readonly mappings: WhatsAppHistoryConversationMapping[];
+  }> {
     const incomplete = manifest.archives.filter(
       (archive) => mappingIssues(archive, archive.mapping).length > 0,
     );
@@ -509,13 +578,229 @@ export class WhatsAppHistoryImportService {
       }
       exports.push(parsed);
     }
-    return createWhatsAppImportWorkbook(
+    return {
       exports,
-      manifest.archives.map(
+      mappings: manifest.archives.map(
         (archive) => archive.mapping as WhatsAppHistoryConversationMapping,
       ),
-      manifest.channelPhoneE164,
+    };
+  }
+
+  private async previouslyImportedArchives(
+    companyId: string,
+    exports: readonly ParsedWhatsAppExport[],
+    mappings: readonly WhatsAppHistoryConversationMapping[],
+    channelPhoneE164: string,
+  ): Promise<ReadonlySet<string>> {
+    const mappingByArchive = new Map(
+      mappings.map((mapping) => [mapping.archiveId, mapping]),
     );
+    const identitiesByArchive = new Map<string, readonly string[]>();
+    const externalIds: string[] = [];
+
+    for (const parsed of exports) {
+      const mapping = mappingByArchive.get(parsed.archiveId);
+      if (!mapping) continue;
+      const identities = identifyWhatsAppExportMessages(
+        parsed,
+        mapping,
+        channelPhoneE164,
+      ).map((identity) => identity.externalMessageId);
+      identitiesByArchive.set(parsed.archiveId, identities);
+      externalIds.push(...identities);
+    }
+
+    const importedIds = new Set<string>();
+    for (
+      let offset = 0;
+      offset < externalIds.length;
+      offset += EXTERNAL_REFERENCE_CHUNK_SIZE
+    ) {
+      const references = await this.prisma.whatsAppImportExternalRef.findMany({
+        where: {
+          companyId,
+          entityType: 'message',
+          sourceSystem: WHATSAPP_EXPORT_SOURCE_SYSTEM,
+          externalId: {
+            in: externalIds.slice(
+              offset,
+              offset + EXTERNAL_REFERENCE_CHUNK_SIZE,
+            ),
+          },
+        },
+        select: { externalId: true },
+      });
+      references.forEach((reference) => importedIds.add(reference.externalId));
+    }
+
+    return new Set(
+      [...identitiesByArchive.entries()]
+        .filter(
+          ([, identities]) =>
+            identities.length > 0 &&
+            identities.every((externalId) => importedIds.has(externalId)),
+        )
+        .map(([archiveId]) => archiveId),
+    );
+  }
+
+  private async retainImportedMedia(
+    manifest: StoredManifest,
+    exports: readonly ParsedWhatsAppExport[],
+    mappings: readonly WhatsAppHistoryConversationMapping[],
+  ): Promise<void> {
+    const mappingByArchive = new Map(
+      mappings.map((mapping) => [mapping.archiveId, mapping]),
+    );
+
+    for (const parsed of exports) {
+      const mapping = mappingByArchive.get(parsed.archiveId);
+      const storedArchive = manifest.archives.find(
+        (archive) => archive.archiveId === parsed.archiveId,
+      );
+      if (!mapping || !storedArchive) continue;
+      const identities = identifyWhatsAppExportMessages(
+        parsed,
+        mapping,
+        manifest.channelPhoneE164,
+      ).filter((identity) => identity.message.attachment?.entryName);
+      if (identities.length === 0) continue;
+
+      const references = new Map<string, string>();
+      const externalIds = identities.map(
+        (identity) => identity.externalMessageId,
+      );
+      for (
+        let offset = 0;
+        offset < externalIds.length;
+        offset += EXTERNAL_REFERENCE_CHUNK_SIZE
+      ) {
+        const rows = await this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: manifest.companyId,
+            entityType: 'message',
+            sourceSystem: WHATSAPP_EXPORT_SOURCE_SYSTEM,
+            externalId: {
+              in: externalIds.slice(
+                offset,
+                offset + EXTERNAL_REFERENCE_CHUNK_SIZE,
+              ),
+            },
+          },
+          select: { externalId: true, internalId: true },
+        });
+        rows.forEach((row) => references.set(row.externalId, row.internalId));
+      }
+
+      const messageIds = [...references.values()];
+      const messages = new Map<
+        string,
+        { id: string; conversationId: string; media: Prisma.JsonValue | null }
+      >();
+      for (
+        let offset = 0;
+        offset < messageIds.length;
+        offset += EXTERNAL_REFERENCE_CHUNK_SIZE
+      ) {
+        const rows = await this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId: manifest.companyId,
+            id: {
+              in: messageIds.slice(
+                offset,
+                offset + EXTERNAL_REFERENCE_CHUNK_SIZE,
+              ),
+            },
+          },
+          select: { id: true, conversationId: true, media: true },
+        });
+        rows.forEach((row) => messages.set(row.id, row));
+      }
+
+      const archivePath = resolve(
+        this.batchPath(manifest.companyId, manifest.id),
+        storedArchive.storageFileName,
+      );
+      assertInside(
+        this.batchPath(manifest.companyId, manifest.id),
+        archivePath,
+      );
+      const zip = await JSZip.loadAsync(await readFile(archivePath), {
+        checkCRC32: true,
+      });
+      const extracted = new Map<string, Buffer>();
+
+      for (const identity of identities) {
+        const attachment = identity.message.attachment;
+        const entryName = attachment?.entryName;
+        const messageId = references.get(identity.externalMessageId);
+        const message = messageId ? messages.get(messageId) : undefined;
+        if (!attachment || !entryName || !message) continue;
+
+        let content = extracted.get(entryName);
+        if (!content) {
+          const entry = zip.file(entryName);
+          if (!entry) continue;
+          content = await entry.async('nodebuffer');
+          extracted.set(entryName, content);
+        }
+        if (content.byteLength < 1 || content.byteLength > 2_147_483_647) {
+          throw validationError(
+            `O arquivo ${attachment.fileName} possui tamanho inválido.`,
+          );
+        }
+        if (
+          attachment.sizeBytes !== null &&
+          attachment.sizeBytes !== content.byteLength
+        ) {
+          throw validationError(
+            `O arquivo ${attachment.fileName} está incompleto no backup.`,
+          );
+        }
+
+        const sha256 = createHash('sha256').update(content).digest('hex');
+        const storageKey = [
+          'v1',
+          manifest.companyId,
+          message.conversationId,
+          message.id,
+          sha256,
+        ].join('/');
+        await this.mediaStorage.write({ storageKey, content });
+        const currentMedia =
+          message.media &&
+          typeof message.media === 'object' &&
+          !Array.isArray(message.media)
+            ? message.media
+            : {};
+        await this.prisma.whatsAppMessage.updateMany({
+          where: {
+            id: message.id,
+            companyId: manifest.companyId,
+            conversationId: message.conversationId,
+          },
+          data: {
+            kind: MESSAGE_KIND_BY_EXPORT[attachment.kind],
+            media: {
+              ...currentMedia,
+              reference: `whatsapp-export://${parsed.archiveId}/${encodeURIComponent(
+                attachment.fileName,
+              )}`,
+              mimeType: attachment.mimeType,
+              size: content.byteLength,
+              fileName: attachment.fileName,
+              retentionStatus: 'stored',
+            },
+            mediaStorageKey: storageKey,
+            mediaMimeType: attachment.mimeType,
+            mediaSizeBytes: content.byteLength,
+            mediaOriginalName: attachment.fileName,
+            mediaSha256: sha256,
+            mediaStoredAt: new Date(),
+          },
+        });
+      }
+    }
   }
 
   private storedArchive(

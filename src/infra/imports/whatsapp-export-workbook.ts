@@ -39,6 +39,51 @@ export interface GeneratedWhatsAppImportWorkbook {
   attachmentCount: number;
 }
 
+export interface WhatsAppExportMessageIdentity {
+  readonly archiveId: string;
+  readonly externalConversationId: string;
+  readonly externalMessageId: string;
+  readonly outbound: boolean;
+  readonly message: ParsedWhatsAppExport['messages'][number];
+}
+
+export function identifyWhatsAppExportMessages(
+  parsed: ParsedWhatsAppExport,
+  mapping: WhatsAppHistoryConversationMapping,
+  channelPhoneE164: string,
+): readonly WhatsAppExportMessageIdentity[] {
+  const externalConversationId = `chat-export-${deterministicWhatsAppExportId(
+    channelPhoneE164,
+    mapping.phoneE164,
+  )}`;
+  const duplicateOrdinals = new Map<string, number>();
+
+  return parsed.messages.map((message) => {
+    const outbound = message.senderName === mapping.companySenderName;
+    const signature = deterministicWhatsAppExportId(
+      externalConversationId,
+      message.wallClockAt.toISOString(),
+      message.senderName,
+      message.kind,
+      message.text,
+      message.attachment?.fileName,
+    );
+    const ordinal = duplicateOrdinals.get(signature) ?? 0;
+    duplicateOrdinals.set(signature, ordinal + 1);
+
+    return {
+      archiveId: parsed.archiveId,
+      externalConversationId,
+      externalMessageId: `chat-message-${deterministicWhatsAppExportId(
+        signature,
+        ordinal,
+      )}`,
+      outbound,
+      message,
+    };
+  });
+}
+
 function stateColumns(mapping: WhatsAppHistoryConversationMapping): {
   conversationState: string;
   flowStep: string;
@@ -164,23 +209,12 @@ export async function createWhatsAppImportWorkbook(
       }),
     );
 
-    const duplicateOrdinals = new Map<string, number>();
-    for (const message of parsed.messages) {
-      const outbound = message.senderName === mapping.companySenderName;
-      const signature = deterministicWhatsAppExportId(
-        externalConversationId,
-        message.wallClockAt.toISOString(),
-        message.senderName,
-        message.kind,
-        message.text,
-        message.attachment?.fileName,
-      );
-      const ordinal = duplicateOrdinals.get(signature) ?? 0;
-      duplicateOrdinals.set(signature, ordinal + 1);
-      const externalMessageId = `chat-message-${deterministicWhatsAppExportId(
-        signature,
-        ordinal,
-      )}`;
+    for (const identity of identifyWhatsAppExportMessages(
+      parsed,
+      mapping,
+      channelPhoneE164,
+    )) {
+      const { externalMessageId, message, outbound } = identity;
       const mediaReference = message.attachment
         ? `whatsapp-export://${parsed.archiveId}/${encodeURIComponent(
             message.attachment.fileName,
