@@ -19,7 +19,8 @@ RUN npm ci --omit=dev --omit=optional --omit=peer && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
 
-RUN mkdir -p /app/var/whatsapp-media && chown -R node:node /app/var
+RUN mkdir -p /app/var/whatsapp-media /app/var/imports/whatsapp \
+  && chown -R node:node /app/var
 
 USER node
 EXPOSE 3333
