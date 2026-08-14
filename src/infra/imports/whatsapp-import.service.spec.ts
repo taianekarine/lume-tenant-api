@@ -11,7 +11,10 @@ import {
   UserAccountStatus,
 } from '../database/prisma/generated/client';
 import type { PrismaService } from '../database/prisma/prisma.service';
-import { WhatsAppImportService } from './whatsapp-import.service';
+import {
+  importedMediaMetadata,
+  WhatsAppImportService,
+} from './whatsapp-import.service';
 import {
   CONVERSATION_HEADERS,
   DOCUMENT_HEADERS,
@@ -470,6 +473,26 @@ describe('WhatsAppImportService.validate', () => {
 });
 
 describe('WhatsAppImportService.apply', () => {
+  it('marca anexos de exportação sem binário retido como indisponíveis', () => {
+    expect(
+      importedMediaMetadata(
+        'whatsapp-export://arquivo/foto%20da%20viagem.jpg',
+        'mensagem-001',
+      ),
+    ).toEqual({
+      legacyReference: 'whatsapp-export://arquivo/foto%20da%20viagem.jpg',
+      legacyCorrelationId: 'mensagem-001',
+      fileName: 'foto da viagem.jpg',
+      retentionStatus: 'unavailable',
+    });
+  });
+
+  it('preserva referências legadas de outros importadores sem alterar a retenção', () => {
+    expect(importedMediaMetadata('legacy://media/001', null)).toEqual({
+      legacyReference: 'legacy://media/001',
+    });
+  });
+
   it('permite tempo suficiente para persistir históricos extensos', async () => {
     const fixture = await packageWithRows({
       conversations: [conversationRow('legacy-large-history')],
