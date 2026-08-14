@@ -15,6 +15,25 @@ A Tenant API é a única responsável pelo fluxo de WhatsApp. O módulo concentr
 O Tenant Web consome somente os endpoints autenticados da Tenant API. Segredos
 da Evolution e dos provedores de IA permanecem no servidor.
 
+## Importação de históricos
+
+O subfluxo `whatsapp/history-imports` recebe backups ZIP exportados pelo
+WhatsApp, mantém um manifesto privado por empresa e gera uma planilha no
+contrato do importador oficial. Todas as rotas exigem
+`whatsapp-conversations:manage`:
+
+- `GET /channels`: canais disponíveis no tenant;
+- `POST /`: inicia um lote idempotente por `commandId`;
+- `GET /:batchId`: consulta totais, erros e revisões;
+- `POST /:batchId/archives`: valida um ZIP por vez;
+- `PATCH /:batchId/archives/:archiveId`: confirma identidade e estado;
+- `GET /:batchId/workbook`: baixa a planilha consolidada;
+- `POST /:batchId/apply`: valida e aplica pelo importador existente.
+
+O lote não dispara respostas, IA, menus ou outbox. Depois da aplicação, as
+conversas passam a usar exatamente as mesmas entidades, transições e regras do
+fluxo corrente.
+
 ## Garantias de processamento
 
 Cada webhook usa o identificador externo e o hash do conteúdo para deduplicação.

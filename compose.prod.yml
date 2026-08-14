@@ -75,6 +75,13 @@ services:
       WHATSAPP_ALLOWED_MIME_TYPES: ${WHATSAPP_ALLOWED_MIME_TYPES:-image/jpeg,image/png,image/webp,image/gif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/octet-stream,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/wav,video/mp4,video/webm,video/quicktime}
       WHATSAPP_MEDIA_STORAGE_DRIVER: filesystem
       WHATSAPP_MEDIA_STORAGE_PATH: /app/var/whatsapp-media
+      WHATSAPP_IMPORT_ROOT: /app/var/imports/whatsapp
+      WHATSAPP_HISTORY_IMPORT_MAX_ARCHIVES: ${WHATSAPP_HISTORY_IMPORT_MAX_ARCHIVES:-5000}
+      WHATSAPP_HISTORY_IMPORT_MAX_ARCHIVE_BYTES: ${WHATSAPP_HISTORY_IMPORT_MAX_ARCHIVE_BYTES:-536870912}
+      WHATSAPP_HISTORY_IMPORT_MAX_ENTRIES: ${WHATSAPP_HISTORY_IMPORT_MAX_ENTRIES:-5000}
+      WHATSAPP_HISTORY_IMPORT_MAX_UNCOMPRESSED_BYTES: ${WHATSAPP_HISTORY_IMPORT_MAX_UNCOMPRESSED_BYTES:-2147483648}
+      WHATSAPP_HISTORY_IMPORT_MAX_TEXT_BYTES: ${WHATSAPP_HISTORY_IMPORT_MAX_TEXT_BYTES:-134217728}
+      WHATSAPP_HISTORY_IMPORT_RETENTION_HOURS: ${WHATSAPP_HISTORY_IMPORT_RETENTION_HOURS:-48}
       WHATSAPP_RETENTION_DAYS: ${WHATSAPP_RETENTION_DAYS:-365}
       WHATSAPP_FOLLOW_UP_INACTIVITY_MS: ${WHATSAPP_FOLLOW_UP_INACTIVITY_MS:-1800000}
       INTEGRATION_RETENTION_DAYS: ${INTEGRATION_RETENTION_DAYS:-90}
@@ -126,6 +133,7 @@ services:
       - "${PORT:-3333}:3333"
     volumes:
       - lume_tenant_whatsapp_media:/app/var/whatsapp-media
+      - lume_tenant_whatsapp_imports:/app/var/imports/whatsapp
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -146,3 +154,4 @@ services:
 volumes:
   lume_tenant_postgres_data:
   lume_tenant_whatsapp_media:
+  lume_tenant_whatsapp_imports:
