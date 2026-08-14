@@ -40,6 +40,10 @@ import {
   validationError,
 } from '../../core/errors/app-error';
 import { normalizeUserDepartment } from '../../domain/access/access.constants';
+import {
+  MAXIMUM_PANEL_ATTACHMENT_BYTES,
+  PANEL_ARCHIVE_MIME_TYPES,
+} from '../../domain/whatsapp/whatsapp-media-policy';
 import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
 import { normalizeWhatsAppPhone } from '../../shared/utils/normalization';
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
@@ -65,17 +69,6 @@ function contentDisposition(fileName: string): string {
       .slice(0, 180) || 'midia-whatsapp';
   return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
-
-const MAXIMUM_PANEL_ATTACHMENT_BYTES = 64 * 1024 * 1024;
-const PANEL_ARCHIVE_MIME_TYPES = [
-  'application/zip',
-  'application/x-zip-compressed',
-  'application/vnd.rar',
-  'application/x-rar',
-  'application/x-rar-compressed',
-  'application/x-7z-compressed',
-  'application/octet-stream',
-] as const;
 
 @ApiTags('Painel WhatsApp')
 @ApiBearerAuth()
@@ -345,7 +338,7 @@ export class WhatsAppPanelController {
       throw validationError('Este formato de arquivo não pode ser enviado.');
     }
     const configuredMaximum =
-      this.config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ??
+      this.config.get<number>('WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES') ??
       MAXIMUM_PANEL_ATTACHMENT_BYTES;
     if (
       file.size > Math.min(configuredMaximum, MAXIMUM_PANEL_ATTACHMENT_BYTES)

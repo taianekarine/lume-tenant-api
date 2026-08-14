@@ -30,7 +30,7 @@ function principal(
   };
 }
 
-function setup() {
+function setup(configOverrides: Readonly<Record<string, unknown>> = {}) {
   const listConversations = vi.fn();
   const queryUseCase = { listConversations };
   const ensureConversation = { execute: vi.fn() };
@@ -52,6 +52,8 @@ function setup() {
       WHATSAPP_ALLOWED_MIME_TYPES:
         'image/jpeg,image/png,image/webp,application/pdf,text/vcard,text/x-vcard',
       WHATSAPP_MAX_ATTACHMENT_BYTES: 67_108_864,
+      WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES: 104_857_600,
+      ...configOverrides,
     }),
   );
 
@@ -182,6 +184,41 @@ describe('WhatsAppPanelController dashboard indicators', () => {
 });
 
 describe('WhatsAppPanelController media messages', () => {
+  it('uses the panel limit instead of the smaller inbound retention limit', async () => {
+    const { controller, createHumanOutbound } = setup({
+      WHATSAPP_MAX_ATTACHMENT_BYTES: 2,
+      WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES: 8,
+    });
+    createHumanOutbound.execute.mockResolvedValue({
+      message: { id: 'archive' },
+    });
+
+    await controller.createMediaMessage(
+      principal({ permissions: ['whatsapp-conversations:manage'] }),
+      '00000000-0000-4000-8000-000000000003',
+      {
+        commandId: '00000000-0000-4000-8000-000000000010',
+        idempotencyKey: '00000000-0000-4000-8000-000000000011',
+        expectedVersion: 4,
+      },
+      {
+        originalname: 'historico.zip',
+        mimetype: 'application/zip',
+        size: 4,
+        buffer: Buffer.from('zip!'),
+      },
+    );
+
+    expect(createHumanOutbound.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachment: expect.objectContaining({
+          fileName: 'historico.zip',
+          sizeBytes: 4,
+        }),
+      }),
+    );
+  });
+
   it('stores and creates a human image message with its caption', async () => {
     const { controller, createHumanOutbound, mediaStorage } = setup();
     createHumanOutbound.execute.mockResolvedValue({

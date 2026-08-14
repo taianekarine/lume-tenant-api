@@ -726,6 +726,11 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
       'WHATSAPP_MAX_ATTACHMENT_BYTES',
       52_428_800,
     ),
+    WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES: positiveInteger(
+      config,
+      'WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES',
+      104_857_600,
+    ),
     WHATSAPP_ALLOWED_MIME_TYPES: optionalString(
       config,
       'WHATSAPP_ALLOWED_MIME_TYPES',
