@@ -47,7 +47,7 @@ function setup() {
     mediaStorage,
     new ConfigService({
       WHATSAPP_ALLOWED_MIME_TYPES:
-        'image/jpeg,image/png,application/pdf,text/vcard,text/x-vcard',
+        'image/jpeg,image/png,image/webp,application/pdf,text/vcard,text/x-vcard',
       WHATSAPP_MAX_ATTACHMENT_BYTES: 67_108_864,
     }),
   );
@@ -209,6 +209,39 @@ describe('WhatsAppPanelController media messages', () => {
     ).rejects.toThrow('persistence failed');
     expect(mediaStorage.delete).toHaveBeenCalledWith(
       expect.stringContaining('/00000000-0000-4000-8000-000000000003/'),
+    );
+  });
+
+  it('persists a WebP selected explicitly as a sticker', async () => {
+    const { controller, createHumanOutbound } = setup();
+    createHumanOutbound.execute.mockResolvedValue({
+      message: { id: 'sticker' },
+    });
+
+    await controller.createMediaMessage(
+      principal({ permissions: ['whatsapp-conversations:manage'] }),
+      '00000000-0000-4000-8000-000000000003',
+      {
+        commandId: '00000000-0000-4000-8000-000000000010',
+        idempotencyKey: '00000000-0000-4000-8000-000000000011',
+        expectedVersion: 4,
+        mediaKind: 'sticker',
+      },
+      {
+        originalname: 'figurinha.webp',
+        mimetype: 'image/webp',
+        size: 4,
+        buffer: Buffer.from('webp'),
+      },
+    );
+
+    expect(createHumanOutbound.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachment: expect.objectContaining({
+          kind: 'sticker',
+          mimeType: 'image/webp',
+        }),
+      }),
     );
   });
 });

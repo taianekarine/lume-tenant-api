@@ -10,6 +10,7 @@ import {
 } from '../../application/use-cases/whatsapp/whatsapp.use-cases';
 import { EvolutionWebhookService } from '../../infra/integrations/evolution/evolution-webhook.service';
 import { EvolutionMediaContentService } from '../../infra/integrations/evolution/evolution-media-content.service';
+import { EvolutionProfilePictureService } from '../../infra/integrations/evolution/evolution-profile-picture.service';
 import { HttpEvolutionOutboundGateway } from '../../infra/integrations/evolution/evolution-outbound.client';
 import { ApiWhatsAppAutomationProvider } from '../../infra/integrations/whatsapp/api-whatsapp-automation.provider';
 import { WhatsAppAutomationDecisionStore } from '../../infra/integrations/whatsapp/whatsapp-automation-decision.store';
@@ -37,6 +38,7 @@ import { WhatsAppHistoryImportController } from './whatsapp-history-import.contr
   providers: [
     EvolutionWebhookService,
     EvolutionMediaContentService,
+    EvolutionProfilePictureService,
     FileSystemWhatsAppMediaStorage,
     {
       provide: WhatsAppMediaStorage,

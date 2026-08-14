@@ -836,8 +836,14 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             companyId: input.channel.companyId,
             phoneNormalized: input.phoneNormalized,
             displayName: input.displayName,
+            profilePictureUrl: input.profilePictureUrl,
           },
-          update: input.displayName ? { displayName: input.displayName } : {},
+          update: {
+            ...(input.displayName ? { displayName: input.displayName } : {}),
+            ...(input.profilePictureUrl
+              ? { profilePictureUrl: input.profilePictureUrl }
+              : {}),
+          },
         });
 
         // Serializa o primeiro contato por tenant/canal/contato. O índice
@@ -6058,12 +6064,32 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       select: { id: true },
     });
     if (!conversation) throw notFound('Conversa');
-    const where = {
+    const search = query.search?.trim();
+    const where: Prisma.WhatsAppMessageWhereInput = {
       companyId,
       conversationId,
-      OR: [
-        { automationPurpose: null },
-        { automationPurpose: { not: 'department-notification' } },
+      AND: [
+        {
+          OR: [
+            { automationPurpose: null },
+            { automationPurpose: { not: 'department-notification' } },
+          ],
+        },
+        ...(search
+          ? [
+              {
+                OR: [
+                  { text: { contains: search, mode: 'insensitive' as const } },
+                  {
+                    mediaOriginalName: {
+                      contains: search,
+                      mode: 'insensitive' as const,
+                    },
+                  },
+                ],
+              },
+            ]
+          : []),
       ],
     };
     const [rows, total] = await this.prisma.$transaction([

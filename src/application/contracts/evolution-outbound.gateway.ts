@@ -27,10 +27,18 @@ export interface EvolutionOutboundMediaInput extends EvolutionOutboundBaseInput 
   readonly caption?: string;
 }
 
+export interface EvolutionOutboundStickerInput extends EvolutionOutboundBaseInput {
+  readonly kind: 'sticker';
+  readonly fileName: string;
+  readonly mimeType: 'image/webp';
+  readonly content: Buffer;
+}
+
 export type EvolutionOutboundInput =
   | EvolutionOutboundTextInput
   | EvolutionOutboundDocumentInput
-  | EvolutionOutboundMediaInput;
+  | EvolutionOutboundMediaInput
+  | EvolutionOutboundStickerInput;
 
 export interface EvolutionOutboundConfirmedResult {
   readonly outcome: 'confirmed';

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { WhatsAppRepository } from '../../../application/contracts/whatsapp.repository';
 import type { EvolutionMediaContentService } from './evolution-media-content.service';
+import type { EvolutionProfilePictureService } from './evolution-profile-picture.service';
 import { EvolutionWebhookService } from './evolution-webhook.service';
 
 const secret = 'webhook-secret-with-enough-entropy';
@@ -38,9 +39,13 @@ function createSubject() {
       messageId,
     })),
   };
+  const profilePictures = {
+    get: vi.fn(async () => 'https://media.example.test/profile.jpg'),
+  };
   const subject = new EvolutionWebhookService(
     repository as unknown as WhatsAppRepository,
     mediaContent as unknown as EvolutionMediaContentService,
+    profilePictures as unknown as EvolutionProfilePictureService,
     new ConfigService({
       EVOLUTION_WEBHOOK_SECRET: secret,
       WHATSAPP_MAX_ATTACHMENT_BYTES: 52_428_800,
@@ -48,7 +53,7 @@ function createSubject() {
         'image/jpeg,audio/ogg,video/mp4,application/pdf',
     }),
   );
-  return { subject, repository, mediaContent };
+  return { subject, repository, mediaContent, profilePictures };
 }
 
 function videoWebhook(size: number, mimeType = 'video/mp4') {
@@ -98,6 +103,7 @@ describe('EvolutionWebhookService media retention metadata', () => {
       expect(repository.persistInbound).toHaveBeenCalledWith(
         expect.objectContaining({
           kind: 'video',
+          profilePictureUrl: 'https://media.example.test/profile.jpg',
           media: expect.objectContaining({
             mimeType: 'video/mp4',
             size,

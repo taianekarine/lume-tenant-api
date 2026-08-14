@@ -28,6 +28,11 @@ export const DEPARTMENT_CONTACT_PROMPT =
   'Para prosseguir, informe seu nome e o motivo do seu contato em uma única mensagem';
 
 export const DEPARTMENT_CONTACTS = {
+  'commercial-continuous-director': {
+    label: 'Diretoria',
+    departmentPhoneEnv: 'MILENIUM_DIRECTOR_PHONE',
+    targetDepartment: 'management',
+  },
   '2': {
     label: 'Compras (Fornecedores)',
     departmentPhoneEnv: 'MILENIUM_DEPARTMENT_PURCHASES_PHONE',
@@ -107,7 +112,6 @@ export const QUOTE_CONFIRMATION_MESSAGE =
   'Orçamento confirmado. Encaminhei sua solicitação ao time Comercial. No próximo contato, você receberá o menu de acompanhamento da solicitação.';
 
 export const HUMAN_REASON_BY_OPTION: Readonly<Record<string, string>> = {
-  '2': 'continuous-quote-requested',
   '3': 'commercial-question-or-change',
   '4': 'commercial-follow-up',
   '5': 'commercial-documents',
@@ -754,6 +758,23 @@ function decideCommercialMenu(messageText: string): AutomationPlan {
 
   if (option === '1') {
     return aiPlan('eventual-quote', 'start-quote', 'start-eventual-quote');
+  }
+
+  if (option === '2') {
+    const directorContact =
+      DEPARTMENT_CONTACTS['commercial-continuous-director'];
+    return {
+      kind: 'static-reply',
+      responseMessage: DEPARTMENT_CONTACT_PROMPT,
+      transitionBeforeAi: 'start-department-contact',
+      transitionAfterSend: null,
+      transitionMetadata: {
+        targetDepartment: directorContact.targetDepartment,
+        departmentOption: 'commercial-continuous-director',
+      },
+      aiMode: null,
+      reason: 'continuous-quote-director-contact-requested',
+    };
   }
 
   if (HUMAN_REASON_BY_OPTION[option]) {

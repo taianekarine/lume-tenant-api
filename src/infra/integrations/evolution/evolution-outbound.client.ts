@@ -104,7 +104,28 @@ export class HttpEvolutionOutboundGateway extends EvolutionOutboundGateway {
 
     if (input.kind === 'text') return this.sendText(input);
     if (input.kind === 'document') return this.sendDocument(input);
+    if (input.kind === 'sticker') return this.sendSticker(input);
     return this.sendMedia(input);
+  }
+
+  private async sendSticker(
+    input: Extract<EvolutionOutboundInput, { kind: 'sticker' }>,
+  ): Promise<EvolutionOutboundResult> {
+    return this.sendOnce(
+      `${this.baseUrl}/message/sendSticker/${encodeURIComponent(this.instanceName)}`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: this.apiKey,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          number: input.recipientPhone,
+          sticker: `data:${input.mimeType};base64,${input.content.toString('base64')}`,
+        }),
+      },
+      this.documentTimeoutMs,
+    );
   }
 
   private async sendText(

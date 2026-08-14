@@ -25,6 +25,7 @@ export interface PersistInboundInput {
   payloadHash: string;
   phoneNormalized: string;
   displayName?: string;
+  profilePictureUrl?: string;
   occurredAt: Date;
   kind: MessageKind;
   text?: string;
@@ -107,7 +108,7 @@ export interface CreateHumanOutboundInput {
     messageId: string;
     kind: Extract<
       MessageKind,
-      'image' | 'document' | 'audio' | 'video' | 'contact'
+      'image' | 'document' | 'audio' | 'video' | 'contact' | 'sticker'
     >;
     fileName: string;
     mimeType: string;
@@ -189,6 +190,7 @@ export interface ConversationListQuery {
 export interface MessageListQuery {
   page: number;
   pageSize: number;
+  search?: string;
 }
 
 export interface TransitionListQuery {
