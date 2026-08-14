@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DepartmentCode,
+  Prisma,
   UserAccountStatus,
 } from '../database/prisma/generated/client';
 import type { PrismaService } from '../database/prisma/prisma.service';
@@ -465,5 +466,53 @@ describe('WhatsAppImportService.validate', () => {
       conversationsToCreate: 1,
     });
     expect(writeAttempt).not.toHaveBeenCalled();
+  });
+});
+
+describe('WhatsAppImportService.apply', () => {
+  it('permite tempo suficiente para persistir históricos extensos', async () => {
+    const fixture = await packageWithRows({
+      conversations: [conversationRow('legacy-large-history')],
+    });
+    const prisma = readOnlyPrisma(vi.fn());
+    const transactionError = new Error('transação de teste iniciada');
+    const transaction = vi.fn().mockRejectedValue(transactionError);
+    Object.assign(prisma.user, {
+      findFirstOrThrow: vi.fn().mockResolvedValue({ id: 'actor' }),
+    });
+    Object.assign(prisma.integrationOutbox, {
+      count: vi.fn().mockResolvedValue(0),
+    });
+    Object.assign(prisma, {
+      whatsAppImportBatch: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      whatsAppImportRecord: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+      $transaction: transaction,
+    });
+    const service = new WhatsAppImportService(prisma, fixture.root);
+
+    await expect(
+      service.apply({
+        companyId: testCompanyId,
+        channelId: testChannelId,
+        actorUsername: 'admin',
+        batchName: 'batch-large-history',
+        batchId: '00000000-0000-4000-8000-000000000004',
+        packagePath: fixture.packagePath,
+        cutoffAt: new Date('2026-07-30T00:00:00.000Z'),
+        confirmation: 'APPLY:00000000-0000-4000-8000-000000000004',
+      }),
+    ).rejects.toBe(transactionError);
+
+    expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 10_000,
+      timeout: 120_000,
+    });
   });
 });
