@@ -60,6 +60,44 @@ describe('UpdateUserUseCase', () => {
     ]);
   });
 
+  it('keeps a document-only candidate editable and promotes it to collaborator', async () => {
+    const candidate = await create.execute({
+      companyId: store.companies[0].id,
+      name: 'Jean Candidato',
+      username: 'jean.candidato',
+      email: 'jean@empresa.test',
+      password: 'OutraSenha@2026',
+      documentAccessMode: 'document-portal',
+      departments: [],
+      permissionCodes: [],
+    });
+
+    await expect(
+      useCase.execute({
+        companyId: store.companies[0].id,
+        userId: candidate.id,
+        name: 'Jean Atualizado',
+      }),
+    ).resolves.toMatchObject({
+      name: 'Jean Atualizado',
+      documentAccessMode: 'document-portal',
+    });
+
+    await expect(
+      useCase.execute({
+        companyId: store.companies[0].id,
+        userId: candidate.id,
+        documentAccessMode: 'standard',
+        departments: ['commercial'],
+        permissionCodes: ['commercial:view'],
+      }),
+    ).resolves.toMatchObject({
+      documentAccessMode: 'standard',
+      departments: ['commercial'],
+      permissionCodes: ['commercial:view'],
+    });
+  });
+
   it('rejects keeping an incompatible permission while changing department', async () => {
     const created = await create.execute({
       companyId: store.companies[0].id,

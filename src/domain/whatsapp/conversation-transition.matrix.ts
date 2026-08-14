@@ -324,7 +324,6 @@ export function resolveConversationTransition(
       };
 
     case 'take-over':
-      assertOpen(current);
       return {
         ...current,
         conversationState: 'human-active',

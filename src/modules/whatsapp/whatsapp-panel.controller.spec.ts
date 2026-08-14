@@ -33,6 +33,8 @@ function principal(
 function setup() {
   const listConversations = vi.fn();
   const queryUseCase = { listConversations };
+  const ensureConversation = { execute: vi.fn() };
+  const transition = { execute: vi.fn() };
   const createHumanOutbound = { execute: vi.fn() };
   const mediaStorage = {
     read: vi.fn().mockResolvedValue(Buffer.alloc(0)),
@@ -41,7 +43,8 @@ function setup() {
   };
   const controller = new WhatsAppPanelController(
     queryUseCase as unknown as QueryWhatsAppUseCase,
-    {} as never,
+    ensureConversation as never,
+    transition as never,
     createHumanOutbound as never,
     {} as never,
     mediaStorage,
@@ -55,10 +58,46 @@ function setup() {
   return {
     controller,
     listConversations,
+    ensureConversation,
+    transition,
     createHumanOutbound,
     mediaStorage,
   };
 }
+
+describe('WhatsAppPanelController start conversation', () => {
+  it('reuses the canonical conversation and assigns the current attendant', async () => {
+    const { controller, ensureConversation, transition } = setup();
+    ensureConversation.execute.mockResolvedValue({
+      id: '00000000-0000-4000-8000-000000000003',
+      version: 7,
+      conversationState: 'closed',
+      assignedTo: null,
+    });
+    transition.execute.mockResolvedValue({
+      id: '00000000-0000-4000-8000-000000000003',
+      version: 8,
+      conversationState: 'human-active',
+    });
+
+    await controller.startConversation(principal(), {
+      commandId: '00000000-0000-4000-8000-000000000010',
+      phone: '(34) 99999-9999',
+    });
+
+    expect(ensureConversation.execute).toHaveBeenCalledWith(
+      '00000000-0000-4000-8000-000000000002',
+      '5534999999999',
+    );
+    expect(transition.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'take-over',
+        expectedVersion: 7,
+        actorUserId: '00000000-0000-4000-8000-000000000001',
+      }),
+    );
+  });
+});
 
 describe('WhatsAppPanelController dashboard indicators', () => {
   it('forces the authenticated user department when none is informed', () => {
@@ -240,6 +279,39 @@ describe('WhatsAppPanelController media messages', () => {
         attachment: expect.objectContaining({
           kind: 'sticker',
           mimeType: 'image/webp',
+        }),
+      }),
+    );
+  });
+
+  it('accepts a RAR document even when the deployment allow-list is older', async () => {
+    const { controller, createHumanOutbound } = setup();
+    createHumanOutbound.execute.mockResolvedValue({
+      message: { id: 'archive' },
+    });
+
+    await controller.createMediaMessage(
+      principal({ permissions: ['whatsapp-conversations:manage'] }),
+      '00000000-0000-4000-8000-000000000003',
+      {
+        commandId: '00000000-0000-4000-8000-000000000010',
+        idempotencyKey: '00000000-0000-4000-8000-000000000011',
+        expectedVersion: 4,
+      },
+      {
+        originalname: 'documentos.rar',
+        mimetype: 'application/vnd.rar',
+        size: 4,
+        buffer: Buffer.from('rar!'),
+      },
+    );
+
+    expect(createHumanOutbound.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachment: expect.objectContaining({
+          kind: 'document',
+          fileName: 'documentos.rar',
+          mimeType: 'application/vnd.rar',
         }),
       }),
     );

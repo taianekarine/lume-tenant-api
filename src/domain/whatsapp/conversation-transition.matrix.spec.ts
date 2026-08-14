@@ -346,8 +346,8 @@ describe('matriz MVP de conversas WhatsApp', () => {
     expect(returned.flowStep).toBe('quote-data-collection');
   });
 
-  it('não permite mutar conversa encerrada', () => {
-    expect(() =>
+  it('permite iniciar um novo atendimento humano na conversa encerrada', () => {
+    expect(
       transition(
         {
           ...initial,
@@ -356,7 +356,11 @@ describe('matriz MVP de conversas WhatsApp', () => {
         },
         'take-over',
       ),
-    ).toThrow('encerrada');
+    ).toMatchObject({
+      conversationState: 'human-active',
+      flowStep: 'human-service',
+      resumeFlowStep: 'main-menu',
+    });
   });
 
   it('encerra somente atendimentos cuja proposta foi recusada', () => {

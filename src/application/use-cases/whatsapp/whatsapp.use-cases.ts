@@ -34,6 +34,17 @@ export class TransitionWhatsAppConversationUseCase {
   }
 }
 
+export class EnsureWhatsAppConversationUseCase {
+  constructor(private readonly repository: WhatsAppRepository) {}
+
+  execute(companyId: string, phoneNormalized: string) {
+    return this.repository.ensureConversationForPhone(
+      companyId,
+      phoneNormalized,
+    );
+  }
+}
+
 export class PatchQuoteRequestUseCase {
   constructor(private readonly repository: WhatsAppRepository) {}
   execute(companyId: string, quoteRequestId: string, input: QuoteRequestPatch) {

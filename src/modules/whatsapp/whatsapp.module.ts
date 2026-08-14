@@ -4,6 +4,7 @@ import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media
 import { WhatsAppRepository } from '../../application/contracts/whatsapp.repository';
 import {
   CreateHumanOutboundWhatsAppUseCase,
+  EnsureWhatsAppConversationUseCase,
   QuoteProposalUseCase,
   QueryWhatsAppUseCase,
   TransitionWhatsAppConversationUseCase,
@@ -53,6 +54,12 @@ import { WhatsAppHistoryImportController } from './whatsapp-history-import.contr
     WhatsAppAutomationDispatcher,
     WhatsAppRetentionService,
     WhatsAppHistoryImportService,
+    {
+      provide: EnsureWhatsAppConversationUseCase,
+      useFactory: (repository: WhatsAppRepository) =>
+        new EnsureWhatsAppConversationUseCase(repository),
+      inject: [WhatsAppRepository],
+    },
     {
       provide: TransitionWhatsAppConversationUseCase,
       useFactory: (repository: WhatsAppRepository) =>

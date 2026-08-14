@@ -42,6 +42,18 @@ export class VersionedCommandDto {
   expectedVersion!: number;
 }
 
+export class StartHumanConversationDto {
+  @ApiProperty({ format: 'uuid' })
+  @IsUUID()
+  commandId!: string;
+
+  @ApiProperty({ example: '(34) 99999-9999' })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(30)
+  phone!: string;
+}
+
 export class CloseConversationDto extends VersionedCommandDto {
   @ApiPropertyOptional({
     nullable: true,

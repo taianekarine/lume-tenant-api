@@ -187,6 +187,13 @@ export interface ConversationListQuery {
   search?: string;
 }
 
+export interface EnsureWhatsAppConversationResult {
+  readonly id: string;
+  readonly version: number;
+  readonly conversationState: ConversationState;
+  readonly assignedTo: { readonly id: string; readonly name: string } | null;
+}
+
 export interface MessageListQuery {
   page: number;
   pageSize: number;
@@ -299,6 +306,10 @@ export abstract class WhatsAppRepository {
     input: PersistInboundInput,
   ): Promise<PersistInboundResult>;
   abstract transition(input: TransitionCommand): Promise<unknown>;
+  abstract ensureConversationForPhone(
+    companyId: string,
+    phoneNormalized: string,
+  ): Promise<EnsureWhatsAppConversationResult>;
   abstract patchQuoteRequest(
     companyId: string,
     quoteRequestId: string,
