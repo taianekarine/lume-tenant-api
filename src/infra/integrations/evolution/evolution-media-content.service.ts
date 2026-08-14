@@ -5,6 +5,10 @@ import { ConfigService } from '@nestjs/config';
 
 import { WhatsAppMediaStorage } from '../../../application/contracts/whatsapp-media.storage';
 import {
+  MAXIMUM_PANEL_ATTACHMENT_BYTES,
+  PANEL_ARCHIVE_MIME_TYPES,
+} from '../../../domain/whatsapp/whatsapp-media-policy';
+import {
   AppError,
   conversionNotSupported,
   externalServiceUnavailable,
@@ -249,6 +253,7 @@ export class EvolutionMediaContentService {
   private readonly instanceName: string;
   private readonly apiKey: string;
   private readonly maximumBytes: number;
+  private readonly panelMaximumBytes: number;
   private readonly allowedMimeTypes: ReadonlySet<string>;
   private readonly requestTimeoutMs: number;
 
@@ -265,6 +270,9 @@ export class EvolutionMediaContentService {
     this.apiKey = config.get<string>('EVOLUTION_API_KEY') ?? '';
     this.maximumBytes =
       config.get<number>('WHATSAPP_MAX_ATTACHMENT_BYTES') ?? 52_428_800;
+    this.panelMaximumBytes =
+      config.get<number>('WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES') ??
+      MAXIMUM_PANEL_ATTACHMENT_BYTES;
     this.requestTimeoutMs =
       config.get<number>('EVOLUTION_MEDIA_CONTENT_TIMEOUT_MS') ?? 30_000;
     this.allowedMimeTypes = new Set([
@@ -274,6 +282,7 @@ export class EvolutionMediaContentService {
         .filter(Boolean),
       'text/vcard',
       'text/x-vcard',
+      ...PANEL_ARCHIVE_MIME_TYPES,
     ]);
   }
 
@@ -397,7 +406,8 @@ export class EvolutionMediaContentService {
     if (
       content.byteLength !== message.mediaSizeBytes ||
       content.byteLength < 1 ||
-      content.byteLength > this.maximumBytes ||
+      content.byteLength >
+        Math.max(this.maximumBytes, this.panelMaximumBytes) ||
       digest !== message.mediaSha256 ||
       !this.allowedMimeTypes.has(message.mediaMimeType) ||
       !isMimeCompatible(message.kind, message.mediaMimeType)

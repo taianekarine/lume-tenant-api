@@ -14,7 +14,9 @@ const companyId = '00000000-0000-4000-8000-000000000001';
 const conversationId = '00000000-0000-4000-8000-000000000101';
 const messageId = '00000000-0000-4000-8000-000000000501';
 
-function config(): ConfigService {
+function config(
+  overrides: Readonly<Record<string, unknown>> = {},
+): ConfigService {
   const values: Readonly<Record<string, unknown>> = {
     EVOLUTION_BASE_URL: 'https://evolution.example.test',
     EVOLUTION_INSTANCE_NAME: 'milenium',
@@ -23,6 +25,7 @@ function config(): ConfigService {
     WHATSAPP_MAX_ATTACHMENT_BYTES: 10_485_760,
     WHATSAPP_ALLOWED_MIME_TYPES:
       'image/jpeg,image/webp,application/pdf,audio/ogg,audio/mp4,video/mp4',
+    ...overrides,
   };
   return {
     get: vi.fn((key: string) => values[key]),
@@ -174,6 +177,46 @@ describe('EvolutionMediaContentService', () => {
       kind: 'document',
     });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('serves a stored panel archive above the inbound retention limit', async () => {
+    const content = Buffer.from('archive');
+    const storage = {
+      ...mediaStorage(),
+      read: vi.fn().mockResolvedValue(content),
+    } as WhatsAppMediaStorage;
+    const service = new EvolutionMediaContentService(
+      prismaWithMessage({
+        id: messageId,
+        companyId,
+        conversationId,
+        providerMessageId: null,
+        direction: MessageDirection.OUTBOUND,
+        kind: MessageKind.DOCUMENT,
+        media: { mimeType: 'application/zip', fileName: 'historico.zip' },
+        mediaStorageKey: `v1/${companyId}/${conversationId}/${messageId}/${createHash('sha256').update(content).digest('hex')}`,
+        mediaMimeType: 'application/zip',
+        mediaSizeBytes: content.byteLength,
+        mediaOriginalName: 'historico.zip',
+        mediaSha256: createHash('sha256').update(content).digest('hex'),
+        mediaStoredAt: new Date('2026-08-14T12:00:00.000Z'),
+        proposalDocument: null,
+      }),
+      storage,
+      config({
+        WHATSAPP_MAX_ATTACHMENT_BYTES: 4,
+        WHATSAPP_PANEL_MAX_ATTACHMENT_BYTES: 16,
+      }),
+    );
+
+    await expect(
+      service.getContent(companyId, conversationId, messageId),
+    ).resolves.toMatchObject({
+      content,
+      fileName: 'historico.zip',
+      mimeType: 'application/zip',
+      kind: 'document',
+    });
   });
 
   it('rejeita mídia fora da lista de tipos permitidos', async () => {
