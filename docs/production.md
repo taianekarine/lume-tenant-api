@@ -29,6 +29,11 @@ assistidos. Ele não substitui o backup do banco. Monitore espaço, mantenha a
 retenção de rascunhos configurada e remova somente lotes expirados; nunca use a
 camada gravável efêmera do container para esse diretório.
 
+O serviço transitório `storage-init` do Compose prepara os volumes de mídias e
+importações com permissão de escrita para o usuário da API antes da
+inicialização. Mantenha essa dependência ao criar ou restaurar os volumes; sem
+ela, o primeiro lote pode falhar antes mesmo de receber o arquivo ZIP.
+
 Suba uma única versão consumidora da outbox. Durante rolling deploy, garanta que
 as instâncias usam a mesma versão do contrato e os mesmos limites. O lock no
 banco impede execução simultânea do mesmo evento, mas versões divergentes não
