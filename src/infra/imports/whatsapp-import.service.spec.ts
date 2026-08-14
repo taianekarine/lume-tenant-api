@@ -374,6 +374,38 @@ describe('WhatsAppImportService.validate', () => {
     );
   });
 
+  it('aceita mensagem sem corpo quando o conteúdo não foi identificado', async () => {
+    const message = blanks(MESSAGE_HEADERS.length);
+    message[0] = 'legacy-1';
+    message[1] = 'legacy-message-empty';
+    message[2] = 'inbound';
+    message[3] = 'unknown';
+    message[4] = new Date('2026-07-29T12:00:00.000Z');
+    message[5] = 'received';
+    const fixture = await packageWithRows({
+      conversations: [conversationRow('legacy-1')],
+      messages: [message],
+    });
+    const service = new WhatsAppImportService(
+      readOnlyPrisma(vi.fn()),
+      fixture.root,
+    );
+
+    const report = await service.validate({
+      companyId: testCompanyId,
+      channelId: testChannelId,
+      actorUsername: 'admin',
+      batchName: 'batch-empty-message',
+      packagePath: fixture.packagePath,
+      cutoffAt: new Date('2026-07-30T00:00:00.000Z'),
+    });
+
+    expect(report.valid).toBe(true);
+    expect(report.issues).not.toContainEqual(
+      expect.objectContaining({ code: 'TEXT_REQUIRED' }),
+    );
+  });
+
   it('rejeita códigos de departamento fora dos nove publicados', async () => {
     const row = conversationRow('legacy-1');
     row[5] = 'information-technology';

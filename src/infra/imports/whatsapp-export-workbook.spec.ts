@@ -114,4 +114,36 @@ describe('createWhatsAppImportWorkbook', () => {
     );
     expect(first.content.equals(second.content)).toBe(true);
   });
+
+  it('exporta mensagens sem corpo como conteúdo não identificado', async () => {
+    const zip = new JSZip();
+    zip.file(
+      'Conversa do WhatsApp com Cliente.txt',
+      '12/08/2026 09:00 - Cliente: ',
+    );
+    const conversation = await parseWhatsAppExportArchive(
+      'cliente.zip',
+      await zip.generateAsync({ type: 'nodebuffer' }),
+    );
+    const generated = await createWhatsAppImportWorkbook(
+      [conversation],
+      [
+        {
+          archiveId: conversation.archiveId,
+          phoneE164: '5534999990001',
+          contactName: 'Cliente',
+          companySenderName: 'Milenium',
+          state: 'closed',
+          departmentCode: 'commercial',
+        },
+      ],
+      '553432236060',
+    );
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(generated.content);
+    const messages = workbook.getWorksheet('Mensagens');
+
+    expect(messages?.getCell('D2').text).toBe('unknown');
+    expect(messages?.getCell('G2').text).toBe('');
+  });
 });

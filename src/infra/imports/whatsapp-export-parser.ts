@@ -469,13 +469,17 @@ export async function parseWhatsAppExportArchive(
         .join('\n')
         .trim();
       const deleted = DELETED_MESSAGE.test(cleanedText);
+      const hasRecognizedContent = Boolean(cleanedText || attachment);
       return {
         index,
         senderName: message.senderName,
         occurredAt: wallClockToUtc(message.wallClockAt),
         wallClockAt: message.wallClockAt,
         text: cleanedText || (deleted ? rawText : null),
-        kind: deleted ? 'unknown' : (attachment?.kind ?? 'text'),
+        kind:
+          deleted || !hasRecognizedContent
+            ? 'unknown'
+            : (attachment?.kind ?? 'text'),
         attachment,
         system: message.senderName === null,
       };
