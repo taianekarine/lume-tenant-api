@@ -99,6 +99,29 @@ describe('parseWhatsAppExportArchive', () => {
     });
   });
 
+  it('preserva mensagens sem corpo como conteúdo não identificado', async () => {
+    const content = await archive(
+      [
+        '12/08/2026 09:00 - Cliente: ',
+        '12/08/2026 09:01 - Cliente: Mensagem seguinte',
+      ].join('\n'),
+    );
+
+    const result = await parseWhatsAppExportArchive('cliente.zip', content);
+
+    expect(result.messages[0]).toMatchObject({
+      senderName: 'Cliente',
+      text: null,
+      kind: 'unknown',
+      attachment: null,
+      system: false,
+    });
+    expect(result.messages[1]).toMatchObject({
+      text: 'Mensagem seguinte',
+      kind: 'text',
+    });
+  });
+
   it('aceita o formato iOS com segundos e horário de doze horas', async () => {
     const content = await archive(
       '[12/08/2026, 9:05:07 PM] Cliente: Boa noite',
