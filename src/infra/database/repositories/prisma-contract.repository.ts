@@ -154,6 +154,34 @@ function contractData(input: ContractData) {
   };
 }
 
+export function contractNestedCreates(
+  input: Pick<ContractData, 'costCenters' | 'shifts'>,
+) {
+  return {
+    costCenters: {
+      create: input.costCenters.map(
+        (costCenter) =>
+          ({
+            code: costCenter.code,
+            name: costCenter.name,
+          }) satisfies Prisma.RoutingContractCostCenterUncheckedCreateWithoutContractInput,
+      ),
+    },
+    shifts: {
+      create: input.shifts.map(
+        (shift) =>
+          ({
+            name: shift.name,
+            requiredArrivalTime: shift.requiredArrivalTime,
+            vehicleCount: shift.vehicleCount,
+            vehicleCapacity: shift.vehicleCapacity,
+            activeWeekdays: shift.activeWeekdays,
+          }) satisfies Prisma.RoutingContractShiftUncheckedCreateWithoutContractInput,
+      ),
+    },
+  };
+}
+
 function snapshot(contract: ContractProps): Prisma.InputJsonValue {
   return JSON.parse(
     JSON.stringify({
@@ -205,23 +233,7 @@ export class PrismaContractRepository extends ContractRepository {
             companyId: input.contract.companyId,
             ...contractData(input.contract),
             createdByUserId: input.actorUserId,
-            costCenters: {
-              create: input.contract.costCenters.map((costCenter) => ({
-                companyId: input.contract.companyId,
-                code: costCenter.code,
-                name: costCenter.name,
-              })),
-            },
-            shifts: {
-              create: input.contract.shifts.map((shift) => ({
-                companyId: input.contract.companyId,
-                name: shift.name,
-                requiredArrivalTime: shift.requiredArrivalTime,
-                vehicleCount: shift.vehicleCount,
-                vehicleCapacity: shift.vehicleCapacity,
-                activeWeekdays: shift.activeWeekdays,
-              })),
-            },
+            ...contractNestedCreates(input.contract),
           },
           include: contractInclude,
         });
@@ -339,23 +351,7 @@ export class PrismaContractRepository extends ContractRepository {
           data: {
             ...contractData(input.data),
             version: { increment: 1 },
-            costCenters: {
-              create: input.data.costCenters.map((costCenter) => ({
-                companyId: input.companyId,
-                code: costCenter.code,
-                name: costCenter.name,
-              })),
-            },
-            shifts: {
-              create: input.data.shifts.map((shift) => ({
-                companyId: input.companyId,
-                name: shift.name,
-                requiredArrivalTime: shift.requiredArrivalTime,
-                vehicleCount: shift.vehicleCount,
-                vehicleCapacity: shift.vehicleCapacity,
-                activeWeekdays: shift.activeWeekdays,
-              })),
-            },
+            ...contractNestedCreates(input.data),
           },
           include: contractInclude,
         });
