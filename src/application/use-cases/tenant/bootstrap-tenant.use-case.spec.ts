@@ -16,6 +16,7 @@ import { BootstrapTenantUseCase } from './bootstrap-tenant.use-case';
 describe('BootstrapTenantUseCase', () => {
   it('publishes all assignable departments with PT-BR labels', () => {
     expect(ASSIGNABLE_DEPARTMENTS).toEqual([
+      'client-company',
       'commercial',
       'purchasing',
       'controllership',
@@ -32,6 +33,7 @@ describe('BootstrapTenantUseCase', () => {
         (department) => ASSIGNABLE_DEPARTMENT_LABELS[department],
       ),
     ).toEqual([
+      'Empresa cliente',
       'Comercial',
       'Compras',
       'Controladoria',
@@ -55,10 +57,11 @@ describe('BootstrapTenantUseCase', () => {
     ).execute(companyFixture);
 
     expect(result.tenant.id).toBe(license.status().payload.tenantId);
-    expect(store.tenantDepartments).toHaveLength(10);
+    expect(store.tenantDepartments).toHaveLength(11);
     expect(
       store.tenantDepartments.map((department) => department.name),
     ).toEqual([
+      'Empresa cliente',
       'Comercial',
       'Compras',
       'Controladoria',

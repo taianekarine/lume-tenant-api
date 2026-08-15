@@ -16,6 +16,7 @@ import {
 } from '../../../domain/access/access.constants';
 import {
   DocumentAccessMode as PrismaDocumentAccessMode,
+  UserClientCategory as PrismaUserClientCategory,
   UserAccountStatus as PrismaUserAccountStatus,
   type Prisma,
 } from '../prisma/generated/client';
@@ -47,6 +48,9 @@ function userUpdateData(
   input: UpdateUserPersistenceInput,
 ): Prisma.UserUncheckedUpdateInput {
   return {
+    ...(input.routingCompanyId === undefined
+      ? {}
+      : { routingCompanyId: input.routingCompanyId }),
     ...(input.name === undefined ? {} : { name: input.name }),
     ...(input.email === undefined ? {} : { email: input.email }),
     ...(input.emailNormalized === undefined
@@ -64,7 +68,19 @@ function userUpdateData(
           documentAccessMode:
             input.documentAccessMode === 'document-portal'
               ? PrismaDocumentAccessMode.DOCUMENT_PORTAL
-              : PrismaDocumentAccessMode.STANDARD,
+              : input.documentAccessMode === 'client'
+                ? PrismaDocumentAccessMode.CLIENT
+                : PrismaDocumentAccessMode.STANDARD,
+        }),
+    ...(input.clientCategory === undefined
+      ? {}
+      : {
+          clientCategory:
+            input.clientCategory === null
+              ? null
+              : input.clientCategory === 'legal-entity'
+                ? PrismaUserClientCategory.LEGAL_ENTITY
+                : PrismaUserClientCategory.INDIVIDUAL,
         }),
     ...(input.jobTitle === undefined ? {} : { jobTitle: input.jobTitle }),
     ...(input.maritalStatus === undefined
@@ -247,7 +263,15 @@ export class PrismaUsersRepository extends UsersRepository {
             documentAccessMode:
               user.props.documentAccessMode === 'document-portal'
                 ? PrismaDocumentAccessMode.DOCUMENT_PORTAL
-                : PrismaDocumentAccessMode.STANDARD,
+                : user.props.documentAccessMode === 'client'
+                  ? PrismaDocumentAccessMode.CLIENT
+                  : PrismaDocumentAccessMode.STANDARD,
+            clientCategory:
+              user.props.clientCategory === null
+                ? null
+                : user.props.clientCategory === 'legal-entity'
+                  ? PrismaUserClientCategory.LEGAL_ENTITY
+                  : PrismaUserClientCategory.INDIVIDUAL,
             dependents: user.props
               .dependents as unknown as Prisma.InputJsonValue,
             suspendedUntil: null,
@@ -298,6 +322,9 @@ export class PrismaUsersRepository extends UsersRepository {
     }
     const where: Prisma.UserWhereInput = {
       companyId,
+      ...(query.routingCompanyId
+        ? { routingCompanyId: query.routingCompanyId }
+        : {}),
       deletedAt: null,
       ...(query.excludeUserId ? { id: { not: query.excludeUserId } } : {}),
       ...(query.excludeAdministrators ? { isAdministrator: false } : {}),

@@ -237,6 +237,42 @@ O destinatário principal é definido por `SUPPORT_RECIPIENT_EMAIL`.
 configuração é validada na inicialização, normaliza duplicatas e evita repetir o
 destinatário principal como cópia.
 
+## Roteirização orientada por contrato
+
+`Company` representa o tenant Milenium. `RoutingCompany` representa cada
+empresa atendida. Um usuário cliente PJ usa `documentAccessMode=client`,
+`clientCategory=legal-entity`, departamento único `client-company` e
+`routingCompanyId`; todas as consultas operacionais reforçam esse escopo. Um
+cliente PF usa `clientCategory=individual` sem empresa atendida.
+
+O agregado `RoutingContract` antecede as rotas e contém o acordo comercial. O
+agente de roteirização usa contrato vigente, turno, horário, capacidade,
+distância máxima, acessibilidade e pendências para produzir sugestões. Ajustes
+operacionais usam concorrência otimista; aprovação congela um snapshot
+imutável usado nas exportações e na publicação.
+
+KM de ida, retorno e total são persistidos separadamente. Centro de custo é
+mantido no contrato e nas saídas operacionais/financeiras, mas omitido dos
+arquivos XLSX/CSV compatíveis com Google My Maps.
+
+## Roteirização orientada por contrato
+
+`Company` representa o tenant Milenium. `RoutingCompany` representa cada
+empresa atendida. Um usuário cliente PJ usa `documentAccessMode=client`,
+`clientCategory=legal-entity`, departamento único `client-company` e
+`routingCompanyId`; todas as consultas operacionais reforçam esse escopo. Um
+cliente PF usa `clientCategory=individual` sem empresa atendida.
+
+O agregado `RoutingContract` antecede as rotas e contém o acordo comercial. O
+agente de roteirização usa contrato vigente, turno, horário, capacidade,
+distância máxima, acessibilidade e pendências para produzir sugestões. Ajustes
+operacionais usam concorrência otimista; aprovação congela um snapshot
+imutável usado nas exportações e na publicação.
+
+KM de ida, retorno e total são persistidos separadamente. Centro de custo é
+mantido no contrato e nas saídas operacionais/financeiras, mas omitido dos
+arquivos XLSX/CSV compatíveis com Google My Maps.
+
 ## Intercâmbio temporário de arquivos
 
 O módulo de intercâmbio segue as mesmas camadas da aplicação: catálogo de

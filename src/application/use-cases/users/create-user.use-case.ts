@@ -17,6 +17,7 @@ import {
   type DocumentAccessMode,
   type MaritalStatus,
   type MilitaryDocumentStatus,
+  type UserClientCategory,
   type UserDependent,
 } from '../../../domain/entities/user';
 import { isValidCpf } from '../../../shared/utils/brazilian-documents';
@@ -31,10 +32,12 @@ import {
   UsersRepository,
 } from '../../contracts/repositories';
 import { presentUser } from '../../presenters/user.presenter';
+import { RoutingRepository } from '../../contracts/routing.repository';
 
 export interface CreateUserInput {
   companyId: string;
   actorUserId?: string;
+  routingCompanyId?: string;
   name: string;
   username: string;
   email: string;
@@ -42,6 +45,7 @@ export interface CreateUserInput {
   password: string;
   isAdministrator?: boolean;
   documentAccessMode?: DocumentAccessMode;
+  clientCategory?: UserClientCategory;
   jobTitle?: string;
   maritalStatus?: MaritalStatus;
   militaryDocumentStatus?: MilitaryDocumentStatus;
@@ -55,6 +59,7 @@ export class CreateUserUseCase {
     private readonly users: UsersRepository,
     private readonly passwordHasher: PasswordHasher,
     private readonly auditLogs?: TenantAuditLogsRepository,
+    private readonly routing?: RoutingRepository,
   ) {}
 
   async execute(input: CreateUserInput) {
@@ -80,6 +85,22 @@ export class CreateUserUseCase {
       if (actorRole === 'information-technology' && isAdministrator) {
         throw forbidden(
           'Somente administradores podem criar uma conta administradora.',
+        );
+      }
+      if (actorRole === 'delegated' && isAdministrator) {
+        throw forbidden(
+          'Somente administradores podem criar uma conta administradora.',
+        );
+      }
+      if (
+        actorRole === 'delegated' &&
+        input.permissionCodes.some(
+          (permission) =>
+            !actor?.user.props.permissionCodes.includes(permission),
+        )
+      ) {
+        throw forbidden(
+          'Um usuÃ¡rio delegado sÃ³ pode conceder permissÃµes que ele prÃ³prio possui.',
         );
       }
       if (
@@ -114,6 +135,49 @@ export class CreateUserUseCase {
     const departments = isAdministrator
       ? []
       : normalizeUserDepartments(input.departments);
+    const clientCategory = isAdministrator
+      ? null
+      : (input.clientCategory ?? null);
+
+    if (documentAccessMode === 'client') {
+      if (
+        isAdministrator ||
+        departments.length !== 1 ||
+        departments[0] !== 'client-company' ||
+        !clientCategory
+      ) {
+        throw validationError(
+          'O acesso Cliente deve informar o tipo PF ou PJ e usar exclusivamente o perfil Empresa cliente.',
+        );
+      }
+
+      if (clientCategory === 'legal-entity') {
+        if (!input.routingCompanyId) {
+          throw validationError(
+            'Selecione a empresa atendida para o acesso Cliente PJ.',
+          );
+        }
+        const routingCompany = await this.routing?.findCompany(
+          input.companyId,
+          input.routingCompanyId,
+        );
+        if (!routingCompany || routingCompany.status !== 'active') {
+          throw validationError('Selecione uma empresa cliente ativa.');
+        }
+      } else if (input.routingCompanyId) {
+        throw validationError(
+          'O acesso Cliente PF nao pode ser vinculado a uma empresa atendida.',
+        );
+      }
+    } else if (
+      clientCategory ||
+      input.routingCompanyId ||
+      departments.includes('client-company')
+    ) {
+      throw validationError(
+        'O perfil Empresa cliente e o vinculo com empresa atendida exigem o modo de acesso Cliente.',
+      );
+    }
 
     if (
       !isAdministrator &&
@@ -168,6 +232,7 @@ export class CreateUserUseCase {
 
     const user = User.create({
       companyId: input.companyId,
+      routingCompanyId: input.routingCompanyId ?? null,
       name: input.name.trim(),
       username: input.username.trim(),
       usernameNormalized,
@@ -178,6 +243,7 @@ export class CreateUserUseCase {
       mustChangePassword: true,
       isAdministrator,
       documentAccessMode,
+      clientCategory,
       jobTitle: input.jobTitle?.trim() || null,
       maritalStatus: input.maritalStatus ?? null,
       militaryDocumentStatus:
@@ -198,6 +264,7 @@ export class CreateUserUseCase {
         metadata: {
           isAdministrator,
           documentAccessMode,
+          clientCategory,
           jobTitle: input.jobTitle?.trim() || null,
           maritalStatus: input.maritalStatus ?? null,
           militaryDocumentStatus:
@@ -205,6 +272,7 @@ export class CreateUserUseCase {
           dependentCount: input.dependents?.length ?? 0,
           departments,
           permissionCodes,
+          routingCompanyId: input.routingCompanyId ?? null,
         },
       });
     }

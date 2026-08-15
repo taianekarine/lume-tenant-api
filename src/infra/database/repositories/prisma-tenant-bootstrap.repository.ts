@@ -17,6 +17,7 @@ import { PrismaService } from '../prisma/prisma.service';
 const departmentPersistenceCodes: Readonly<
   Record<UserDepartment, DepartmentCode>
 > = {
+  'client-company': DepartmentCode.CLIENT_COMPANY,
   'human-resources': DepartmentCode.HUMAN_RESOURCES,
   'personnel-department': DepartmentCode.PERSONNEL_DEPARTMENT,
   commercial: DepartmentCode.COMMERCIAL,
@@ -57,6 +58,7 @@ export class PrismaTenantBootstrapRepository implements TenantBootstrapRepositor
           data: {
             ...input.administrator.props,
             documentAccessMode: DocumentAccessMode.STANDARD,
+            clientCategory: null,
             departments: [...input.administrator.props.departments],
             permissionCodes: [...input.administrator.props.permissionCodes],
             dependents: input.administrator.props

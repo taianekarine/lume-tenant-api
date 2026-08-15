@@ -1,8 +1,13 @@
 # Intercâmbio de arquivos
 
-Este módulo prepara a Tenant API para futuras telas de importação e exportação
+Este módulo prepara a Tenant API para telas genéricas de importação e exportação
 sem transferir conversão ou validação para o navegador. A API continua sendo a
 autoridade de permissões, isolamento, retenção e auditoria.
+
+O módulo de roteirização possui contratos especializados: modelo/importação de
+colaboradores em XLSX e exportações de rota em PDF, XLSX operacional e XLSX/CSV
+para Google My Maps. Esses fluxos não usam artefatos temporários genéricos. O
+centro de custo não faz parte das exportações do My Maps.
 
 ## Endpoints
 

@@ -17,6 +17,14 @@ import { PrismaTenantBootstrapRepository } from './repositories/prisma-tenant-bo
 import { PrismaUsersRepository } from './repositories/prisma-users.repository';
 import { PrismaWhatsAppRepository } from './repositories/prisma-whatsapp.repository';
 import { PrismaDataExchangeRepository } from './repositories/prisma-data-exchange.repository';
+import { RoutingRepository } from '../../application/contracts/routing.repository';
+import { PrismaRoutingRepository } from './repositories/prisma-routing.repository';
+import { PassengerRepository } from '../../application/contracts/passenger.repository';
+import { PrismaPassengerRepository } from './repositories/prisma-passenger.repository';
+import { ContractRepository } from '../../application/contracts/contract.repository';
+import { PrismaContractRepository } from './repositories/prisma-contract.repository';
+import { RouteRepository } from '../../application/contracts/route.repository';
+import { PrismaRouteRepository } from './repositories/prisma-route.repository';
 
 @Global()
 @Module({
@@ -41,6 +49,10 @@ import { PrismaDataExchangeRepository } from './repositories/prisma-data-exchang
     },
     { provide: WhatsAppRepository, useClass: PrismaWhatsAppRepository },
     { provide: DataExchangeRepository, useClass: PrismaDataExchangeRepository },
+    { provide: RoutingRepository, useClass: PrismaRoutingRepository },
+    { provide: PassengerRepository, useClass: PrismaPassengerRepository },
+    { provide: ContractRepository, useClass: PrismaContractRepository },
+    { provide: RouteRepository, useClass: PrismaRouteRepository },
   ],
   exports: [
     PrismaService,
@@ -51,6 +63,10 @@ import { PrismaDataExchangeRepository } from './repositories/prisma-data-exchang
     TenantAuditLogsRepository,
     WhatsAppRepository,
     DataExchangeRepository,
+    RoutingRepository,
+    PassengerRepository,
+    ContractRepository,
+    RouteRepository,
   ],
 })
 export class DatabaseModule {}

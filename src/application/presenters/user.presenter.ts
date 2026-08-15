@@ -15,17 +15,19 @@ import type {
   MilitaryDocumentStatus,
   UserDependent,
 } from '../../domain/entities/user';
+import type { UserClientCategory } from '../../domain/entities/user';
 import type { UserRecord } from '../contracts/repositories';
 
 export interface UserOutput {
   id: string;
+  routingCompanyId: string | null;
   name: string;
   username: string;
   email: string;
   cpf: string | null;
-  type: 'employee';
+  type: 'employee' | 'candidate' | 'client';
   isAdministrator: boolean;
-  documentAccessMode?: 'standard' | 'document-portal';
+  documentAccessMode?: 'standard' | 'document-portal' | 'client';
   jobTitle: string | null;
   maritalStatus: MaritalStatus | null;
   militaryDocumentStatus: MilitaryDocumentStatus;
@@ -33,7 +35,7 @@ export interface UserOutput {
   departments: PresentedUserDepartment[];
   permissionCodes: PermissionCode[];
   permissions: PermissionCode[];
-  clientCategory: null;
+  clientCategory: UserClientCategory | null;
   isActive: boolean;
   status: UserAccountStatus;
   suspendedUntil: string | null;
@@ -60,11 +62,17 @@ export function presentUser(record: UserRecord): UserOutput {
 
   return {
     id: user.props.id,
+    routingCompanyId: user.props.routingCompanyId,
     name: user.props.name,
     username: user.props.username,
     email: user.props.email,
     cpf: user.props.cpfNormalized,
-    type: 'employee',
+    type:
+      user.props.documentAccessMode === 'client'
+        ? 'client'
+        : user.props.documentAccessMode === 'document-portal'
+          ? 'candidate'
+          : 'employee',
     isAdministrator: user.props.isAdministrator,
     documentAccessMode: user.props.documentAccessMode ?? 'standard',
     jobTitle: user.props.jobTitle,
@@ -81,7 +89,7 @@ export function presentUser(record: UserRecord): UserOutput {
       user.props.isAdministrator,
       user.props.documentAccessMode,
     ),
-    clientCategory: null,
+    clientCategory: user.props.clientCategory,
     isActive: user.props.isActive,
     status: user.props.status,
     suspendedUntil: user.props.suspendedUntil?.toISOString() ?? null,

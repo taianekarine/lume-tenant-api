@@ -16,6 +16,7 @@ import type {
   DocumentAccessMode,
   MaritalStatus,
   MilitaryDocumentStatus,
+  UserClientCategory,
   UserDependent,
 } from '../../../domain/entities/user';
 import {
@@ -28,17 +29,20 @@ import {
 } from '../../contracts/repositories';
 import { presentUser } from '../../presenters/user.presenter';
 import { assertCanAccessUserTarget } from '../../../domain/access/user-management-policy';
+import { RoutingRepository } from '../../contracts/routing.repository';
 
 export interface UpdateUserInput {
   companyId: string;
   currentUserId?: string;
   actorUserId?: string;
   userId: string;
+  routingCompanyId?: string | null;
   name?: string;
   email?: string;
   cpf?: string | null;
   isAdministrator?: boolean;
   documentAccessMode?: DocumentAccessMode;
+  clientCategory?: UserClientCategory | null;
   jobTitle?: string | null;
   maritalStatus?: MaritalStatus | null;
   militaryDocumentStatus?: MilitaryDocumentStatus;
@@ -51,6 +55,7 @@ export class UpdateUserUseCase {
   constructor(
     private readonly users: UsersRepository,
     private readonly auditLogs?: TenantAuditLogsRepository,
+    private readonly routing?: RoutingRepository,
   ) {}
 
   async execute(input: UpdateUserInput) {
@@ -71,7 +76,9 @@ export class UpdateUserUseCase {
       actorRole === 'people-operations' &&
       (input.cpf !== undefined ||
         input.isAdministrator !== undefined ||
+        input.routingCompanyId !== undefined ||
         input.documentAccessMode !== undefined ||
+        input.clientCategory !== undefined ||
         input.departments !== undefined ||
         input.permissionCodes !== undefined)
     ) {
@@ -93,6 +100,7 @@ export class UpdateUserUseCase {
     const emailNormalized = input.email
       ? normalizeEmail(input.email)
       : undefined;
+
     const cpfNormalized =
       input.cpf !== undefined ? normalizeCpf(input.cpf) : undefined;
 
@@ -156,6 +164,57 @@ export class UpdateUserUseCase {
     const finalPermissionCodes = finalIsAdministrator
       ? []
       : (permissionCodes ?? target.user.props.permissionCodes);
+    const requestedRoutingCompanyId =
+      input.routingCompanyId === undefined
+        ? target.user.props.routingCompanyId
+        : input.routingCompanyId;
+    const requestedClientCategory =
+      input.clientCategory === undefined
+        ? target.user.props.clientCategory
+        : input.clientCategory;
+    const finalRoutingCompanyId =
+      !finalIsAdministrator && finalDocumentAccessMode === 'client'
+        ? requestedRoutingCompanyId
+        : null;
+    const finalClientCategory =
+      !finalIsAdministrator && finalDocumentAccessMode === 'client'
+        ? requestedClientCategory
+        : null;
+
+    if (finalDocumentAccessMode === 'client') {
+      if (
+        finalDepartments.length !== 1 ||
+        finalDepartments[0] !== 'client-company' ||
+        !finalClientCategory
+      ) {
+        throw validationError(
+          'O acesso Cliente deve informar o tipo PF ou PJ e usar exclusivamente o perfil Empresa cliente.',
+        );
+      }
+
+      if (finalClientCategory === 'legal-entity') {
+        if (!finalRoutingCompanyId) {
+          throw validationError(
+            'Selecione a empresa atendida para o acesso Cliente PJ.',
+          );
+        }
+        const routingCompany = await this.routing?.findCompany(
+          input.companyId,
+          finalRoutingCompanyId,
+        );
+        if (!routingCompany || routingCompany.status !== 'active') {
+          throw validationError('Selecione uma empresa cliente ativa.');
+        }
+      } else if (finalRoutingCompanyId) {
+        throw validationError(
+          'O acesso Cliente PF nao pode ser vinculado a uma empresa atendida.',
+        );
+      }
+    } else if (finalDepartments.includes('client-company')) {
+      throw validationError(
+        'O perfil Empresa cliente e o vinculo com empresa atendida exigem o modo de acesso Cliente.',
+      );
+    }
 
     if (
       !finalIsAdministrator &&
@@ -185,6 +244,10 @@ export class UpdateUserUseCase {
       target.user.props.isAdministrator;
 
     const persistenceInput = {
+      routingCompanyId:
+        finalRoutingCompanyId === target.user.props.routingCompanyId
+          ? undefined
+          : finalRoutingCompanyId,
       name: input.name?.trim(),
       email: input.email?.trim(),
       emailNormalized,
@@ -192,6 +255,10 @@ export class UpdateUserUseCase {
       isAdministrator:
         input.isAdministrator === undefined ? undefined : finalIsAdministrator,
       documentAccessMode: input.documentAccessMode,
+      clientCategory:
+        finalClientCategory === target.user.props.clientCategory
+          ? undefined
+          : finalClientCategory,
       jobTitle:
         input.jobTitle === undefined
           ? undefined
@@ -227,10 +294,12 @@ export class UpdateUserUseCase {
         metadata: {
           changedFields: [
             'name',
+            'routingCompanyId',
             'email',
             'cpf',
             'isAdministrator',
             'documentAccessMode',
+            'clientCategory',
             'jobTitle',
             'maritalStatus',
             'militaryDocumentStatus',

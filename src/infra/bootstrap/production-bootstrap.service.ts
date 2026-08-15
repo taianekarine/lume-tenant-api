@@ -48,6 +48,7 @@ export async function stillUsesBootstrapPassword(
 const departmentPersistenceCodes: Readonly<
   Record<AssignableDepartment, DepartmentCode>
 > = {
+  'client-company': DepartmentCode.CLIENT_COMPANY,
   commercial: DepartmentCode.COMMERCIAL,
   purchasing: DepartmentCode.PURCHASING,
   controllership: DepartmentCode.CONTROLLING,
@@ -160,6 +161,7 @@ export class ProductionBootstrapService {
           data: {
             ...newAdministrator.props,
             documentAccessMode: DocumentAccessMode.STANDARD,
+            clientCategory: null,
             isAdministrator: true,
             departments: [],
             permissionCodes: [],

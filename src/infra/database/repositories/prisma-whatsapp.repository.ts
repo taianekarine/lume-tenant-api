@@ -83,6 +83,7 @@ const LEGACY_AUTOMATION_RECONCILIATION_REQUIRED =
   'LEGACY_AUTOMATION_RECONCILIATION_REQUIRED' as const;
 
 const departmentToPrisma: Readonly<Record<Department, DepartmentCode>> = {
+  'client-company': DepartmentCode.CLIENT_COMPANY,
   'human-resources': DepartmentCode.HUMAN_RESOURCES,
   'personnel-department': DepartmentCode.PERSONNEL_DEPARTMENT,
   commercial: DepartmentCode.COMMERCIAL,
@@ -98,6 +99,7 @@ const departmentToPrisma: Readonly<Record<Department, DepartmentCode>> = {
 };
 
 const departmentFromPrisma: Readonly<Record<DepartmentCode, Department>> = {
+  CLIENT_COMPANY: 'client-company',
   HUMAN_RESOURCES: 'human-resources',
   PERSONNEL_DEPARTMENT: 'personnel-department',
   COMMERCIAL: 'commercial',

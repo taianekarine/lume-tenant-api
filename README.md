@@ -174,6 +174,40 @@ upload, visualizar permite consulta/download e gerenciar permite conversão.
 Novos formatos devem reutilizar `DataExchangeUseCase`,
 `DataExchangeRepository` e `DataExchangeConverter`.
 
+### Roteirização orientada por contrato
+
+O tenant continua sendo a Milenium. Empresas atendidas são `RoutingCompany` e
+podem possuir usuários cliente PJ isolados por `routingCompanyId`; cliente PF
+não possui esse vínculo. Funcionários internos autorizados operam mais de uma
+empresa e informam o CNPJ em cada linha da importação oficial.
+
+`RoutingContract` é a raiz da operação e concentra centros de custo, unidade,
+vigência, tipo, turnos, horários, veículos, capacidade, KM e periodicidade. A
+API não expõe criação manual de rota: ela gera sugestões a partir do contrato e
+dos colaboradores elegíveis, registra revisão e aprovação versionadas e publica
+somente a versão aprovada.
+
+O modelo e a importação de colaboradores usam XLSX. Rotas aprovadas oferecem
+PDF/XLSX operacional e XLSX/CSV para Google My Maps. Centro de custo permanece
+no contrato e no XLSX operacional, mas não integra os formatos do My Maps.
+
+### Roteirização orientada por contrato
+
+O tenant continua sendo a Milenium. Empresas atendidas são `RoutingCompany` e
+podem possuir usuários cliente PJ isolados por `routingCompanyId`; cliente PF
+não possui esse vínculo. Funcionários internos autorizados operam mais de uma
+empresa e informam o CNPJ em cada linha da importação oficial.
+
+`RoutingContract` é a raiz da operação e concentra centros de custo, unidade,
+vigência, tipo, turnos, horários, veículos, capacidade, KM e periodicidade. A
+API não expõe criação manual de rota: ela gera sugestões a partir do contrato e
+dos colaboradores elegíveis, registra revisão e aprovação versionadas e publica
+somente a versão aprovada.
+
+O modelo e a importação de colaboradores usam XLSX. Rotas aprovadas oferecem
+PDF/XLSX operacional e XLSX/CSV para Google My Maps. Centro de custo permanece
+no contrato e no XLSX operacional, mas não integra os formatos do My Maps.
+
 ### Prisma Studio
 
 Com o PostgreSQL local em execução:
