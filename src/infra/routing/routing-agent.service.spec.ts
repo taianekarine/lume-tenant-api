@@ -8,14 +8,18 @@ import { RoutingAgentService } from './routing-agent.service';
 const aggregate = (
   name: string,
   latitude: number,
-  options: { predefined?: boolean; accessibility?: boolean } = {},
+  options: {
+    predefined?: boolean;
+    accessibility?: boolean;
+    requiredArrivalTime?: string;
+  } = {},
 ): PassengerAggregate => {
   const passenger = createPassenger('tenant-id', 'actor-id', {
     routingCompanyId: 'client-id',
     externalReference: name,
     fullName: name,
     shift: 'Turno A',
-    requiredArrivalTime: '07:00',
+    requiredArrivalTime: options.requiredArrivalTime ?? '07:00',
     sector: null,
     accessibilityRequired: options.accessibility ?? false,
     accessibilityNotes: options.accessibility ? 'Embarque proximo' : null,
@@ -104,5 +108,57 @@ describe('RoutingAgentService', () => {
     expect(plan.assignments[2].status).toBe('overflow');
     expect(plan.additionalRouteSuggested).toBe(true);
     expect(plan.plannedTotalKm).toBeGreaterThan(0);
+  });
+
+  it('uses the contract arrival time without excluding passengers with an individual time', () => {
+    const route = createRoute('tenant-id', 'actor-id', {
+      routingCompanyId: 'client-id',
+      contractId: 'contract-id',
+      code: 'CTR-01-A',
+      name: 'Rota A',
+      shift: 'Turno A',
+      requiredArrivalTime: '07:50',
+      type: 'municipal',
+      requiresDocumentation: false,
+      requiredDocumentTypeCodes: [],
+      origin: {
+        label: 'Garagem',
+        street: 'Rua G',
+        number: '1',
+        complement: null,
+        district: 'Centro',
+        postalCode: '38400000',
+        city: 'Uberlandia',
+        state: 'MG',
+        latitude: -18.92,
+        longitude: -48.28,
+      },
+      destination: {
+        label: 'Empresa',
+        street: 'Rua E',
+        number: '2',
+        complement: null,
+        district: 'Industrial',
+        postalCode: '38400002',
+        city: 'Uberlandia',
+        state: 'MG',
+        latitude: -18.88,
+        longitude: -48.25,
+      },
+      predictedVehicleReference: null,
+      predictedVehicleName: 'Van',
+      predictedVehicleCapacity: 10,
+      maxWalkingDistanceMeters: 500,
+      validFrom: new Date('2026-08-17T00:00:00Z'),
+      validUntil: new Date('2026-08-17T00:00:00Z'),
+      notes: null,
+    });
+
+    const plan = new RoutingAgentService().calculate(route, [
+      aggregate('Ana', -18.91, { requiredArrivalTime: '05:56' }),
+    ]);
+
+    expect(plan.assignments).toHaveLength(1);
+    expect(plan.assignments[0].status).toBe('assigned');
   });
 });

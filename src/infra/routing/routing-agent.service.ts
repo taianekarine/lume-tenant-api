@@ -196,8 +196,7 @@ export class RoutingAgentService {
         (aggregate) =>
           aggregate.passenger.routingCompanyId === route.routingCompanyId &&
           aggregate.passenger.shift?.toLocaleLowerCase('pt-BR') ===
-            route.shift.toLocaleLowerCase('pt-BR') &&
-          aggregate.passenger.requiredArrivalTime === route.requiredArrivalTime,
+            route.shift.toLocaleLowerCase('pt-BR'),
       )
       .sort((left, right) =>
         left.passenger.fullName.localeCompare(

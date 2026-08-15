@@ -43,7 +43,7 @@ export function presentPassenger(aggregate: PassengerAggregate) {
   };
 }
 
-function validateDocuments(
+export function validateDocuments(
   documents: PassengerDocumentInput[] = [],
 ): PassengerDocumentInput[] {
   const seen = new Set<string>();
@@ -71,6 +71,106 @@ export type PassengerMutationInput = Omit<
   predefinedBoardingOrigin?: 'company' | 'operations' | null;
   documents?: PassengerDocumentInput[];
 };
+
+export function mergePassengerData(
+  previous: PassengerData,
+  input: Partial<PassengerMutationInput>,
+): PassengerData {
+  const value = <T>(next: T | undefined, current: T): T =>
+    next === undefined ? current : next;
+  return normalizePassengerData({
+    routingCompanyId: previous.routingCompanyId,
+    externalReference: value(
+      input.externalReference,
+      previous.externalReference,
+    ),
+    fullName: input.fullName ?? previous.fullName,
+    shift: value(input.shift, previous.shift),
+    requiredArrivalTime: value(
+      input.requiredArrivalTime,
+      previous.requiredArrivalTime,
+    ),
+    sector: value(input.sector, previous.sector),
+    accessibilityRequired:
+      input.accessibilityRequired ?? previous.accessibilityRequired,
+    accessibilityNotes: value(
+      input.accessibilityNotes,
+      previous.accessibilityNotes,
+    ),
+    residenceStreet: value(input.residenceStreet, previous.residenceStreet),
+    residenceNumber: value(input.residenceNumber, previous.residenceNumber),
+    residenceComplement: value(
+      input.residenceComplement,
+      previous.residenceComplement,
+    ),
+    residenceDistrict: value(
+      input.residenceDistrict,
+      previous.residenceDistrict,
+    ),
+    residencePostalCode: value(
+      input.residencePostalCode,
+      previous.residencePostalCode,
+    ),
+    residenceCity: value(input.residenceCity, previous.residenceCity),
+    residenceState: value(input.residenceState, previous.residenceState),
+    residenceLatitude: value(
+      input.residenceLatitude,
+      previous.residenceLatitude,
+    ),
+    residenceLongitude: value(
+      input.residenceLongitude,
+      previous.residenceLongitude,
+    ),
+    predefinedBoardingLabel: value(
+      input.predefinedBoardingLabel,
+      previous.predefinedBoardingLabel,
+    ),
+    predefinedBoardingStreet: value(
+      input.predefinedBoardingStreet,
+      previous.predefinedBoardingStreet,
+    ),
+    predefinedBoardingNumber: value(
+      input.predefinedBoardingNumber,
+      previous.predefinedBoardingNumber,
+    ),
+    predefinedBoardingComplement: value(
+      input.predefinedBoardingComplement,
+      previous.predefinedBoardingComplement,
+    ),
+    predefinedBoardingDistrict: value(
+      input.predefinedBoardingDistrict,
+      previous.predefinedBoardingDistrict,
+    ),
+    predefinedBoardingPostalCode: value(
+      input.predefinedBoardingPostalCode,
+      previous.predefinedBoardingPostalCode,
+    ),
+    predefinedBoardingCity: value(
+      input.predefinedBoardingCity,
+      previous.predefinedBoardingCity,
+    ),
+    predefinedBoardingState: value(
+      input.predefinedBoardingState,
+      previous.predefinedBoardingState,
+    ),
+    predefinedBoardingLatitude: value(
+      input.predefinedBoardingLatitude,
+      previous.predefinedBoardingLatitude,
+    ),
+    predefinedBoardingLongitude: value(
+      input.predefinedBoardingLongitude,
+      previous.predefinedBoardingLongitude,
+    ),
+    predefinedBoardingOrigin: value(
+      input.predefinedBoardingOrigin,
+      previous.predefinedBoardingOrigin,
+    ),
+    predefinedBoardingFixedPointId: value(
+      input.predefinedBoardingFixedPointId,
+      previous.predefinedBoardingFixedPointId,
+    ),
+  });
+}
 
 export class PassengersUseCase {
   constructor(
@@ -160,107 +260,7 @@ export class PassengersUseCase {
     ) {
       throw forbidden('O colaborador informado nao pertence ao seu acesso.');
     }
-    const previous = currentPassenger.passenger;
-    const data = normalizePassengerData({
-      routingCompanyId: previous.routingCompanyId,
-      externalReference:
-        input.externalReference === undefined
-          ? previous.externalReference
-          : input.externalReference,
-      fullName: input.fullName ?? previous.fullName,
-      shift: input.shift === undefined ? previous.shift : input.shift,
-      requiredArrivalTime:
-        input.requiredArrivalTime === undefined
-          ? previous.requiredArrivalTime
-          : input.requiredArrivalTime,
-      sector: input.sector === undefined ? previous.sector : input.sector,
-      accessibilityRequired:
-        input.accessibilityRequired ?? previous.accessibilityRequired,
-      accessibilityNotes:
-        input.accessibilityNotes === undefined
-          ? previous.accessibilityNotes
-          : input.accessibilityNotes,
-      residenceStreet:
-        input.residenceStreet === undefined
-          ? previous.residenceStreet
-          : input.residenceStreet,
-      residenceNumber:
-        input.residenceNumber === undefined
-          ? previous.residenceNumber
-          : input.residenceNumber,
-      residenceComplement:
-        input.residenceComplement === undefined
-          ? previous.residenceComplement
-          : input.residenceComplement,
-      residenceDistrict:
-        input.residenceDistrict === undefined
-          ? previous.residenceDistrict
-          : input.residenceDistrict,
-      residencePostalCode:
-        input.residencePostalCode === undefined
-          ? previous.residencePostalCode
-          : input.residencePostalCode,
-      residenceCity:
-        input.residenceCity === undefined
-          ? previous.residenceCity
-          : input.residenceCity,
-      residenceState:
-        input.residenceState === undefined
-          ? previous.residenceState
-          : input.residenceState,
-      residenceLatitude:
-        input.residenceLatitude === undefined
-          ? previous.residenceLatitude
-          : input.residenceLatitude,
-      residenceLongitude:
-        input.residenceLongitude === undefined
-          ? previous.residenceLongitude
-          : input.residenceLongitude,
-      predefinedBoardingLabel:
-        input.predefinedBoardingLabel === undefined
-          ? previous.predefinedBoardingLabel
-          : input.predefinedBoardingLabel,
-      predefinedBoardingStreet:
-        input.predefinedBoardingStreet === undefined
-          ? previous.predefinedBoardingStreet
-          : input.predefinedBoardingStreet,
-      predefinedBoardingNumber:
-        input.predefinedBoardingNumber === undefined
-          ? previous.predefinedBoardingNumber
-          : input.predefinedBoardingNumber,
-      predefinedBoardingComplement:
-        input.predefinedBoardingComplement === undefined
-          ? previous.predefinedBoardingComplement
-          : input.predefinedBoardingComplement,
-      predefinedBoardingDistrict:
-        input.predefinedBoardingDistrict === undefined
-          ? previous.predefinedBoardingDistrict
-          : input.predefinedBoardingDistrict,
-      predefinedBoardingPostalCode:
-        input.predefinedBoardingPostalCode === undefined
-          ? previous.predefinedBoardingPostalCode
-          : input.predefinedBoardingPostalCode,
-      predefinedBoardingCity:
-        input.predefinedBoardingCity === undefined
-          ? previous.predefinedBoardingCity
-          : input.predefinedBoardingCity,
-      predefinedBoardingState:
-        input.predefinedBoardingState === undefined
-          ? previous.predefinedBoardingState
-          : input.predefinedBoardingState,
-      predefinedBoardingLatitude:
-        input.predefinedBoardingLatitude === undefined
-          ? previous.predefinedBoardingLatitude
-          : input.predefinedBoardingLatitude,
-      predefinedBoardingLongitude:
-        input.predefinedBoardingLongitude === undefined
-          ? previous.predefinedBoardingLongitude
-          : input.predefinedBoardingLongitude,
-      predefinedBoardingOrigin:
-        input.predefinedBoardingOrigin === undefined
-          ? previous.predefinedBoardingOrigin
-          : input.predefinedBoardingOrigin,
-    });
+    const data = mergePassengerData(currentPassenger.passenger, input);
     const updated = await this.passengers.update({
       companyId: current.companyId,
       passengerId,

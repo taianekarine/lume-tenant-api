@@ -23,6 +23,11 @@ import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
 import { FixedPointRepository } from '../../contracts/fixed-point.repository';
 import type { RoutingFixedPointProps } from '../../../domain/routing/fixed-point';
 import { PostalCodeLookupService } from '../../../infra/routing/postal-code-lookup.service';
+import {
+  mergePassengerData,
+  type PassengerMutationInput,
+  validateDocuments,
+} from './passengers.use-case';
 
 function deterministicCommandId(batchId: string, rowNumber: number): string {
   const bytes = createHash('sha256')
@@ -342,6 +347,18 @@ export class PassengerImportUseCase {
       const payload = {
         externalReference: row.externalReference,
         fullName: row.fullName,
+        shift: row.shift,
+        requiredArrivalTime: row.requiredArrivalTime,
+        sector: row.sector,
+        accessibilityRequired: row.accessibilityRequired,
+        accessibilityNotes: row.accessibilityNotes,
+        residenceStreet: enrichedRow.residenceStreet,
+        residenceNumber: enrichedRow.residenceNumber,
+        residenceComplement: enrichedRow.residenceComplement,
+        residenceDistrict: enrichedRow.residenceDistrict,
+        residencePostalCode: enrichedRow.residencePostalCode,
+        residenceCity: enrichedRow.residenceCity,
+        residenceState: enrichedRow.residenceState,
         fixedPointCode: row.fixedPointCode,
         documentTypeCodes: row.documents.map(
           (document) => document.documentTypeCode,
@@ -580,6 +597,75 @@ export class PassengerImportUseCase {
         ...record.payload,
         addressCorrected: true,
         postalCode: data.residencePostalCode,
+      },
+      problems,
+    });
+    return this.present(refreshed);
+  }
+
+  async resolveData(
+    current: AuthenticatedPrincipal,
+    batchId: string,
+    recordId: string,
+    input: Partial<PassengerMutationInput> & { commandId: string },
+  ) {
+    const batch = await this.passengers.getImport(current.companyId, batchId);
+    if (!batch) throw notFound('Importacao');
+    const record = batch.records.find((item) => item.id === recordId);
+    if (!record || !record.passengerId) {
+      throw notFound('Linha da importacao');
+    }
+    if (
+      current.routingCompanyId &&
+      record.routingCompanyId !== current.routingCompanyId
+    ) {
+      throw forbidden('Esta linha nao pertence ao seu acesso.');
+    }
+    const aggregate = await this.passengers.find(
+      current.companyId,
+      record.passengerId,
+    );
+    if (!aggregate) throw notFound('Colaborador');
+
+    const data = mergePassengerData(aggregate.passenger, input);
+    const issues = validatePassengerData(data);
+    const updated = await this.passengers.update({
+      companyId: current.companyId,
+      passengerId: aggregate.passenger.id,
+      data,
+      documents:
+        input.documents === undefined
+          ? undefined
+          : validateDocuments(input.documents),
+      issues,
+      actorUserId: current.id,
+      commandId: input.commandId,
+      expectedVersion: aggregate.passenger.version,
+      action: 'PASSENGER_IMPORT_DATA_RESOLVED',
+      reason: `Complementacao manual da importacao ${batchId}, linha ${record.rowNumber}`,
+    });
+    if (!updated) {
+      throw conflict(
+        'O colaborador foi alterado. Recarregue e tente novamente.',
+      );
+    }
+    const problems = issues.map((issue) => ({
+      field: issue.field,
+      reason: issue.reason,
+      resolutionAction: issue.resolutionAction,
+    }));
+    const refreshed = await this.passengers.resolveImportRecord({
+      companyId: current.companyId,
+      batchId,
+      recordId,
+      action: issues.some((issue) => issue.blocksRouting)
+        ? 'pending'
+        : 'updated',
+      payload: {
+        ...record.payload,
+        manuallyCorrected: true,
+        shift: data.shift,
+        requiredArrivalTime: data.requiredArrivalTime,
       },
       problems,
     });

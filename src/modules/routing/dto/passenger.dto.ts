@@ -292,3 +292,57 @@ export class ResolvePassengerImportAddressDto {
   @MaxLength(120)
   complement?: string | null;
 }
+
+export class ResolvePassengerImportDataDto {
+  @IsUUID('4')
+  commandId!: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(160)
+  fullName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  externalReference?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  shift?: string | null;
+
+  @IsOptional()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  requiredArrivalTime?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  sector?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  accessibilityRequired?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  accessibilityNotes?: string | null;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PassengerAddressDto)
+  residence?: PassengerAddressDto;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ArrayUnique(
+    (document: PassengerDocumentDataDto) => document.documentTypeCode,
+  )
+  @ValidateNested({ each: true })
+  @Type(() => PassengerDocumentDataDto)
+  documents?: PassengerDocumentDataDto[];
+}

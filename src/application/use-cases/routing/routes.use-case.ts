@@ -128,11 +128,12 @@ export class RoutesUseCase {
     });
     const generated = [];
     for (const shift of shifts) {
+      // O horario contratual governa a rota. O horario do colaborador pode ser
+      // uma referencia individual de embarque e nao deve exclui-lo do turno.
       const matching = allPassengers.items.filter(
         (aggregate) =>
           aggregate.passenger.shift?.toLocaleLowerCase('pt-BR') ===
-            shift.name.toLocaleLowerCase('pt-BR') &&
-          aggregate.passenger.requiredArrivalTime === shift.requiredArrivalTime,
+          shift.name.toLocaleLowerCase('pt-BR'),
       );
       if (matching.length === 0) continue;
 

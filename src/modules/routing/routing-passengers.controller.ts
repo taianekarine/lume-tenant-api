@@ -39,6 +39,7 @@ import {
   ImportPassengersDto,
   ListPassengersQueryDto,
   ResolvePassengerImportAddressDto,
+  ResolvePassengerImportDataDto,
   type PassengerAddressDto,
   type PassengerBoardingPointDto,
   UpdatePassengerDto,
@@ -208,6 +209,21 @@ export class RoutingPassengersController {
     @Body() body: ResolvePassengerImportAddressDto,
   ) {
     return this.imports.resolveAddress(current, batchId, recordId, body);
+  }
+
+  @Patch('passengers/imports/:batchId/records/:recordId/data')
+  @RequireAnyPermission('passengers:import', 'passengers:update')
+  resolveImportData(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe({ version: '4' })) batchId: string,
+    @Param('recordId', new ParseUUIDPipe({ version: '4' })) recordId: string,
+    @Body() body: ResolvePassengerImportDataDto,
+  ) {
+    const { residence, ...data } = body;
+    return this.imports.resolveData(current, batchId, recordId, {
+      ...data,
+      ...mapAddress(residence),
+    });
   }
 
   @Get('passengers/:passengerId')
