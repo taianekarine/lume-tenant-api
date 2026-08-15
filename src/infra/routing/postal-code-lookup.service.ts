@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
 import { onlyDigits } from '../../shared/utils/normalization';
 
@@ -11,14 +11,23 @@ export interface PostalCodeLookupResult {
 
 type Fetcher = typeof fetch;
 
+export const POSTAL_CODE_FETCHER = Symbol('POSTAL_CODE_FETCHER');
+
 @Injectable()
 export class PostalCodeLookupService {
+  private readonly fetcher: Fetcher;
   private readonly cache = new Map<
     string,
     Promise<PostalCodeLookupResult | null>
   >();
 
-  constructor(private readonly fetcher: Fetcher = fetch) {}
+  constructor(
+    @Optional()
+    @Inject(POSTAL_CODE_FETCHER)
+    fetcher?: Fetcher,
+  ) {
+    this.fetcher = fetcher ?? fetch;
+  }
 
   lookup(value: string): Promise<PostalCodeLookupResult | null> {
     const postalCode = onlyDigits(value);

@@ -1,8 +1,20 @@
+import { Test } from '@nestjs/testing';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PostalCodeLookupService } from './postal-code-lookup.service';
 
 describe('PostalCodeLookupService', () => {
+  it('resolves through the Nest container without a custom fetcher', async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [PostalCodeLookupService],
+    }).compile();
+
+    expect(moduleRef.get(PostalCodeLookupService)).toBeInstanceOf(
+      PostalCodeLookupService,
+    );
+    await moduleRef.close();
+  });
+
   it('uses ViaCEP once and reuses the normalized postal code result', async () => {
     const fetcher = vi.fn(async () =>
       Promise.resolve(
