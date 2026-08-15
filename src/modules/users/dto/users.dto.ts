@@ -65,7 +65,7 @@ export class CreateUserDto {
   @ApiPropertyOptional({
     format: 'uuid',
     description:
-      'Empresa atendida quando o acesso pertence a um cliente da Milenium.',
+      'Cliente atendido quando o acesso pertence a um cliente da Milenium.',
   })
   @IsOptional()
   @IsUUID('4')
@@ -188,7 +188,7 @@ export class UpdateUserDto {
     format: 'uuid',
     nullable: true,
     description:
-      'Empresa atendida do usuario cliente; null identifica usuario interno.',
+      'Cliente atendido do usuario cliente; null identifica usuario interno.',
   })
   @IsOptional()
   @IsUUID('4')

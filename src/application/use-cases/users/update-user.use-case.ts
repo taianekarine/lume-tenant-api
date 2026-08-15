@@ -192,27 +192,21 @@ export class UpdateUserUseCase {
         );
       }
 
-      if (finalClientCategory === 'legal-entity') {
-        if (!finalRoutingCompanyId) {
-          throw validationError(
-            'Selecione a empresa atendida para o acesso Cliente PJ.',
-          );
-        }
-        const routingCompany = await this.routing?.findCompany(
-          input.companyId,
-          finalRoutingCompanyId,
-        );
-        if (!routingCompany || routingCompany.status !== 'active') {
-          throw validationError('Selecione uma empresa cliente ativa.');
-        }
-      } else if (finalRoutingCompanyId) {
+      if (!finalRoutingCompanyId) {
         throw validationError(
-          'O acesso Cliente PF nao pode ser vinculado a uma empresa atendida.',
+          'Selecione o cliente PF ou PJ vinculado a este acesso.',
         );
+      }
+      const routingCompany = await this.routing?.findCompany(
+        input.companyId,
+        finalRoutingCompanyId,
+      );
+      if (!routingCompany || routingCompany.status !== 'active') {
+        throw validationError('Selecione um cliente ativo.');
       }
     } else if (finalDepartments.includes('client-company')) {
       throw validationError(
-        'O perfil Empresa cliente e o vinculo com empresa atendida exigem o modo de acesso Cliente.',
+        'O perfil Empresa cliente e o vinculo com cliente atendido exigem o modo de acesso Cliente.',
       );
     }
 

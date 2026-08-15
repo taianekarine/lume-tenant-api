@@ -201,6 +201,7 @@ export class PrismaRoutingRepository extends RoutingRepository {
         const row = await transaction.routingCompany.update({
           where: { id_companyId: { id: routingCompanyId, companyId } },
           data: {
+            ...(input.taxId === undefined ? {} : { taxId: input.taxId }),
             ...(input.legalName === undefined
               ? {}
               : { legalName: input.legalName }),
@@ -237,5 +238,40 @@ export class PrismaRoutingRepository extends RoutingRepository {
     } catch (error) {
       rethrowKnownPrismaConflict(error);
     }
+  }
+
+  async deleteCompany(companyId: string, routingCompanyId: string) {
+    return this.prisma.$transaction(async (transaction) => {
+      const company = await transaction.routingCompany.findUnique({
+        where: { id_companyId: { id: routingCompanyId, companyId } },
+        select: { id: true },
+      });
+      if (!company) return 'not-found' as const;
+      const [users, passengers, contracts, routes, fixedPoints] =
+        await Promise.all([
+          transaction.user.count({
+            where: { companyId, routingCompanyId },
+          }),
+          transaction.passenger.count({
+            where: { companyId, routingCompanyId },
+          }),
+          transaction.routingContract.count({
+            where: { companyId, routingCompanyId },
+          }),
+          transaction.routingRoute.count({
+            where: { companyId, routingCompanyId },
+          }),
+          transaction.routingFixedPoint.count({
+            where: { companyId, routingCompanyId },
+          }),
+        ]);
+      if (users + passengers + contracts + routes + fixedPoints > 0) {
+        return 'in-use' as const;
+      }
+      await transaction.routingCompany.delete({
+        where: { id_companyId: { id: routingCompanyId, companyId } },
+      });
+      return 'deleted' as const;
+    });
   }
 }

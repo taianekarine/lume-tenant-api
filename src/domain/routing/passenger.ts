@@ -58,6 +58,7 @@ export interface PassengerData {
   predefinedBoardingLatitude: number | null;
   predefinedBoardingLongitude: number | null;
   predefinedBoardingOrigin: RoutingDataOrigin | null;
+  predefinedBoardingFixedPointId: string | null;
 }
 
 export interface PassengerProps extends PassengerData {
@@ -94,8 +95,12 @@ function coordinate(value?: number | null): number | null {
 }
 
 export function normalizePassengerData(
-  input: Omit<PassengerData, 'predefinedBoardingOrigin'> & {
+  input: Omit<
+    PassengerData,
+    'predefinedBoardingOrigin' | 'predefinedBoardingFixedPointId'
+  > & {
     predefinedBoardingOrigin?: RoutingDataOrigin | null;
+    predefinedBoardingFixedPointId?: string | null;
   },
 ): PassengerData {
   const fullName = input.fullName.trim().replace(/\s+/g, ' ');
@@ -147,6 +152,9 @@ export function normalizePassengerData(
     predefinedBoardingLongitude: coordinate(input.predefinedBoardingLongitude),
     predefinedBoardingOrigin: hasPredefinedBoardingPoint
       ? (input.predefinedBoardingOrigin ?? 'company')
+      : null,
+    predefinedBoardingFixedPointId: hasPredefinedBoardingPoint
+      ? (input.predefinedBoardingFixedPointId ?? null)
       : null,
   };
 }

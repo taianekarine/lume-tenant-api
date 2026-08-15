@@ -21,6 +21,11 @@ enum RoutingCompanyStatus {
   SUSPENDED @map("suspended")
 }
 
+enum RoutingFixedPointStatus {
+  ACTIVE   @map("active")
+  INACTIVE @map("inactive")
+}
+
 enum PassengerStatus {
   ACTIVE                @map("active")
   ON_LEAVE              @map("on-leave")
@@ -409,6 +414,7 @@ model Company {
   routingContractCostCenters   RoutingContractCostCenter[]
   routingContractShifts        RoutingContractShift[]
   routingContractHistoryEntries RoutingContractHistory[]
+  routingFixedPoints             RoutingFixedPoint[]
 
   @@map("companies")
 }
@@ -459,6 +465,7 @@ model User {
   publishedRoutingRoutes       RoutingRoute[]                     @relation("RoutingRoutePublisher")
   createdRoutingContracts      RoutingContract[]                  @relation("RoutingContractCreator")
   routingContractHistoryEntries RoutingContractHistory[]          @relation("RoutingContractHistoryActor")
+  createdRoutingFixedPoints     RoutingFixedPoint[]                 @relation("RoutingFixedPointCreator")
   refreshTokens                 RefreshToken[]
   auditLogs                     TenantAuditLog[]
   assignedWhatsappConversations WhatsAppConversation[]           @relation("ConversationAssignee")
@@ -515,11 +522,47 @@ model RoutingCompany {
   importRecords PassengerImportRecord[]
   routes RoutingRoute[]
   contracts RoutingContract[]
+  fixedPoints RoutingFixedPoint[]
 
   @@unique([id, companyId])
   @@unique([companyId, taxId])
   @@index([companyId, status, legalName])
   @@map("routing_companies")
+}
+
+model RoutingFixedPoint {
+  id               String                  @id @default(uuid()) @db.Uuid
+  companyId        String                  @map("company_id") @db.Uuid
+  routingCompanyId String?                 @map("routing_company_id") @db.Uuid
+  code             String                  @db.VarChar(24)
+  name             String                  @db.VarChar(160)
+  status           RoutingFixedPointStatus @default(ACTIVE)
+  street           String                  @db.VarChar(160)
+  number           String                  @db.VarChar(30)
+  complement       String?                 @db.VarChar(120)
+  district         String                  @db.VarChar(120)
+  postalCode       String                  @map("postal_code") @db.VarChar(8)
+  city             String                  @db.VarChar(120)
+  state            String                  @db.Char(2)
+  latitude         Decimal?                @db.Decimal(10, 7)
+  longitude        Decimal?                @db.Decimal(10, 7)
+  version          Int                     @default(1)
+  createdByUserId  String                  @map("created_by_user_id") @db.Uuid
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company                Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany         RoutingCompany?   @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  createdBy              User              @relation("RoutingFixedPointCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  originContracts        RoutingContract[] @relation("RoutingContractOriginFixedPoint")
+  destinationContracts   RoutingContract[] @relation("RoutingContractDestinationFixedPoint")
+  passengers             Passenger[]
+  routePoints            RoutingRoutePoint[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, code])
+  @@index([companyId, routingCompanyId, status, name])
+  @@map("routing_fixed_points")
 }
 
 model RoutingCompanyHistory {
@@ -575,6 +618,7 @@ model Passenger {
   predefinedBoardingLatitude      Decimal?                    @map("predefined_boarding_latitude") @db.Decimal(10, 7)
   predefinedBoardingLongitude     Decimal?                    @map("predefined_boarding_longitude") @db.Decimal(10, 7)
   predefinedBoardingOrigin        RoutingDataOrigin?          @map("predefined_boarding_origin")
+  predefinedBoardingFixedPointId  String?                     @map("predefined_boarding_fixed_point_id") @db.Uuid
   status                          PassengerStatus             @default(ACTIVE)
   registrationStatus              PassengerRegistrationStatus @default(PENDING) @map("registration_status")
   version                         Int                         @default(1)
@@ -584,6 +628,7 @@ model Passenger {
 
   company        Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
   routingCompany RoutingCompany         @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  predefinedBoardingFixedPoint RoutingFixedPoint? @relation(fields: [predefinedBoardingFixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
   createdBy      User?                  @relation("PassengerCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
   documents      PassengerDocumentData[]
   issues         PassengerIssue[]
@@ -718,6 +763,8 @@ model RoutingContract {
   id                         String                     @id @default(uuid()) @db.Uuid
   companyId                  String                     @map("company_id") @db.Uuid
   routingCompanyId           String                     @map("routing_company_id") @db.Uuid
+  originFixedPointId         String?                    @map("origin_fixed_point_id") @db.Uuid
+  destinationFixedPointId    String?                    @map("destination_fixed_point_id") @db.Uuid
   code                       String                     @db.VarChar(80)
   name                       String                     @db.VarChar(160)
   operationType              String                     @map("operation_type") @db.VarChar(120)
@@ -764,6 +811,8 @@ model RoutingContract {
 
   company        Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
   routingCompany RoutingCompany             @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  originFixedPoint RoutingFixedPoint?        @relation("RoutingContractOriginFixedPoint", fields: [originFixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
+  destinationFixedPoint RoutingFixedPoint?   @relation("RoutingContractDestinationFixedPoint", fields: [destinationFixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
   createdBy      User                       @relation("RoutingContractCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
   costCenters    RoutingContractCostCenter[]
   shifts         RoutingContractShift[]
@@ -914,6 +963,7 @@ model RoutingRoutePoint {
   id               String             @id @default(uuid()) @db.Uuid
   companyId        String             @map("company_id") @db.Uuid
   routeId          String             @map("route_id") @db.Uuid
+  fixedPointId     String?            @map("fixed_point_id") @db.Uuid
   direction        RoutingDirection   @default(OUTBOUND)
   sequence         Int
   label            String             @db.VarChar(160)
@@ -934,6 +984,7 @@ model RoutingRoutePoint {
 
   company     Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   route       RoutingRoute             @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+  fixedPoint  RoutingFixedPoint?       @relation(fields: [fixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
   passengers  RoutingRoutePassenger[]
 
   @@unique([id, companyId])

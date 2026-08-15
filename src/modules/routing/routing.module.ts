@@ -16,26 +16,47 @@ import { RoutesUseCase } from '../../application/use-cases/routing/routes.use-ca
 import { RoutingAgentService } from '../../infra/routing/routing-agent.service';
 import { RoutingRoutesController } from './routing-routes.controller';
 import { RouteExportService } from '../../infra/routing/route-export.service';
+import { FixedPointRepository } from '../../application/contracts/fixed-point.repository';
+import { FixedPointsUseCase } from '../../application/use-cases/routing/fixed-points.use-case';
+import { RoutingFixedPointsController } from './routing-fixed-points.controller';
+import { PasswordHasher } from '../../application/contracts/cryptography';
+import { UsersRepository } from '../../application/contracts/repositories';
+import { DataExchangeModule } from '../data-exchange/data-exchange.module';
+import { PostalCodeLookupService } from '../../infra/routing/postal-code-lookup.service';
 
 @Module({
+  imports: [DataExchangeModule],
   controllers: [
     RoutingController,
     RoutingContractsController,
     RoutingPassengersController,
     RoutingRoutesController,
+    RoutingFixedPointsController,
   ],
   providers: [
     {
       provide: RoutingCompaniesUseCase,
-      useFactory: (routing: RoutingRepository) =>
-        new RoutingCompaniesUseCase(routing),
-      inject: [RoutingRepository],
+      useFactory: (
+        routing: RoutingRepository,
+        users: UsersRepository,
+        passwordHasher: PasswordHasher,
+      ) => new RoutingCompaniesUseCase(routing, users, passwordHasher),
+      inject: [RoutingRepository, UsersRepository, PasswordHasher],
     },
     {
       provide: RoutingContractsUseCase,
-      useFactory: (contracts: ContractRepository, routing: RoutingRepository) =>
-        new RoutingContractsUseCase(contracts, routing),
-      inject: [ContractRepository, RoutingRepository],
+      useFactory: (
+        contracts: ContractRepository,
+        routing: RoutingRepository,
+        points: FixedPointRepository,
+      ) => new RoutingContractsUseCase(contracts, routing, points),
+      inject: [ContractRepository, RoutingRepository, FixedPointRepository],
+    },
+    {
+      provide: FixedPointsUseCase,
+      useFactory: (points: FixedPointRepository, routing: RoutingRepository) =>
+        new FixedPointsUseCase(points, routing),
+      inject: [FixedPointRepository, RoutingRepository],
     },
     {
       provide: RoutesUseCase,
@@ -65,17 +86,29 @@ import { RouteExportService } from '../../infra/routing/route-export.service';
       inject: [PassengerRepository, RoutingRepository],
     },
     PassengerWorkbookService,
+    PostalCodeLookupService,
     {
       provide: PassengerImportUseCase,
       useFactory: (
         passengers: PassengerRepository,
         routing: RoutingRepository,
         workbook: PassengerWorkbookService,
-      ) => new PassengerImportUseCase(passengers, routing, workbook),
+        points: FixedPointRepository,
+        postalCodes: PostalCodeLookupService,
+      ) =>
+        new PassengerImportUseCase(
+          passengers,
+          routing,
+          workbook,
+          points,
+          postalCodes,
+        ),
       inject: [
         PassengerRepository,
         RoutingRepository,
         PassengerWorkbookService,
+        FixedPointRepository,
+        PostalCodeLookupService,
       ],
     },
   ],
@@ -85,6 +118,7 @@ import { RouteExportService } from '../../infra/routing/route-export.service';
     RoutesUseCase,
     PassengersUseCase,
     PassengerImportUseCase,
+    FixedPointsUseCase,
   ],
 })
 export class RoutingModule {}

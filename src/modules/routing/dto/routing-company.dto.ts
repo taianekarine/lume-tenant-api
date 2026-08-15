@@ -23,8 +23,8 @@ export class CreateRoutingCompanyDto {
   @IsUUID('4')
   commandId!: string;
 
-  @ApiProperty({ example: '12.345.678/0001-95' })
-  @Matches(/^\D*\d(?:\D*\d){13}\D*$/)
+  @ApiProperty({ example: '123.456.789-09', description: 'CPF ou CNPJ' })
+  @Matches(/^(?:\D*\d){11}\D*$|^(?:\D*\d){14}\D*$/)
   taxId!: string;
 
   @IsString()
@@ -53,6 +53,10 @@ export class UpdateRoutingCompanyDto {
   expectedVersion!: number;
 
   @IsOptional()
+  @Matches(/^(?:\D*\d){11}\D*$|^(?:\D*\d){14}\D*$/)
+  taxId?: string;
+
+  @IsOptional()
   @IsString()
   @MinLength(2)
   @MaxLength(160)
@@ -71,6 +75,16 @@ export class UpdateRoutingCompanyDto {
   @IsOptional()
   @IsIn(ROUTING_COMPANY_STATUSES)
   status?: RoutingCompanyStatus;
+}
+
+export class DeleteRoutingCompanyDto {
+  @IsUUID('4')
+  commandId!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  password!: string;
 }
 
 export class ListRoutingCompaniesQueryDto {

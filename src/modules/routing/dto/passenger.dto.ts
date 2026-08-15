@@ -269,4 +269,26 @@ export class ImportPassengersDto {
   @IsOptional()
   @IsUUID('4')
   routeId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  routingCompanyId?: string;
+}
+
+export class ResolvePassengerImportAddressDto {
+  @IsUUID('4')
+  commandId!: string;
+
+  @Matches(/^\D*\d(?:\D*\d){7}\D*$/)
+  postalCode!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(30)
+  number!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  complement?: string | null;
 }

@@ -91,6 +91,7 @@ function address(
 function mapPoint(row: RouteRow['points'][number]): RoutePoint {
   return {
     id: row.id,
+    fixedPointId: row.fixedPointId,
     direction: row.direction.toLowerCase() as RoutePoint['direction'],
     sequence: row.sequence,
     address: {
@@ -250,6 +251,7 @@ function pointData(companyId: string, routeId: string, point: RoutePoint) {
     id: point.id,
     companyId,
     routeId,
+    fixedPointId: point.fixedPointId ?? null,
     direction: point.direction.toUpperCase() as RoutingDirection,
     sequence: point.sequence,
     label: point.address.label,

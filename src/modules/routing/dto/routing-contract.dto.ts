@@ -125,6 +125,14 @@ export class RoutingContractDataDto {
   @IsUUID('4')
   routingCompanyId!: string;
 
+  @IsOptional()
+  @IsUUID('4')
+  originFixedPointId?: string | null;
+
+  @IsOptional()
+  @IsUUID('4')
+  destinationFixedPointId?: string | null;
+
   @IsString()
   @MinLength(1)
   @MaxLength(80)

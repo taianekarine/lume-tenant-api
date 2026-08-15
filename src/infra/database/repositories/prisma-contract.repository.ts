@@ -60,6 +60,8 @@ function mapContract(row: ContractRow): ContractProps {
     id: row.id,
     companyId: row.companyId,
     routingCompanyId: row.routingCompanyId,
+    originFixedPointId: row.originFixedPointId,
+    destinationFixedPointId: row.destinationFixedPointId,
     code: row.code,
     name: row.name,
     operationType: row.operationType,
@@ -106,6 +108,8 @@ function mapContract(row: ContractRow): ContractProps {
 function contractData(input: ContractData) {
   return {
     routingCompanyId: input.routingCompanyId,
+    originFixedPointId: input.originFixedPointId,
+    destinationFixedPointId: input.destinationFixedPointId,
     code: input.code,
     name: input.name,
     operationType: input.operationType,

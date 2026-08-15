@@ -13,6 +13,7 @@ import {
 } from '../../../domain/routing/contract';
 import { ContractRepository } from '../../contracts/contract.repository';
 import type { ContractListQuery } from '../../contracts/contract.repository';
+import { FixedPointRepository } from '../../contracts/fixed-point.repository';
 import { RoutingRepository } from '../../contracts/routing.repository';
 import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
 
@@ -30,7 +31,40 @@ export class RoutingContractsUseCase {
   constructor(
     private readonly contracts: ContractRepository,
     private readonly companies: RoutingRepository,
+    private readonly points: FixedPointRepository,
   ) {}
+
+  private async resolveFixedPoints(
+    current: AuthenticatedPrincipal,
+    input: ContractData,
+  ): Promise<ContractData> {
+    const resolve = async (id: string | null, label: string) => {
+      if (!id) return null;
+      const point = await this.points.find(current.companyId, id);
+      if (!point || point.status !== 'active') {
+        throw validationError(`Selecione um ponto fixo ativo para ${label}.`);
+      }
+      if (
+        point.routingCompanyId &&
+        point.routingCompanyId !== input.routingCompanyId
+      ) {
+        throw validationError(
+          `O ponto fixo de ${label} e exclusivo de outro cliente.`,
+        );
+      }
+      return point;
+    };
+    const origin = await resolve(input.originFixedPointId, 'a saida');
+    const destination = await resolve(
+      input.destinationFixedPointId,
+      'o destino',
+    );
+    return normalizeContractData({
+      ...input,
+      origin: origin?.address ?? input.origin,
+      destination: destination?.address ?? input.destination,
+    });
+  }
 
   private async assertCompanyScope(
     current: AuthenticatedPrincipal,
@@ -56,7 +90,8 @@ export class RoutingContractsUseCase {
     input: ContractData & { commandId: string },
   ) {
     await this.assertCompanyScope(current, input.routingCompanyId);
-    const contract = createContract(current.companyId, current.id, input);
+    const data = await this.resolveFixedPoints(current, input);
+    const contract = createContract(current.companyId, current.id, data);
     const created = await this.contracts.create({
       contract,
       actorUserId: current.id,
@@ -99,6 +134,14 @@ export class RoutingContractsUseCase {
     const previous = await this.get(current, contractId);
     const data = normalizeContractData({
       routingCompanyId: input.routingCompanyId ?? previous.routingCompanyId,
+      originFixedPointId:
+        input.originFixedPointId === undefined
+          ? previous.originFixedPointId
+          : input.originFixedPointId,
+      destinationFixedPointId:
+        input.destinationFixedPointId === undefined
+          ? previous.destinationFixedPointId
+          : input.destinationFixedPointId,
       code: input.code ?? previous.code,
       name: input.name ?? previous.name,
       operationType: input.operationType ?? previous.operationType,
@@ -138,10 +181,11 @@ export class RoutingContractsUseCase {
       shifts: input.shifts ?? previous.shifts,
     });
     await this.assertCompanyScope(current, data.routingCompanyId);
+    const resolvedData = await this.resolveFixedPoints(current, data);
     const updated = await this.contracts.update({
       companyId: current.companyId,
       contractId,
-      data,
+      data: resolvedData,
       actorUserId: current.id,
       commandId: input.commandId,
       expectedVersion: input.expectedVersion,

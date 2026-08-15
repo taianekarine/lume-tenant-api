@@ -81,6 +81,7 @@ function mapPassenger(row: PassengerRow): PassengerAggregate {
       predefinedBoardingOrigin: row.predefinedBoardingOrigin
         ? (row.predefinedBoardingOrigin.toLowerCase() as RoutingDataOrigin)
         : null,
+      predefinedBoardingFixedPointId: row.predefinedBoardingFixedPointId,
       status: row.status.toLowerCase().replaceAll('_', '-') as PassengerStatus,
       registrationStatus:
         row.registrationStatus.toLowerCase() as PassengerRegistrationStatus,
@@ -150,6 +151,7 @@ function snapshot(passenger: PassengerProps): Prisma.InputJsonValue {
       latitude: passenger.predefinedBoardingLatitude,
       longitude: passenger.predefinedBoardingLongitude,
       origin: passenger.predefinedBoardingOrigin,
+      fixedPointId: passenger.predefinedBoardingFixedPointId,
     },
     status: passenger.status,
     registrationStatus: passenger.registrationStatus,
@@ -671,5 +673,55 @@ export class PrismaPassengerRepository extends PassengerRepository {
         problems: record.problems as unknown as PassengerImportProblem[],
       })),
     };
+  }
+
+  async resolveImportRecord(
+    input: Parameters<PassengerRepository['resolveImportRecord']>[0],
+  ) {
+    await this.prisma.$transaction(async (transaction) => {
+      const updated = await transaction.passengerImportRecord.updateMany({
+        where: {
+          id: input.recordId,
+          companyId: input.companyId,
+          batchId: input.batchId,
+        },
+        data: {
+          action: importAction(input.action),
+          payload: input.payload as Prisma.InputJsonValue,
+          problems: input.problems as unknown as Prisma.InputJsonValue,
+        },
+      });
+      if (!updated.count) return;
+      const [pendingCount, conflictCount] = await Promise.all([
+        transaction.passengerImportRecord.count({
+          where: {
+            companyId: input.companyId,
+            batchId: input.batchId,
+            action: PrismaPassengerImportAction.PENDING,
+          },
+        }),
+        transaction.passengerImportRecord.count({
+          where: {
+            companyId: input.companyId,
+            batchId: input.batchId,
+            action: PrismaPassengerImportAction.CONFLICT,
+          },
+        }),
+      ]);
+      await transaction.passengerImportBatch.update({
+        where: {
+          id_companyId: { id: input.batchId, companyId: input.companyId },
+        },
+        data: {
+          pendingCount,
+          conflictCount,
+          status:
+            pendingCount || conflictCount
+              ? PrismaPassengerImportBatchStatus.REVIEW_REQUIRED
+              : PrismaPassengerImportBatchStatus.COMPLETED,
+        },
+      });
+    });
+    return this.getImport(input.companyId, input.batchId);
   }
 }

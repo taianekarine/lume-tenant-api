@@ -7,5 +7,6 @@ import { DataExchangeController } from './data-exchange.controller';
 @Module({
   controllers: [DataExchangeController],
   providers: [DataExchangeConverter, DataExchangeUseCase],
+  exports: [DataExchangeConverter],
 })
 export class DataExchangeModule {}

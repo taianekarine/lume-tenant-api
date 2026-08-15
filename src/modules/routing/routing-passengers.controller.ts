@@ -38,6 +38,7 @@ import {
   CreatePassengerDto,
   ImportPassengersDto,
   ListPassengersQueryDto,
+  ResolvePassengerImportAddressDto,
   type PassengerAddressDto,
   type PassengerBoardingPointDto,
   UpdatePassengerDto,
@@ -83,6 +84,7 @@ function mapBoardingPoint(
       predefinedBoardingLatitude: null,
       predefinedBoardingLongitude: null,
       predefinedBoardingOrigin: null,
+      predefinedBoardingFixedPointId: null,
     };
   }
   return {
@@ -97,6 +99,7 @@ function mapBoardingPoint(
     predefinedBoardingLatitude: point.latitude,
     predefinedBoardingLongitude: point.longitude,
     predefinedBoardingOrigin: 'company',
+    predefinedBoardingFixedPointId: null,
   };
 }
 
@@ -136,8 +139,12 @@ export class RoutingPassengersController {
   @Get('passengers/template.xlsx')
   @RequireAnyPermission('passengers:import')
   @Header('Cache-Control', 'private, no-store')
-  async template(@Res({ passthrough: true }) response: Response) {
-    const content = await this.imports.template();
+  async template(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Query('routingCompanyId') routingCompanyId: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const content = await this.imports.template(current, routingCompanyId);
     response.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -175,7 +182,7 @@ export class RoutingPassengersController {
     @UploadedFile() file: UploadedPassengerWorkbook | undefined,
     @Body() body: ImportPassengersDto,
   ) {
-    if (!file) throw validationError('Envie o arquivo XLSX em file.');
+    if (!file) throw validationError('Envie a planilha em file.');
     return this.imports.import(current, {
       ...body,
       fileName: file.originalname,
@@ -190,6 +197,17 @@ export class RoutingPassengersController {
     @Param('batchId', new ParseUUIDPipe({ version: '4' })) batchId: string,
   ) {
     return this.imports.get(current, batchId);
+  }
+
+  @Patch('passengers/imports/:batchId/records/:recordId/address')
+  @RequireAnyPermission('passengers:import', 'passengers:update')
+  resolveImportAddress(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe({ version: '4' })) batchId: string,
+    @Param('recordId', new ParseUUIDPipe({ version: '4' })) recordId: string,
+    @Body() body: ResolvePassengerImportAddressDto,
+  ) {
+    return this.imports.resolveAddress(current, batchId, recordId, body);
   }
 
   @Get('passengers/:passengerId')

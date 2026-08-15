@@ -267,9 +267,20 @@ describe('tenant-scoped user use cases', () => {
     });
   });
 
-  it('creates Cliente PF without a served-company link', async () => {
-    const created = await createUser.execute({
+  it('creates Cliente PF scoped to its client record', async () => {
+    const routingCompanyId = '00000000-0000-4000-8000-000000000089';
+    const routing = {
+      findCompany: async () => ({ id: routingCompanyId, status: 'active' }),
+    } as unknown as RoutingRepository;
+    const useCase = new CreateUserUseCase(
+      users,
+      new FakePasswordHasher(),
+      undefined,
+      routing,
+    );
+    const created = await useCase.execute({
       companyId: store.companies[0].id,
+      routingCompanyId,
       name: 'Cliente PF',
       username: 'cliente.pf',
       email: 'cliente.pf@empresa.test',
@@ -283,15 +294,14 @@ describe('tenant-scoped user use cases', () => {
     expect(created).toMatchObject({
       type: 'client',
       clientCategory: 'individual',
-      routingCompanyId: null,
+      routingCompanyId,
     });
   });
 
-  it('rejects Cliente PF linked to a PJ', async () => {
+  it('rejects Cliente PF without a client link', async () => {
     await expect(
       createUser.execute({
         companyId: store.companies[0].id,
-        routingCompanyId: '00000000-0000-4000-8000-000000000088',
         name: 'Cliente PF invalido',
         username: 'cliente.pf.invalido',
         email: 'cliente.pf.invalido@empresa.test',

@@ -186,4 +186,12 @@ export abstract class PassengerRepository {
     companyId: string,
     batchId: string,
   ): Promise<PassengerImportBatchAggregate | null>;
+  abstract resolveImportRecord(input: {
+    companyId: string;
+    batchId: string;
+    recordId: string;
+    action: PassengerImportAction;
+    payload: Readonly<Record<string, unknown>>;
+    problems: PassengerImportProblem[];
+  }): Promise<PassengerImportBatchAggregate | null>;
 }

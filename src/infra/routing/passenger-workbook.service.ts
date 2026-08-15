@@ -3,45 +3,35 @@ import ExcelJS, { type Cell, type Worksheet } from 'exceljs';
 
 import { validationError } from '../../core/errors/app-error';
 import type { PassengerDocumentInput } from '../../domain/routing/passenger';
+import { DataExchangeConverter } from '../data-exchange/data-exchange-converter';
 
 const TEMPLATE_SHEET = 'Colaboradores';
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_ROWS = 10_000;
 
 export const PASSENGER_TEMPLATE_HEADERS = [
-  'CNPJ da empresa',
-  'Codigo externo',
+  'Nome completo',
+  'Identificador do colaborador (opcional)',
   'Turno',
   'Horario de chegada',
   'Setor',
-  'Nome completo',
-  'Logradouro',
-  'Numero',
-  'Complemento',
-  'Bairro',
-  'CEP',
-  'Cidade',
-  'UF',
+  'Logradouro residencial',
+  'Numero residencial',
+  'Complemento residencial',
+  'Bairro residencial',
+  'CEP residencial',
+  'Cidade residencial',
+  'UF residencial',
   'Necessita acessibilidade',
   'Observacao de acessibilidade',
-  'Ponto de embarque - nome',
-  'Ponto de embarque - logradouro',
-  'Ponto de embarque - numero',
-  'Ponto de embarque - complemento',
-  'Ponto de embarque - bairro',
-  'Ponto de embarque - CEP',
-  'Ponto de embarque - cidade',
-  'Ponto de embarque - UF',
-  'Latitude residencial',
-  'Longitude residencial',
-  'Latitude do ponto de embarque',
-  'Longitude do ponto de embarque',
-  'Dados documentais (JSON)',
+  'Codigo do ponto de embarque',
+  'CPF',
+  'Matricula funcional',
+  'Observacoes documentais',
 ] as const;
 
 export interface PassengerWorkbookRow {
   rowNumber: number;
-  companyTaxId: string;
   externalReference: string | null;
   shift: string | null;
   requiredArrivalTime: string | null;
@@ -56,18 +46,9 @@ export interface PassengerWorkbookRow {
   residenceState: string | null;
   accessibilityRequired: boolean;
   accessibilityNotes: string | null;
-  predefinedBoardingLabel: string | null;
-  predefinedBoardingStreet: string | null;
-  predefinedBoardingNumber: string | null;
-  predefinedBoardingComplement: string | null;
-  predefinedBoardingDistrict: string | null;
-  predefinedBoardingPostalCode: string | null;
-  predefinedBoardingCity: string | null;
-  predefinedBoardingState: string | null;
+  fixedPointCode: string | null;
   residenceLatitude: number | null;
   residenceLongitude: number | null;
-  predefinedBoardingLatitude: number | null;
-  predefinedBoardingLongitude: number | null;
   documents: PassengerDocumentInput[];
 }
 
@@ -93,18 +74,6 @@ function optionalCell(cell: Cell): string | null {
   return cellText(cell) || null;
 }
 
-function numberCell(cell: Cell): number | null {
-  const text = cellText(cell).replace(',', '.');
-  if (!text) return null;
-  const value = Number(text);
-  if (!Number.isFinite(value)) {
-    throw validationError(
-      `Informe um numero valido na celula ${cell.address}.`,
-    );
-  }
-  return value;
-}
-
 function booleanCell(cell: Cell): boolean {
   const value = normalizeHeader(cellText(cell));
   if (!value || ['nao', 'n', 'false', '0'].includes(value)) return false;
@@ -114,85 +83,63 @@ function booleanCell(cell: Cell): boolean {
   );
 }
 
-function documentsCell(cell: Cell): PassengerDocumentInput[] {
-  const text = cellText(cell);
-  if (!text) return [];
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw validationError(
-      `Dados documentais invalidos na celula ${cell.address}. Use JSON valido.`,
-    );
+function documents(
+  row: ExcelJS.Row,
+  column: (header: (typeof PASSENGER_TEMPLATE_HEADERS)[number]) => number,
+) {
+  const result: PassengerDocumentInput[] = [];
+  const cpf = optionalCell(row.getCell(column('CPF')));
+  const registration = optionalCell(row.getCell(column('Matricula funcional')));
+  const notes = optionalCell(row.getCell(column('Observacoes documentais')));
+  if (cpf) result.push({ documentTypeCode: 'cpf', data: { numero: cpf } });
+  if (registration) {
+    result.push({
+      documentTypeCode: 'matricula',
+      data: { numero: registration },
+    });
   }
-  if (!Array.isArray(value)) {
-    throw validationError(
-      `Dados documentais devem ser uma lista na celula ${cell.address}.`,
-    );
+  if (notes) {
+    result.push({
+      documentTypeCode: 'observacoes-documentais',
+      data: { observacoes: notes },
+    });
   }
-  return (value as unknown[]).map((entry, index) => {
-    const record =
-      typeof entry === 'object' && entry !== null
-        ? (entry as Record<string, unknown>)
-        : null;
-    const type = record?.tipo;
-    const data = record?.dados;
-    if (
-      !record ||
-      typeof type !== 'string' ||
-      !/^[a-z][a-z0-9-]{2,79}$/.test(type) ||
-      typeof data !== 'object' ||
-      data === null ||
-      Array.isArray(data)
-    ) {
-      throw validationError(
-        `Documento ${index + 1} invalido na celula ${cell.address}.`,
-      );
-    }
-    return {
-      documentTypeCode: type,
-      data: data as Readonly<Record<string, unknown>>,
-    };
-  });
+  return result;
 }
 
 function styleTemplateSheet(worksheet: Worksheet): void {
-  worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+  worksheet.views = [{ state: 'frozen', ySplit: 1, showGridLines: false }];
   worksheet.autoFilter = {
     from: { row: 1, column: 1 },
     to: { row: 1, column: PASSENGER_TEMPLATE_HEADERS.length },
   };
-  worksheet.properties.defaultRowHeight = 20;
-  worksheet.getRow(1).height = 34;
-  worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  worksheet.getRow(1).fill = {
+  worksheet.properties.defaultRowHeight = 22;
+  const header = worksheet.getRow(1);
+  header.height = 42;
+  header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  header.fill = {
     type: 'pattern',
     pattern: 'solid',
     fgColor: { argb: 'FF143D59' },
   };
-  worksheet.getRow(1).alignment = {
+  header.alignment = {
     vertical: 'middle',
     horizontal: 'center',
     wrapText: true,
   };
   const widths = [
-    20, 18, 15, 20, 18, 30, 25, 12, 20, 20, 12, 20, 8, 18, 28, 24, 26, 14, 22,
-    20, 14, 20, 10, 18, 18, 22, 22, 48,
+    30, 25, 18, 20, 20, 28, 18, 22, 22, 16, 22, 14, 22, 30, 26, 18, 22, 35,
   ];
   widths.forEach((width, index) => {
     worksheet.getColumn(index + 1).width = width;
   });
-  worksheet.getColumn(1).numFmt = '@';
-  worksheet.getColumn(2).numFmt = '@';
-  worksheet.getColumn(4).numFmt = '@';
-  worksheet.getColumn(11).numFmt = '@';
-  worksheet.getColumn(13).numFmt = '@';
-  worksheet.getColumn(21).numFmt = '@';
-  worksheet.getColumn(23).numFmt = '@';
+  for (const column of [2, 4, 7, 10, 12, 15, 16, 17]) {
+    worksheet.getColumn(column).numFmt = '@';
+  }
   const states =
     'AC,AL,AP,AM,BA,CE,DF,ES,GO,MA,MT,MS,MG,PA,PB,PR,PE,PI,RJ,RN,RS,RO,RR,SC,SP,SE,TO';
   for (let row = 2; row <= 1001; row += 1) {
-    worksheet.getCell(`N${row}`).dataValidation = {
+    worksheet.getCell(`M${row}`).dataValidation = {
       type: 'list',
       allowBlank: false,
       formulae: ['"Sim,Nao"'],
@@ -200,97 +147,112 @@ function styleTemplateSheet(worksheet: Worksheet): void {
       errorTitle: 'Valor invalido',
       error: 'Escolha Sim ou Nao.',
     };
-    for (const column of ['M', 'W']) {
-      worksheet.getCell(`${column}${row}`).dataValidation = {
-        type: 'list',
-        allowBlank: true,
-        formulae: [`"${states}"`],
-        showErrorMessage: true,
-        errorTitle: 'UF invalida',
-        error: 'Escolha uma UF da lista.',
-      };
-    }
+    worksheet.getCell(`L${row}`).dataValidation = {
+      type: 'list',
+      allowBlank: true,
+      formulae: [`"${states}"`],
+      showErrorMessage: true,
+      errorTitle: 'UF invalida',
+      error: 'Escolha uma UF da lista.',
+    };
   }
 }
 
 @Injectable()
 export class PassengerWorkbookService {
-  async createTemplate(): Promise<Buffer> {
+  constructor(private readonly converter: DataExchangeConverter) {}
+
+  async createTemplate(
+    fixedPoints: readonly {
+      code: string;
+      name: string;
+      clientName: string;
+      address: string;
+    }[] = [],
+  ): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Lume - Modulo de Roteirizacao';
     workbook.created = new Date('2000-01-01T00:00:00.000Z');
     workbook.modified = new Date('2000-01-01T00:00:00.000Z');
-    const worksheet = workbook.addWorksheet(TEMPLATE_SHEET, {
-      views: [{ showGridLines: false }],
-    });
+
+    const worksheet = workbook.addWorksheet(TEMPLATE_SHEET);
     worksheet.addRow([...PASSENGER_TEMPLATE_HEADERS]);
     styleTemplateSheet(worksheet);
 
-    const example = workbook.addWorksheet('Exemplo', {
-      views: [{ showGridLines: false }],
-    });
+    const example = workbook.addWorksheet('Exemplo');
     example.addRow([...PASSENGER_TEMPLATE_HEADERS]);
     example.addRow([
-      '12.345.678/0001-95',
+      'Nome do colaborador',
       'COL-0001',
       'Administrativo',
       '08:00',
       'Operacoes',
-      'Nome do colaborador',
       'Rua Exemplo',
-      '100',
-      'Apto 10',
+      'S/N',
+      null,
       'Centro',
       '38400000',
       'Uberlandia',
       'MG',
       'Nao',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      '[{"tipo":"codigo-configurado","dados":{}}]',
+      null,
+      fixedPoints[0]?.code ?? null,
+      '12345678909',
+      'MAT-0001',
+      null,
     ]);
-    example.getRow(2).font = {
-      italic: true,
-      color: { argb: 'FF5F6B76' },
-    };
+    example.getRow(2).font = { italic: true, color: { argb: 'FF5F6B76' } };
     styleTemplateSheet(example);
 
-    const instructions = workbook.addWorksheet('Instrucoes', {
-      views: [{ showGridLines: false }],
+    const points = workbook.addWorksheet('Pontos fixos');
+    points.columns = [
+      { header: 'Codigo', key: 'code', width: 18 },
+      { header: 'Nome do ponto', key: 'name', width: 30 },
+      { header: 'Cliente', key: 'clientName', width: 30 },
+      { header: 'Endereco', key: 'address', width: 70 },
+    ];
+    fixedPoints.forEach((point) => points.addRow(point));
+    points.views = [{ state: 'frozen', ySplit: 1, showGridLines: false }];
+    points.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    points.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF143D59' },
+    };
+    points.eachRow((row) => {
+      row.alignment = { vertical: 'top', wrapText: true };
     });
+
+    const instructions = workbook.addWorksheet('Instrucoes');
     instructions.columns = [{ width: 30 }, { width: 100 }];
     instructions.addRows([
-      ['Modelo oficial', 'Cadastro e importacao incremental de colaboradores'],
       [
-        'Empresa obrigatoria',
-        'Preencha o CNPJ da empresa atendida em todas as linhas. Todos os usuarios pertencem a Milenium; o CNPJ identifica o cliente dos colaboradores.',
+        'Modelo oficial',
+        'Importacao incremental de colaboradores transportados',
       ],
       [
-        'Importacao parcial',
-        'Uma linha com pendencia nao impede as demais. O sistema informa campo, motivo e acao de regularizacao.',
+        'Cliente',
+        'Escolha o cliente na tela antes de baixar ou importar. Nao repita CPF ou CNPJ na planilha.',
       ],
       [
-        'Atualizacao',
-        'Codigo externo e a chave preferencial. Sem ele, nome e endereco sao usados para localizar candidatos e conflitos exigem revisao.',
+        'CEP residencial',
+        'Informe sempre que disponivel. Se faltar, a linha sera registrada como pendente e podera ser corrigida na tela com consulta automatica ao ViaCEP.',
+      ],
+      [
+        'Ponto de embarque',
+        'Use somente o codigo mostrado na aba Pontos fixos. O endereco e as coordenadas pertencem ao cadastro do ponto.',
+      ],
+      [
+        'Identificador',
+        'E opcional e identifica o colaborador no sistema do cliente; nao e o codigo do contrato.',
       ],
       [
         'Documentos',
-        'Nao ha campos legais inventados. Use uma lista JSON no formato [{"tipo":"codigo-configurado","dados":{}}]. A obrigatoriedade depende da regra da rota.',
+        'Preencha CPF, matricula e observacoes em colunas comuns. Nao e necessario escrever JSON.',
       ],
       [
-        'Ponto predefinido',
-        'Quando informado pela empresa, o ponto e preservado e nunca substituido automaticamente pelo agente.',
+        'Coordenadas',
+        'Latitude e longitude nao fazem parte do preenchimento manual. A aplicacao mantem esses campos internamente quando disponiveis.',
       ],
     ]);
     instructions.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -301,30 +263,46 @@ export class PassengerWorkbookService {
     };
     instructions.eachRow((row) => {
       row.alignment = { vertical: 'top', wrapText: true };
-      row.height = 42;
+      row.height = 44;
     });
     return Buffer.from(await workbook.xlsx.writeBuffer());
   }
 
-  async parse(content: Buffer): Promise<PassengerWorkbookRow[]> {
-    if (
-      content.length < 4 ||
-      content.length > MAX_FILE_BYTES ||
-      content.subarray(0, 2).toString('ascii') !== 'PK'
-    ) {
-      throw validationError('Envie um arquivo XLSX valido de ate 10 MB.');
+  async parse(
+    content: Buffer,
+    fileName: string,
+  ): Promise<PassengerWorkbookRow[]> {
+    if (content.length < 1 || content.length > MAX_FILE_BYTES) {
+      throw validationError('Envie uma planilha valida de ate 10 MB.');
+    }
+    const extension = fileName.split('.').at(-1)?.toLocaleLowerCase('pt-BR');
+    const format =
+      extension === 'csv' || extension === 'tsv' ? extension : 'xlsx';
+    if (!['xlsx', 'csv', 'tsv'].includes(format)) {
+      throw validationError('Use uma planilha XLSX, CSV ou TSV.');
+    }
+    let normalized = content;
+    if (format === 'csv' || format === 'tsv') {
+      normalized = (await this.converter.convert(format, 'xlsx', content))
+        .content;
+    } else {
+      await this.converter.validate('xlsx', content);
     }
     const workbook = new ExcelJS.Workbook();
     try {
-      const normalizedArrayBuffer = content.buffer.slice(
-        content.byteOffset,
-        content.byteOffset + content.byteLength,
-      ) as ArrayBuffer;
-      await workbook.xlsx.load(normalizedArrayBuffer);
+      await workbook.xlsx.load(
+        normalized.buffer.slice(
+          normalized.byteOffset,
+          normalized.byteOffset + normalized.byteLength,
+        ) as ArrayBuffer,
+      );
     } catch {
-      throw validationError('Nao foi possivel ler o arquivo XLSX.');
+      throw validationError('Nao foi possivel ler a planilha.');
     }
-    const worksheet = workbook.getWorksheet(TEMPLATE_SHEET);
+    const worksheet =
+      format === 'xlsx'
+        ? workbook.getWorksheet(TEMPLATE_SHEET)
+        : workbook.worksheets[0];
     if (!worksheet) {
       throw validationError(`A planilha deve possuir a aba ${TEMPLATE_SHEET}.`);
     }
@@ -353,72 +331,53 @@ export class PassengerWorkbookService {
       rowNumber += 1
     ) {
       const row = worksheet.getRow(rowNumber);
-      const hasContent = requiredHeaders.some((header) =>
-        cellText(row.getCell(headerIndex.get(header)!)),
-      );
-      if (!hasContent) continue;
+      if (
+        !requiredHeaders.some((header) =>
+          cellText(row.getCell(headerIndex.get(header)!)),
+        )
+      ) {
+        continue;
+      }
       result.push({
         rowNumber,
-        companyTaxId: cellText(row.getCell(column('CNPJ da empresa'))),
-        externalReference: optionalCell(row.getCell(column('Codigo externo'))),
+        fullName: cellText(row.getCell(column('Nome completo'))),
+        externalReference: optionalCell(
+          row.getCell(column('Identificador do colaborador (opcional)')),
+        ),
         shift: optionalCell(row.getCell(column('Turno'))),
         requiredArrivalTime: optionalCell(
           row.getCell(column('Horario de chegada')),
         ),
         sector: optionalCell(row.getCell(column('Setor'))),
-        fullName: cellText(row.getCell(column('Nome completo'))),
-        residenceStreet: optionalCell(row.getCell(column('Logradouro'))),
-        residenceNumber: optionalCell(row.getCell(column('Numero'))),
-        residenceComplement: optionalCell(row.getCell(column('Complemento'))),
-        residenceDistrict: optionalCell(row.getCell(column('Bairro'))),
-        residencePostalCode: optionalCell(row.getCell(column('CEP'))),
-        residenceCity: optionalCell(row.getCell(column('Cidade'))),
-        residenceState: optionalCell(row.getCell(column('UF'))),
+        residenceStreet: optionalCell(
+          row.getCell(column('Logradouro residencial')),
+        ),
+        residenceNumber: optionalCell(
+          row.getCell(column('Numero residencial')),
+        ),
+        residenceComplement: optionalCell(
+          row.getCell(column('Complemento residencial')),
+        ),
+        residenceDistrict: optionalCell(
+          row.getCell(column('Bairro residencial')),
+        ),
+        residencePostalCode: optionalCell(
+          row.getCell(column('CEP residencial')),
+        ),
+        residenceCity: optionalCell(row.getCell(column('Cidade residencial'))),
+        residenceState: optionalCell(row.getCell(column('UF residencial'))),
         accessibilityRequired: booleanCell(
           row.getCell(column('Necessita acessibilidade')),
         ),
         accessibilityNotes: optionalCell(
           row.getCell(column('Observacao de acessibilidade')),
         ),
-        predefinedBoardingLabel: optionalCell(
-          row.getCell(column('Ponto de embarque - nome')),
+        fixedPointCode: optionalCell(
+          row.getCell(column('Codigo do ponto de embarque')),
         ),
-        predefinedBoardingStreet: optionalCell(
-          row.getCell(column('Ponto de embarque - logradouro')),
-        ),
-        predefinedBoardingNumber: optionalCell(
-          row.getCell(column('Ponto de embarque - numero')),
-        ),
-        predefinedBoardingComplement: optionalCell(
-          row.getCell(column('Ponto de embarque - complemento')),
-        ),
-        predefinedBoardingDistrict: optionalCell(
-          row.getCell(column('Ponto de embarque - bairro')),
-        ),
-        predefinedBoardingPostalCode: optionalCell(
-          row.getCell(column('Ponto de embarque - CEP')),
-        ),
-        predefinedBoardingCity: optionalCell(
-          row.getCell(column('Ponto de embarque - cidade')),
-        ),
-        predefinedBoardingState: optionalCell(
-          row.getCell(column('Ponto de embarque - UF')),
-        ),
-        residenceLatitude: numberCell(
-          row.getCell(column('Latitude residencial')),
-        ),
-        residenceLongitude: numberCell(
-          row.getCell(column('Longitude residencial')),
-        ),
-        predefinedBoardingLatitude: numberCell(
-          row.getCell(column('Latitude do ponto de embarque')),
-        ),
-        predefinedBoardingLongitude: numberCell(
-          row.getCell(column('Longitude do ponto de embarque')),
-        ),
-        documents: documentsCell(
-          row.getCell(column('Dados documentais (JSON)')),
-        ),
+        residenceLatitude: null,
+        residenceLongitude: null,
+        documents: documents(row, column),
       });
     }
     if (!result.length) {

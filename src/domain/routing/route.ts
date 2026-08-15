@@ -76,6 +76,7 @@ export interface RouteProps extends RouteData {
 
 export interface RoutePoint {
   id: string;
+  fixedPointId?: string | null;
   direction: RouteDirection;
   sequence: number;
   address: RouteAddress;

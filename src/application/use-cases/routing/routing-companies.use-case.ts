@@ -1,4 +1,5 @@
 import {
+  AppError,
   conflict,
   forbidden,
   notFound,
@@ -7,11 +8,14 @@ import {
 import {
   ROUTING_COMPANY_STATUSES,
   createRoutingCompany,
+  normalizeRoutingClientTaxId,
   type RoutingCompanyProps,
   type RoutingCompanyStatus,
 } from '../../../domain/routing/routing-company';
 import { RoutingRepository } from '../../contracts/routing.repository';
 import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
+import { PasswordHasher } from '../../contracts/cryptography';
+import { UsersRepository } from '../../contracts/repositories';
 
 function presentCompany(company: RoutingCompanyProps) {
   return {
@@ -23,7 +27,11 @@ function presentCompany(company: RoutingCompanyProps) {
 }
 
 export class RoutingCompaniesUseCase {
-  constructor(private readonly routing: RoutingRepository) {}
+  constructor(
+    private readonly routing: RoutingRepository,
+    private readonly users: UsersRepository,
+    private readonly passwordHasher: PasswordHasher,
+  ) {}
 
   async create(
     current: AuthenticatedPrincipal,
@@ -107,6 +115,7 @@ export class RoutingCompaniesUseCase {
     input: {
       commandId: string;
       expectedVersion: number;
+      taxId?: string;
       legalName?: string;
       tradeName?: string | null;
       costCenter?: string | null;
@@ -139,6 +148,10 @@ export class RoutingCompaniesUseCase {
       {
         ...input,
         actorUserId: current.id,
+        taxId:
+          input.taxId === undefined
+            ? undefined
+            : normalizeRoutingClientTaxId(input.taxId),
         legalName: input.legalName?.trim(),
         tradeName:
           input.tradeName === undefined
@@ -156,6 +169,40 @@ export class RoutingCompaniesUseCase {
       );
     }
     return presentCompany(updated);
+  }
+
+  async delete(
+    current: AuthenticatedPrincipal,
+    routingCompanyId: string,
+    input: { commandId: string; password: string },
+  ) {
+    if (current.routingCompanyId) {
+      throw forbidden('Usuarios cliente nao podem excluir o proprio cliente.');
+    }
+    const actor = await this.users.findById(current.companyId, current.id);
+    if (!actor) throw notFound('Usuario');
+    const matches = await this.passwordHasher.compare(
+      input.password,
+      actor.user.props.passwordHash,
+    );
+    if (!matches) {
+      throw new AppError(
+        'INVALID_CREDENTIALS',
+        'A senha atual informada esta incorreta.',
+      );
+    }
+    void input.commandId;
+    const result = await this.routing.deleteCompany(
+      current.companyId,
+      routingCompanyId,
+    );
+    if (result === 'not-found') throw notFound('Cliente');
+    if (result === 'in-use') {
+      throw conflict(
+        'Este cliente possui usuarios, contratos, colaboradores, rotas ou pontos exclusivos. Desative-o para preservar o historico.',
+      );
+    }
+    return { deleted: true as const };
   }
 
   async history(current: AuthenticatedPrincipal, routingCompanyId: string) {

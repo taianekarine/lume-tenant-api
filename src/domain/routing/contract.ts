@@ -40,6 +40,8 @@ export interface ContractShift {
 
 export interface ContractData {
   routingCompanyId: string;
+  originFixedPointId: string | null;
+  destinationFixedPointId: string | null;
   code: string;
   name: string;
   operationType: string;
@@ -108,21 +110,21 @@ export function normalizeContractData(input: ContractData): ContractData {
   ) {
     throw validationError('A distancia maxima deve ser informada em metros.');
   }
-  const requiredDocumentTypeCodes = Array.from(
+  const documentCodes = Array.from(
     new Set(
       input.requiredDocumentTypeCodes
         .map((code) => code.trim().toLocaleLowerCase('pt-BR'))
         .filter(Boolean),
     ),
   );
-  if (
-    requiredDocumentTypeCodes.some(
-      (code) => !/^[a-z][a-z0-9-]{2,79}$/.test(code),
-    )
-  ) {
+  if (documentCodes.some((code) => !/^[a-z][a-z0-9-]{2,79}$/.test(code))) {
     throw validationError('Informe codigos documentais validos.');
   }
-  if (input.requiresDocumentation && requiredDocumentTypeCodes.length === 0) {
+  const requiresDocumentation =
+    input.routeType === 'intermunicipal' && input.requiresDocumentation;
+  const requiredDocumentTypeCodes =
+    input.routeType === 'intermunicipal' ? documentCodes : [];
+  if (requiresDocumentation && requiredDocumentTypeCodes.length === 0) {
     throw validationError(
       'Configure os dados documentais exigidos pelo contrato.',
     );
@@ -190,6 +192,8 @@ export function normalizeContractData(input: ContractData): ContractData {
 
   return {
     routingCompanyId: input.routingCompanyId,
+    originFixedPointId: input.originFixedPointId,
+    destinationFixedPointId: input.destinationFixedPointId,
     code: text(input.code, 'o codigo do contrato', 80).toUpperCase(),
     name: text(input.name, 'o nome do contrato', 160),
     operationType: text(input.operationType, 'o tipo de operacao', 120),
@@ -213,7 +217,7 @@ export function normalizeContractData(input: ContractData): ContractData {
     contractedKm: optionalKm(input.contractedKm, 'O KM contratado'),
     plannedKm: optionalKm(input.plannedKm, 'O KM previsto'),
     maxWalkingDistanceMeters: input.maxWalkingDistanceMeters,
-    requiresDocumentation: input.requiresDocumentation,
+    requiresDocumentation,
     requiredDocumentTypeCodes,
     unitName: text(input.unitName, 'a unidade atendida', 160),
     origin: normalizeRouteAddress(input.origin, 'o ponto de saida do contrato'),

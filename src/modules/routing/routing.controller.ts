@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
@@ -16,6 +17,7 @@ import { CurrentUser } from '../../shared/http/decorators/current-user.decorator
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
   CreateRoutingCompanyDto,
+  DeleteRoutingCompanyDto,
   ListRoutingCompaniesQueryDto,
   UpdateRoutingCompanyDto,
 } from './dto/routing-company.dto';
@@ -64,6 +66,17 @@ export class RoutingController {
     @Body() body: UpdateRoutingCompanyDto,
   ) {
     return this.companies.update(current, routingCompanyId, body);
+  }
+
+  @Delete('companies/:routingCompanyId')
+  @RequireAnyPermission('routing-companies:manage')
+  deleteCompany(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
+    routingCompanyId: string,
+    @Body() body: DeleteRoutingCompanyDto,
+  ) {
+    return this.companies.delete(current, routingCompanyId, body);
   }
 
   @Get('companies/:routingCompanyId/history')

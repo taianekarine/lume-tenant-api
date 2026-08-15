@@ -19,6 +19,8 @@ describe('routing contract domain', () => {
   it('normalizes the commercial rules that drive route generation', () => {
     const contract = createContract('tenant-id', 'actor-id', {
       routingCompanyId: 'client-id',
+      originFixedPointId: null,
+      destinationFixedPointId: null,
       code: ' ctr-01 ',
       name: 'Contrato Industrial',
       operationType: 'Fretamento continuo',
@@ -35,7 +37,7 @@ describe('routing contract domain', () => {
       requiresDocumentation: true,
       requiredDocumentTypeCodes: ['atf-data', 'atf-data'],
       unitName: 'Unidade Norte',
-      origin: address,
+      origin: { ...address, number: 'S/N' },
       destination: { ...address, label: 'Unidade Norte', number: '200' },
       validFrom: new Date('2026-08-01T00:00:00.000Z'),
       validUntil: new Date('2026-12-31T00:00:00.000Z'),
@@ -57,6 +59,7 @@ describe('routing contract domain', () => {
     expect(contract.shifts[0].activeWeekdays).toEqual([1, 3, 5]);
     expect(contract.requiredDocumentTypeCodes).toEqual(['atf-data']);
     expect(contract.contractedKm).toBe(1200.555);
+    expect(contract.origin.number).toBe('S/N');
     expect(
       isContractEffective(contract, new Date('2026-08-14T12:00:00Z')),
     ).toBe(true);
@@ -66,6 +69,8 @@ describe('routing contract domain', () => {
     expect(() =>
       createContract('tenant-id', 'actor-id', {
         routingCompanyId: 'client-id',
+        originFixedPointId: null,
+        destinationFixedPointId: null,
         code: 'CTR-02',
         name: 'Contrato',
         operationType: 'Fretamento',
@@ -99,5 +104,46 @@ describe('routing contract domain', () => {
         ],
       }),
     ).toThrow(/documentais/i);
+  });
+
+  it('ignores documentary requirements on municipal contracts', () => {
+    const contract = createContract('tenant-id', 'actor-id', {
+      routingCompanyId: 'client-id',
+      originFixedPointId: null,
+      destinationFixedPointId: null,
+      code: 'CTR-03',
+      name: 'Contrato municipal',
+      operationType: 'Fretamento',
+      routeType: 'municipal',
+      status: 'active',
+      periodicity: 'daily',
+      contractedVehicleCount: 1,
+      predictedVehicleName: 'Van',
+      predictedVehicleReference: null,
+      predictedVehicleCapacity: 15,
+      contractedKm: null,
+      plannedKm: null,
+      maxWalkingDistanceMeters: 0,
+      requiresDocumentation: true,
+      requiredDocumentTypeCodes: ['cpf'],
+      unitName: 'Unidade',
+      origin: address,
+      destination: address,
+      validFrom: new Date('2026-08-01T00:00:00Z'),
+      validUntil: null,
+      notes: null,
+      costCenters: [{ code: 'CC', name: null }],
+      shifts: [
+        {
+          name: 'Turno',
+          requiredArrivalTime: '08:00',
+          vehicleCount: null,
+          vehicleCapacity: null,
+          activeWeekdays: [],
+        },
+      ],
+    });
+    expect(contract.requiresDocumentation).toBe(false);
+    expect(contract.requiredDocumentTypeCodes).toEqual([]);
   });
 });

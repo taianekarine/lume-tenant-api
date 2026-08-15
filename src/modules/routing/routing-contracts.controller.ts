@@ -27,6 +27,8 @@ import {
 function mapContractData(body: CreateRoutingContractDto): ContractData {
   return {
     ...body,
+    originFixedPointId: body.originFixedPointId ?? null,
+    destinationFixedPointId: body.destinationFixedPointId ?? null,
     predictedVehicleReference: body.predictedVehicleReference ?? null,
     contractedKm: body.contractedKm ?? null,
     plannedKm: body.plannedKm ?? null,

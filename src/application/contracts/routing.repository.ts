@@ -27,6 +27,7 @@ export interface RoutingCompanyHistoryRecord {
 }
 
 export interface UpdateRoutingCompanyPersistenceInput {
+  taxId?: string;
   legalName?: string;
   tradeName?: string | null;
   costCenter?: string | null;
@@ -63,4 +64,8 @@ export abstract class RoutingRepository {
       commandId: string;
     },
   ): Promise<RoutingCompanyProps | null>;
+  abstract deleteCompany(
+    companyId: string,
+    routingCompanyId: string,
+  ): Promise<'deleted' | 'not-found' | 'in-use'>;
 }

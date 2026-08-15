@@ -25,6 +25,8 @@ import { ContractRepository } from '../../application/contracts/contract.reposit
 import { PrismaContractRepository } from './repositories/prisma-contract.repository';
 import { RouteRepository } from '../../application/contracts/route.repository';
 import { PrismaRouteRepository } from './repositories/prisma-route.repository';
+import { FixedPointRepository } from '../../application/contracts/fixed-point.repository';
+import { PrismaFixedPointRepository } from './repositories/prisma-fixed-point.repository';
 
 @Global()
 @Module({
@@ -53,6 +55,7 @@ import { PrismaRouteRepository } from './repositories/prisma-route.repository';
     { provide: PassengerRepository, useClass: PrismaPassengerRepository },
     { provide: ContractRepository, useClass: PrismaContractRepository },
     { provide: RouteRepository, useClass: PrismaRouteRepository },
+    { provide: FixedPointRepository, useClass: PrismaFixedPointRepository },
   ],
   exports: [
     PrismaService,
@@ -67,6 +70,7 @@ import { PrismaRouteRepository } from './repositories/prisma-route.repository';
     PassengerRepository,
     ContractRepository,
     RouteRepository,
+    FixedPointRepository,
   ],
 })
 export class DatabaseModule {}

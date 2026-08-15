@@ -264,6 +264,9 @@ export class RoutingAgentService {
       const residence = passengerResidence(aggregate);
       const companyPoint = predefinedPoint(aggregate);
       let selectedAddress = companyPoint ?? residence;
+      let selectedFixedPointId = companyPoint
+        ? passenger.predefinedBoardingFixedPointId
+        : null;
       let selectedOrigin: RoutePoint['origin'] = companyPoint
         ? 'company'
         : 'agent';
@@ -299,6 +302,7 @@ export class RoutingAgentService {
           });
           if (shared) {
             selectedAddress = shared.address;
+            selectedFixedPointId = shared.fixedPointId ?? null;
             walkingDistance = Math.round(
               distanceMeters(
                 residenceCoordinates,
@@ -322,6 +326,7 @@ export class RoutingAgentService {
       if (!point) {
         point = {
           id: randomUUID(),
+          fixedPointId: selectedFixedPointId,
           direction: 'outbound',
           sequence: pointsByKey.size + 1,
           address: selectedAddress,

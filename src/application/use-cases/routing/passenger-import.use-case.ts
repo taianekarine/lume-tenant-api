@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 
-import { conflict, forbidden, notFound } from '../../../core/errors/app-error';
+import {
+  conflict,
+  forbidden,
+  notFound,
+  validationError,
+} from '../../../core/errors/app-error';
 import {
   createPassenger,
   normalizePassengerData,
@@ -9,14 +14,15 @@ import {
   type PassengerData,
   type PassengerDocumentInput,
 } from '../../../domain/routing/passenger';
-import { normalizeTaxId } from '../../../shared/utils/normalization';
-import { isValidCnpj } from '../../../shared/utils/brazilian-documents';
 import { PassengerWorkbookService } from '../../../infra/routing/passenger-workbook.service';
 import type { PassengerWorkbookRow } from '../../../infra/routing/passenger-workbook.service';
 import { PassengerRepository } from '../../contracts/passenger.repository';
 import type { PassengerImportProblem } from '../../contracts/passenger.repository';
 import { RoutingRepository } from '../../contracts/routing.repository';
 import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
+import { FixedPointRepository } from '../../contracts/fixed-point.repository';
+import type { RoutingFixedPointProps } from '../../../domain/routing/fixed-point';
+import { PostalCodeLookupService } from '../../../infra/routing/postal-code-lookup.service';
 
 function deterministicCommandId(batchId: string, rowNumber: number): string {
   const bytes = createHash('sha256')
@@ -29,7 +35,11 @@ function deterministicCommandId(batchId: string, rowNumber: number): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function rowData(row: PassengerWorkbookRow, routingCompanyId: string) {
+function rowData(
+  row: PassengerWorkbookRow,
+  routingCompanyId: string,
+  fixedPoint: RoutingFixedPointProps | null,
+) {
   return normalizePassengerData({
     routingCompanyId,
     externalReference: row.externalReference,
@@ -48,17 +58,18 @@ function rowData(row: PassengerWorkbookRow, routingCompanyId: string) {
     residenceState: row.residenceState,
     residenceLatitude: row.residenceLatitude,
     residenceLongitude: row.residenceLongitude,
-    predefinedBoardingLabel: row.predefinedBoardingLabel,
-    predefinedBoardingStreet: row.predefinedBoardingStreet,
-    predefinedBoardingNumber: row.predefinedBoardingNumber,
-    predefinedBoardingComplement: row.predefinedBoardingComplement,
-    predefinedBoardingDistrict: row.predefinedBoardingDistrict,
-    predefinedBoardingPostalCode: row.predefinedBoardingPostalCode,
-    predefinedBoardingCity: row.predefinedBoardingCity,
-    predefinedBoardingState: row.predefinedBoardingState,
-    predefinedBoardingLatitude: row.predefinedBoardingLatitude,
-    predefinedBoardingLongitude: row.predefinedBoardingLongitude,
-    predefinedBoardingOrigin: 'company',
+    predefinedBoardingLabel: fixedPoint?.name ?? null,
+    predefinedBoardingStreet: fixedPoint?.address.street ?? null,
+    predefinedBoardingNumber: fixedPoint?.address.number ?? null,
+    predefinedBoardingComplement: fixedPoint?.address.complement ?? null,
+    predefinedBoardingDistrict: fixedPoint?.address.district ?? null,
+    predefinedBoardingPostalCode: fixedPoint?.address.postalCode ?? null,
+    predefinedBoardingCity: fixedPoint?.address.city ?? null,
+    predefinedBoardingState: fixedPoint?.address.state ?? null,
+    predefinedBoardingLatitude: fixedPoint?.address.latitude ?? null,
+    predefinedBoardingLongitude: fixedPoint?.address.longitude ?? null,
+    predefinedBoardingOrigin: fixedPoint ? 'company' : null,
+    predefinedBoardingFixedPointId: fixedPoint?.id ?? null,
   });
 }
 
@@ -145,6 +156,9 @@ function mergeIncremental(current: PassengerData, incoming: PassengerData) {
     predefinedBoardingOrigin: hasPoint
       ? 'company'
       : current.predefinedBoardingOrigin,
+    predefinedBoardingFixedPointId: hasPoint
+      ? incoming.predefinedBoardingFixedPointId
+      : current.predefinedBoardingFixedPointId,
   });
 }
 
@@ -182,10 +196,43 @@ export class PassengerImportUseCase {
     private readonly passengers: PassengerRepository,
     private readonly routing: RoutingRepository,
     private readonly workbook: PassengerWorkbookService,
+    private readonly fixedPoints: FixedPointRepository,
+    private readonly postalCodes: PostalCodeLookupService,
   ) {}
 
-  template() {
-    return this.workbook.createTemplate();
+  async template(current: AuthenticatedPrincipal, routingCompanyId?: string) {
+    const clientId = current.routingCompanyId ?? routingCompanyId;
+    const result = await this.fixedPoints.list(current.companyId, {
+      page: 1,
+      pageSize: 1_000,
+      status: 'active',
+      ...(clientId ? { routingCompanyId: clientId } : {}),
+    });
+    const clients = new Map<string, string>();
+    await Promise.all(
+      result.items.map(async (point) => {
+        if (!point.routingCompanyId || clients.has(point.routingCompanyId))
+          return;
+        const company = await this.routing.findCompany(
+          current.companyId,
+          point.routingCompanyId,
+        );
+        clients.set(
+          point.routingCompanyId,
+          company?.tradeName ?? company?.legalName ?? 'Cliente',
+        );
+      }),
+    );
+    return this.workbook.createTemplate(
+      result.items.map((point) => ({
+        code: point.code,
+        name: point.name,
+        clientName: point.routingCompanyId
+          ? (clients.get(point.routingCompanyId) ?? 'Cliente')
+          : 'Todos os clientes',
+        address: `${point.address.street}, ${point.address.number} - ${point.address.district} - ${point.address.city}/${point.address.state} - CEP ${point.address.postalCode}`,
+      })),
+    );
   }
 
   async import(
@@ -193,11 +240,32 @@ export class PassengerImportUseCase {
     input: {
       commandId: string;
       routeId?: string;
+      routingCompanyId?: string;
       fileName: string;
       content: Buffer;
     },
   ) {
-    const rows = await this.workbook.parse(input.content);
+    const routingCompanyId = current.routingCompanyId ?? input.routingCompanyId;
+    if (!routingCompanyId) {
+      throw validationError(
+        'Selecione o cliente dos colaboradores antes de importar.',
+      );
+    }
+    if (
+      current.routingCompanyId &&
+      input.routingCompanyId &&
+      input.routingCompanyId !== current.routingCompanyId
+    ) {
+      throw forbidden('O cliente informado nao pertence ao seu acesso.');
+    }
+    const routingCompany = await this.routing.findCompany(
+      current.companyId,
+      routingCompanyId,
+    );
+    if (!routingCompany || routingCompany.status !== 'active') {
+      throw validationError('Selecione um cliente ativo antes de importar.');
+    }
+    const rows = await this.workbook.parse(input.content, input.fileName);
     const sourceSha256 = createHash('sha256')
       .update(input.content)
       .digest('hex');
@@ -231,38 +299,6 @@ export class PassengerImportUseCase {
     };
     for (const row of rows) {
       const problems: PassengerImportProblem[] = [];
-      const taxId = normalizeTaxId(row.companyTaxId);
-      const routingCompany = isValidCnpj(taxId)
-        ? await this.routing.findCompanyByTaxId(current.companyId, taxId)
-        : null;
-      if (!row.companyTaxId) {
-        problems.push({
-          field: 'companyTaxId',
-          reason: 'CNPJ da empresa nao informado.',
-          resolutionAction: 'Preencha o CNPJ da empresa atendida nesta linha.',
-        });
-      } else if (!isValidCnpj(taxId)) {
-        problems.push({
-          field: 'companyTaxId',
-          reason: 'CNPJ da empresa invalido.',
-          resolutionAction: 'Corrija o CNPJ da empresa atendida.',
-        });
-      } else if (!routingCompany || routingCompany.status !== 'active') {
-        problems.push({
-          field: 'companyTaxId',
-          reason: 'Empresa cliente nao cadastrada ou inativa.',
-          resolutionAction: 'Cadastre ou ative a empresa antes da importacao.',
-        });
-      } else if (
-        current.routingCompanyId &&
-        current.routingCompanyId !== routingCompany.id
-      ) {
-        problems.push({
-          field: 'companyTaxId',
-          reason: 'A empresa da linha nao pertence ao acesso do usuario.',
-          resolutionAction: 'Use somente o CNPJ da sua empresa.',
-        });
-      }
       if (!row.fullName.trim()) {
         problems.push({
           field: 'fullName',
@@ -270,15 +306,48 @@ export class PassengerImportUseCase {
           resolutionAction: 'Preencha o nome completo.',
         });
       }
+      const address = row.residencePostalCode
+        ? await this.postalCodes.lookup(row.residencePostalCode)
+        : null;
+      const enrichedRow: PassengerWorkbookRow = address
+        ? {
+            ...row,
+            residenceStreet: row.residenceStreet ?? address.street,
+            residenceDistrict: row.residenceDistrict ?? address.district,
+            residenceCity: row.residenceCity ?? address.city,
+            residenceState: row.residenceState ?? address.state,
+          }
+        : row;
+      let fixedPoint: RoutingFixedPointProps | null = null;
+      if (row.fixedPointCode) {
+        fixedPoint = await this.fixedPoints.findByCode(
+          current.companyId,
+          row.fixedPointCode,
+        );
+        if (
+          !fixedPoint ||
+          fixedPoint.status !== 'active' ||
+          (fixedPoint.routingCompanyId &&
+            fixedPoint.routingCompanyId !== routingCompanyId)
+        ) {
+          problems.push({
+            field: 'fixedPointCode',
+            reason:
+              'Codigo do ponto de embarque inexistente, inativo ou de outro cliente.',
+            resolutionAction: 'Use um codigo disponivel na aba Pontos fixos.',
+          });
+          fixedPoint = null;
+        }
+      }
       const payload = {
-        companyTaxId: taxId,
         externalReference: row.externalReference,
         fullName: row.fullName,
+        fixedPointCode: row.fixedPointCode,
         documentTypeCodes: row.documents.map(
           (document) => document.documentTypeCode,
         ),
       };
-      if (problems.length || !routingCompany) {
+      if (problems.length) {
         counts.conflictCount += 1;
         await this.passengers.saveImportRecord({
           companyId: current.companyId,
@@ -291,19 +360,19 @@ export class PassengerImportUseCase {
         continue;
       }
 
-      const data = rowData(row, routingCompany.id);
+      const data = rowData(enrichedRow, routingCompanyId, fixedPoint);
       const fingerprint = passengerIdentityFingerprint(data);
       const matches = data.externalReference
         ? [
             await this.passengers.findByExternalReference(
               current.companyId,
-              routingCompany.id,
+              routingCompanyId,
               data.externalReference,
             ),
           ].filter(Boolean)
         : await this.passengers.findByFingerprint(
             current.companyId,
-            routingCompany.id,
+            routingCompanyId,
             fingerprint,
           );
       if (matches.length > 1) {
@@ -321,7 +390,7 @@ export class PassengerImportUseCase {
           companyId: current.companyId,
           batchId: started.batch.id,
           rowNumber: row.rowNumber,
-          routingCompanyId: routingCompany.id,
+          routingCompanyId,
           action: 'conflict',
           payload,
           problems: conflictProblems,
@@ -373,7 +442,7 @@ export class PassengerImportUseCase {
               companyId: current.companyId,
               batchId: started.batch.id,
               rowNumber: row.rowNumber,
-              routingCompanyId: routingCompany.id,
+              routingCompanyId,
               passengerId: existing.passenger.id,
               action: 'conflict',
               payload,
@@ -407,7 +476,7 @@ export class PassengerImportUseCase {
         companyId: current.companyId,
         batchId: started.batch.id,
         rowNumber: row.rowNumber,
-        routingCompanyId: routingCompany.id,
+        routingCompanyId,
         passengerId,
         action: pending ? 'pending' : operation,
         payload: { ...payload, operation },
@@ -434,6 +503,87 @@ export class PassengerImportUseCase {
       throw forbidden('Esta importacao nao pertence ao seu acesso.');
     }
     return this.present(batch);
+  }
+
+  async resolveAddress(
+    current: AuthenticatedPrincipal,
+    batchId: string,
+    recordId: string,
+    input: {
+      commandId: string;
+      postalCode: string;
+      number: string;
+      complement?: string | null;
+    },
+  ) {
+    const batch = await this.passengers.getImport(current.companyId, batchId);
+    if (!batch) throw notFound('Importacao');
+    const record = batch.records.find((item) => item.id === recordId);
+    if (!record || !record.passengerId) {
+      throw notFound('Linha da importacao');
+    }
+    if (
+      current.routingCompanyId &&
+      record.routingCompanyId !== current.routingCompanyId
+    ) {
+      throw forbidden('Esta linha nao pertence ao seu acesso.');
+    }
+    const address = await this.postalCodes.lookup(input.postalCode);
+    if (!address) {
+      throw validationError('O CEP nao foi encontrado no ViaCEP.');
+    }
+    const aggregate = await this.passengers.find(
+      current.companyId,
+      record.passengerId,
+    );
+    if (!aggregate) throw notFound('Colaborador');
+    const data = normalizePassengerData({
+      ...aggregate.passenger,
+      residenceStreet: address.street,
+      residenceNumber: input.number,
+      residenceComplement: input.complement ?? null,
+      residenceDistrict: address.district,
+      residencePostalCode: input.postalCode,
+      residenceCity: address.city,
+      residenceState: address.state,
+    });
+    const issues = validatePassengerData(data);
+    const updated = await this.passengers.update({
+      companyId: current.companyId,
+      passengerId: aggregate.passenger.id,
+      data,
+      issues,
+      actorUserId: current.id,
+      commandId: input.commandId,
+      expectedVersion: aggregate.passenger.version,
+      action: 'PASSENGER_IMPORT_ADDRESS_RESOLVED',
+      reason: `Correcao assistida da importacao ${batchId}, linha ${record.rowNumber}`,
+    });
+    if (!updated) {
+      throw conflict(
+        'O colaborador foi alterado. Recarregue e tente novamente.',
+      );
+    }
+    const problems = issues.map((issue) => ({
+      field: issue.field,
+      reason: issue.reason,
+      resolutionAction: issue.resolutionAction,
+    }));
+    const refreshed = await this.passengers.resolveImportRecord({
+      companyId: current.companyId,
+      batchId,
+      recordId,
+      action: issues.some((issue) => issue.blocksRouting)
+        ? 'pending'
+        : 'updated',
+      payload: {
+        ...record.payload,
+        addressCorrected: true,
+        postalCode: data.residencePostalCode,
+      },
+      problems,
+    });
+    return this.present(refreshed);
   }
 
   private present(
