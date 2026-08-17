@@ -26,7 +26,7 @@ function createSubject() {
       ignoreFromMe: true,
       enabled: true,
     })),
-    persistInbound: vi.fn(async () => ({
+    persistWebhookMessage: vi.fn(async () => ({
       accepted: true as const,
       duplicate: false,
       messageId,
@@ -35,6 +35,10 @@ function createSubject() {
   };
   const mediaContent = {
     retainInbound: vi.fn(async () => ({
+      status: 'stored' as const,
+      messageId,
+    })),
+    retainWebhookMedia: vi.fn(async () => ({
       status: 'stored' as const,
       messageId,
     })),
@@ -78,10 +82,7 @@ function videoWebhook(size: number, mimeType = 'video/mp4') {
   };
 }
 
-async function handle(
-  subject: EvolutionWebhookService,
-  body: ReturnType<typeof videoWebhook>,
-) {
+async function handle(subject: EvolutionWebhookService, body: unknown) {
   const rawBody = Buffer.from(JSON.stringify(body));
   return subject.handle({
     channelId,
@@ -100,8 +101,9 @@ describe('EvolutionWebhookService media retention metadata', () => {
 
       await handle(subject, videoWebhook(size));
 
-      expect(repository.persistInbound).toHaveBeenCalledWith(
+      expect(repository.persistWebhookMessage).toHaveBeenCalledWith(
         expect.objectContaining({
+          direction: 'inbound',
           kind: 'video',
           profilePictureUrl: 'https://media.example.test/profile.jpg',
           media: expect.objectContaining({
@@ -111,7 +113,7 @@ describe('EvolutionWebhookService media retention metadata', () => {
           }),
         }),
       );
-      expect(mediaContent.retainInbound).toHaveBeenCalledWith(
+      expect(mediaContent.retainWebhookMedia).toHaveBeenCalledWith(
         companyId,
         conversationId,
         messageId,
@@ -121,7 +123,7 @@ describe('EvolutionWebhookService media retention metadata', () => {
 
   it('mantém o vídeo acima do limite no histórico com estado explícito', async () => {
     const { subject, repository, mediaContent } = createSubject();
-    mediaContent.retainInbound.mockResolvedValueOnce({
+    mediaContent.retainWebhookMedia.mockResolvedValueOnce({
       status: 'too-large',
       messageId,
     });
@@ -129,7 +131,7 @@ describe('EvolutionWebhookService media retention metadata', () => {
     await expect(handle(subject, videoWebhook(52_428_801))).resolves.toEqual(
       expect.objectContaining({ mediaRetention: 'too-large' }),
     );
-    expect(repository.persistInbound).toHaveBeenCalledWith(
+    expect(repository.persistWebhookMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         media: expect.objectContaining({ retentionStatus: 'too-large' }),
       }),
@@ -142,7 +144,85 @@ describe('EvolutionWebhookService media retention metadata', () => {
     await expect(
       handle(subject, videoWebhook(2_500_000, 'video/x-unsafe')),
     ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    expect(repository.persistInbound).not.toHaveBeenCalled();
+    expect(repository.persistWebhookMessage).not.toHaveBeenCalled();
+    expect(mediaContent.retainWebhookMedia).not.toHaveBeenCalled();
+  });
+});
+
+describe('EvolutionWebhookService outbound history', () => {
+  it('persiste mensagem fromMe como saída mesmo com ignoreFromMe habilitado', async () => {
+    const { subject, repository } = createSubject();
+    const body = {
+      event: 'messages.upsert',
+      instance: 'lume',
+      data: {
+        key: {
+          id: 'provider-external-outbound',
+          remoteJid: '5534999999999@s.whatsapp.net',
+          fromMe: true,
+        },
+        pushName: 'Nome da própria conta',
+        messageTimestamp: Math.floor(now.valueOf() / 1_000),
+        message: { conversation: 'Mensagem enviada pelo WhatsApp Web' },
+      },
+    };
+
+    await expect(handle(subject, body)).resolves.toEqual(
+      expect.objectContaining({ accepted: true, duplicate: false }),
+    );
+    expect(repository.persistWebhookMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        direction: 'outbound',
+        phoneNormalized: '5534999999999',
+        text: 'Mensagem enviada pelo WhatsApp Web',
+        displayName: undefined,
+      }),
+    );
+  });
+
+  it('usa remoteJidAlt telefônico quando remoteJid é um LID', async () => {
+    const { subject, repository } = createSubject();
+    const body = {
+      event: 'messages.upsert',
+      instance: 'lume',
+      data: {
+        key: {
+          id: 'provider-lid-outbound',
+          remoteJid: '123456789012345@lid',
+          remoteJidAlt: '5534999999999@s.whatsapp.net',
+          participant: '999999999999999@lid',
+          fromMe: true,
+        },
+        messageTimestamp: Math.floor(now.valueOf() / 1_000),
+        message: { conversation: 'Mensagem por LID' },
+      },
+    };
+
+    await handle(subject, body);
+
+    expect(repository.persistWebhookMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        direction: 'outbound',
+        phoneNormalized: '5534999999999',
+      }),
+    );
+  });
+
+  it('mantém mídia fromMe no fluxo de retenção do webhook', async () => {
+    const { subject, repository, mediaContent } = createSubject();
+    const body = videoWebhook(2_500_000);
+    body.data.key.fromMe = true;
+
+    await handle(subject, body);
+
+    expect(repository.persistWebhookMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 'outbound', kind: 'video' }),
+    );
+    expect(mediaContent.retainWebhookMedia).toHaveBeenCalledWith(
+      companyId,
+      conversationId,
+      messageId,
+    );
     expect(mediaContent.retainInbound).not.toHaveBeenCalled();
   });
 });

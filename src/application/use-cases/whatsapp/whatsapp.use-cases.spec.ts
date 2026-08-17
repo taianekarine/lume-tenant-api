@@ -10,7 +10,7 @@ import {
   type CreateOutboundInput,
   type EvolutionResultInput,
   type MessageListQuery,
-  type PersistInboundInput,
+  type PersistWebhookMessageInput,
   type QuoteProposalListQuery,
   type QuoteRequestPatch,
   type ReconcileAutomationOutboxInput,
@@ -26,7 +26,7 @@ import {
   CreateHumanOutboundWhatsAppUseCase,
   CreateOutboundWhatsAppUseCase,
   PatchQuoteRequestUseCase,
-  PersistInboundWhatsAppUseCase,
+  PersistWebhookWhatsAppMessageUseCase,
   QuoteProposalUseCase,
   QueryWhatsAppUseCase,
   ReconcileAutomationOutboxUseCase,
@@ -43,9 +43,9 @@ class RecordingWhatsAppRepository extends WhatsAppRepository {
     this.calls.push('findWebhookChannel');
     return null;
   }
-  async persistInbound(_input: PersistInboundInput) {
-    this.calls.push('persistInbound');
-    return { operation: 'persistInbound' };
+  async persistWebhookMessage(_input: PersistWebhookMessageInput) {
+    this.calls.push('persistWebhookMessage');
+    return { operation: 'persistWebhookMessage' };
   }
   async transition(_input: TransitionCommand) {
     this.calls.push('transition');
@@ -184,8 +184,8 @@ describe('casos de uso WhatsApp', () => {
       commandId: 'command',
     };
 
-    await new PersistInboundWhatsAppUseCase(repository).execute(
-      {} as PersistInboundInput,
+    await new PersistWebhookWhatsAppMessageUseCase(repository).execute(
+      {} as PersistWebhookMessageInput,
     );
     await new TransitionWhatsAppConversationUseCase(repository).execute({
       ...common,
@@ -234,7 +234,7 @@ describe('casos de uso WhatsApp', () => {
     });
 
     expect(repository.calls).toEqual([
-      'persistInbound',
+      'persistWebhookMessage',
       'transition',
       'patchQuoteRequest',
       'createOutbound',

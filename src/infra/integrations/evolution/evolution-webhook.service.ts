@@ -98,6 +98,57 @@ function requiredString(
   return value.trim();
 }
 
+function optionalString(
+  value: unknown,
+  field: string,
+  maximumLength: number,
+): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (
+    typeof value !== 'string' ||
+    !value.trim() ||
+    value.length > maximumLength
+  ) {
+    throw validationError(`${field} é inválido.`);
+  }
+  return value.trim();
+}
+
+function isPhoneJid(value: string): boolean {
+  return value.endsWith('@s.whatsapp.net') || value.endsWith('@c.us');
+}
+
+function resolveContactJid(key: JsonObject): {
+  remoteJid: string;
+  contactJid: string;
+} {
+  const remoteJid = requiredString(key.remoteJid, 'data.key.remoteJid', 200);
+  const remoteJidAlt = optionalString(
+    key.remoteJidAlt,
+    'data.key.remoteJidAlt',
+    200,
+  );
+
+  // participant identifica o remetente em grupos e não deve substituir o
+  // contato da conversa direta. Ainda assim, validamos o campo quando existe.
+  optionalString(key.participant, 'data.key.participant', 200);
+
+  if (remoteJid.endsWith('@g.us')) {
+    return { remoteJid, contactJid: remoteJid };
+  }
+
+  const contactJid = [remoteJid, remoteJidAlt].find(
+    (candidate): candidate is string =>
+      Boolean(candidate && isPhoneJid(candidate)),
+  );
+  if (!contactJid) {
+    throw validationError(
+      'data.key não contém um JID de telefone para identificar o contato.',
+    );
+  }
+  return { remoteJid, contactJid };
+}
+
 function header(headers: Headers, name: string): string | undefined {
   const value = headers[name] ?? headers[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
@@ -206,27 +257,18 @@ export class EvolutionWebhookService {
     const data = asObject(body.data, 'data');
     const key = asObject(data.key, 'data.key');
     const providerMessageId = requiredString(key.id, 'data.key.id', 160);
-    const remoteJid = requiredString(key.remoteJid, 'data.key.remoteJid', 200);
+    const { remoteJid, contactJid } = resolveContactJid(key);
     const fromMe = key.fromMe;
     if (typeof fromMe !== 'boolean') {
       throw validationError('data.key.fromMe deve ser booleano.');
     }
-    if (fromMe && channel.ignoreFromMe) {
-      return { accepted: true, ignored: true, reason: 'from-me' };
-    }
     if (remoteJid.endsWith('@g.us') && channel.ignoreGroups) {
       return { accepted: true, ignored: true, reason: 'group' };
-    }
-    if (
-      !remoteJid.endsWith('@s.whatsapp.net') &&
-      !remoteJid.endsWith('@c.us')
-    ) {
-      throw validationError('data.key.remoteJid não é um contato WhatsApp.');
     }
 
     let phoneNormalized: string;
     try {
-      phoneNormalized = normalizeWhatsAppPhone(remoteJid);
+      phoneNormalized = normalizeWhatsAppPhone(contactJid);
     } catch {
       throw validationError('Telefone do webhook fora do padrão E.164.');
     }
@@ -253,15 +295,16 @@ export class EvolutionWebhookService {
       phoneNormalized,
     );
 
-    const persisted = await this.repository.persistInbound({
+    const persisted = await this.repository.persistWebhookMessage({
       channel,
       externalEventId: providerMessageId,
       providerMessageId,
       correlationId,
       payloadHash,
       phoneNormalized,
+      direction: fromMe ? 'outbound' : 'inbound',
       displayName:
-        typeof data.pushName === 'string'
+        !fromMe && typeof data.pushName === 'string'
           ? data.pushName.trim().slice(0, 160)
           : undefined,
       profilePictureUrl,
@@ -277,7 +320,7 @@ export class EvolutionWebhookService {
       persisted.messageId &&
       persisted.conversationId
     ) {
-      const retention = await this.mediaContent.retainInbound(
+      const retention = await this.mediaContent.retainWebhookMedia(
         channel.companyId,
         persisted.conversationId,
         persisted.messageId,

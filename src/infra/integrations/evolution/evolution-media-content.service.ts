@@ -333,6 +333,27 @@ export class EvolutionMediaContentService {
       throw validationError('Somente mídias recebidas podem ser armazenadas.');
     }
 
+    return this.retainEvolutionMedia(message);
+  }
+
+  async retainWebhookMedia(
+    companyId: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<RetainWhatsAppMediaResult> {
+    const message = await this.findMessage(
+      companyId,
+      conversationId,
+      messageId,
+    );
+    return this.retainEvolutionMedia(message);
+  }
+
+  private async retainEvolutionMedia(
+    message: MediaMessageRow,
+  ): Promise<RetainWhatsAppMediaResult> {
+    const messageId = message.id;
+
     try {
       const retained = await this.ensureStored(message);
       return {
@@ -527,7 +548,7 @@ export class EvolutionMediaContentService {
         id: message.id,
         companyId: message.companyId,
         conversationId: message.conversationId,
-        direction: MessageDirection.INBOUND,
+        direction: message.direction,
       },
       data: {
         media: {
@@ -557,7 +578,7 @@ export class EvolutionMediaContentService {
         id: message.id,
         companyId: message.companyId,
         conversationId: message.conversationId,
-        direction: MessageDirection.INBOUND,
+        direction: message.direction,
       },
       data: {
         media: {

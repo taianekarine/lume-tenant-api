@@ -16,8 +16,8 @@ import {
   type EnsureWhatsAppConversationResult,
   type MarkEvolutionDispatchUnknownInput,
   type MessageListQuery,
-  type PersistInboundInput,
-  type PersistInboundResult,
+  type PersistWebhookMessageInput,
+  type PersistWebhookMessageResult,
   type QuoteProposalListQuery,
   type QuoteRequestPatch,
   type ReconcileAutomationOutboxInput,
@@ -844,9 +844,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
     });
   }
 
-  async persistInbound(
-    input: PersistInboundInput,
-  ): Promise<PersistInboundResult> {
+  async persistWebhookMessage(
+    input: PersistWebhookMessageInput,
+  ): Promise<PersistWebhookMessageResult> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
         const duplicate = await transaction.integrationInbox.findUnique({
@@ -887,6 +887,29 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           },
         });
 
+        const messageAlreadyPersisted =
+          await transaction.whatsAppMessage.findUnique({
+            where: {
+              companyId_channelId_providerMessageId: {
+                companyId: input.channel.companyId,
+                channelId: input.channel.id,
+                providerMessageId: input.providerMessageId,
+              },
+            },
+          });
+        if (messageAlreadyPersisted) {
+          await transaction.integrationInbox.update({
+            where: { id: inbox.id },
+            data: { processedAt: new Date() },
+          });
+          return {
+            accepted: true,
+            duplicate: true,
+            messageId: messageAlreadyPersisted.id,
+            conversationId: messageAlreadyPersisted.conversationId,
+          };
+        }
+
         const contact = await transaction.whatsAppContact.upsert({
           where: {
             companyId_phoneNormalized: {
@@ -901,7 +924,9 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
             profilePictureUrl: input.profilePictureUrl,
           },
           update: {
-            ...(input.displayName ? { displayName: input.displayName } : {}),
+            ...(input.direction === 'inbound' && input.displayName
+              ? { displayName: input.displayName }
+              : {}),
             ...(input.profilePictureUrl
               ? { profilePictureUrl: input.profilePictureUrl }
               : {}),
@@ -939,7 +964,62 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
               requestStatus: RequestStatus.NOT_STARTED,
             },
           });
-        } else if (
+        }
+
+        if (input.direction === 'outbound') {
+          const message = await transaction.whatsAppMessage.create({
+            data: {
+              companyId: input.channel.companyId,
+              conversationId: conversation.id,
+              channelId: input.channel.id,
+              contactId: contact.id,
+              providerMessageId: input.providerMessageId,
+              direction: MessageDirection.OUTBOUND,
+              deliveryStatus: DeliveryStatus.SENT,
+              kind: kindToPrisma[input.kind],
+              text: input.text,
+              media: input.media ? payload(input.media) : undefined,
+              recipientPhone: contact.phoneNormalized,
+              correlationId: input.correlationId,
+              occurredAt: input.occurredAt,
+            },
+          });
+
+          const preview =
+            input.text?.trim().slice(0, 240) ??
+            (input.kind === 'text' ? null : `[${input.kind}]`);
+          await transaction.whatsAppConversation.update({
+            where: {
+              id_companyId: {
+                id: conversation.id,
+                companyId: input.channel.companyId,
+              },
+            },
+            data: {
+              lastOutboundAt: input.occurredAt,
+              lastMessagePreview: preview,
+            },
+          });
+          await transaction.integrationInbox.update({
+            where: { id: inbox.id },
+            data: { processedAt: new Date() },
+          });
+
+          return {
+            accepted: true,
+            duplicate: false,
+            automationAllowed: false,
+            canGenerateReply: false,
+            canSendReply: false,
+            isFirstContact,
+            reopenedAfterClosure: false,
+            messageId: message.id,
+            conversationId: conversation.id,
+            version: conversation.version,
+          };
+        }
+
+        if (
           conversation.closedAt !== null ||
           conversation.conversationState === ConversationState.CLOSED
         ) {
