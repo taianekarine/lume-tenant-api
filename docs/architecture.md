@@ -90,6 +90,10 @@ Depois do vencimento existe um período de tolerância definido no documento.
 Para WhatsApp, `integration_outbox` armazena eventos por tenant e possui
 dispatcher interno da API com lock, correlação, retry e backoff.
 `integration_inbox` deduplica webhooks Evolution e comandos internos.
+O webhook guarda tanto entradas quanto saídas externas. Entradas publicam a
+outbox de automação ou notificação humana; saídas `fromMe` apenas atualizam o
+histórico da conversa. A chave única de `providerMessageId` reconcilia o eco de
+mensagens previamente criadas pelo painel.
 `outbox_events` e
 `inbox_receipts` permanecem apenas para compatibilidade com o contrato legado
 do edge-agent.

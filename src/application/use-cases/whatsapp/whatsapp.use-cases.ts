@@ -9,7 +9,7 @@ import type {
   EvolutionResultInput,
   DecideQuoteProposalInput,
   MessageListQuery,
-  PersistInboundInput,
+  PersistWebhookMessageInput,
   QuoteProposalListQuery,
   QuoteRequestPatch,
   ReconcileAutomationOutboxInput,
@@ -20,10 +20,10 @@ import type {
   UploadQuoteProposalDocumentInput,
 } from '../../contracts/whatsapp.repository';
 
-export class PersistInboundWhatsAppUseCase {
+export class PersistWebhookWhatsAppMessageUseCase {
   constructor(private readonly repository: WhatsAppRepository) {}
-  execute(input: PersistInboundInput) {
-    return this.repository.persistInbound(input);
+  execute(input: PersistWebhookMessageInput) {
+    return this.repository.persistWebhookMessage(input);
   }
 }
 

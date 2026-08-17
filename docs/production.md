@@ -44,6 +44,9 @@ devem permanecer ativas por períodos prolongados.
 Configure o webhook oficial para
 `POST https://<tenant-api>/api/v1/webhooks/evolution`. A assinatura, tamanho,
 idade, canal e identificador externo são validados antes da persistência.
+Assine o evento `messages.upsert` também para mensagens `fromMe`: ele mantém no
+painel o histórico enviado pelo WhatsApp App/Web sem disparar IA ou resposta do
+bot. Payloads com `remoteJid=@lid` precisam fornecer `remoteJidAlt` com o número.
 
 O navegador nunca acessa a Evolution. A API baixa cada mídia durante o webhook,
 grava no volume próprio e a rota autenticada aplica autorização da empresa. A
@@ -67,6 +70,9 @@ seletor de consumidor. Não execute outro processo lendo a mesma outbox.
 
 - readiness e login sem mensagem de erro após redirecionamento;
 - recebimento repetido do mesmo webhook gera uma única mensagem;
+- mensagem enviada no WhatsApp App/Web aparece como saída no painel e não gera
+  resposta automática;
+- o eco de uma mensagem enviada pelo painel não cria uma segunda mensagem;
 - menu inicial, IA, coleta e encaminhamento funcionam;
 - assumir atendimento define responsável e libera o campo de resposta;
 - devolver ao bot preserva contexto; encerrar aguarda o próximo contato;

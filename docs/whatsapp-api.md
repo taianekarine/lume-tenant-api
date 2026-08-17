@@ -42,6 +42,19 @@ Os eventos internos são gravados em outbox ordenada por conversa e processados
 pela própria API com lease, tentativas e backoff. Apenas uma execução ativa pode
 tratar cada evento. O provedor registrado nas novas execuções é sempre `api`.
 
+Em `messages.upsert`, `data.key.fromMe=false` é entrada do cliente e pode gerar
+automação conforme o estado da conversa. `fromMe=true` é uma saída já enviada
+pelo WhatsApp App, Web ou outro dispositivo conectado: ela é persistida como
+`outbound/sent`, mas nunca cria outbox inbound, não aumenta não lidas e não muda
+o estado do atendimento. O contato é resolvido pelo JID telefônico em
+`remoteJid` ou `remoteJidAlt`; um `remoteJid` terminado em `@lid` só é aceito
+quando o payload também contém a identidade telefônica alternativa. O
+`participant` é validado, mas não substitui o contato de uma conversa direta.
+
+Quando a mensagem já foi criada pelo painel, o mesmo `providerMessageId`
+retornado pela Evolution identifica o eco do webhook e o registro existente é
+reutilizado. Reentregas posteriores continuam idempotentes.
+
 A migração `20260806000600_consolidate_whatsapp_api_and_conversations` converte
 marcadores legados, devolve execuções interrompidas para processamento seguro e
 consolida conversas duplicadas antes de criar a chave única canônica.
@@ -70,8 +83,9 @@ mensagem falhar.
 ## Conteúdo de mídia
 
 O painel nunca recebe a chave nem a URL temporária da Evolution. No recebimento
-do webhook, a API persiste a mensagem, baixa o binário enquanto ele ainda está
-disponível, valida MIME, compatibilidade com o tipo e limite de tamanho e grava
+do webhook, a API persiste a mensagem de entrada ou saída e baixa o binário
+enquanto ele ainda está disponível. Depois valida MIME, compatibilidade com o
+tipo e limite de tamanho e grava
 o conteúdo no armazenamento controlado. O banco mantém somente a chave interna,
 MIME, tamanho real, nome normalizado, SHA-256 e data do armazenamento. Uma nova
 tentativa do mesmo evento reutiliza a mensagem e a chave existentes, sem criar

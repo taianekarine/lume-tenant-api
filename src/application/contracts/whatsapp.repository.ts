@@ -2,6 +2,7 @@ import type { Department } from '../../domain/access/access.constants';
 import type {
   ConversationState,
   DeliveryStatus,
+  MessageDirection,
   MessageKind,
   RequestStatus,
   TransitionName,
@@ -17,13 +18,14 @@ export interface WebhookChannelConfiguration {
   enabled: boolean;
 }
 
-export interface PersistInboundInput {
+export interface PersistWebhookMessageInput {
   channel: WebhookChannelConfiguration;
   externalEventId: string;
   providerMessageId: string;
   correlationId: string;
   payloadHash: string;
   phoneNormalized: string;
+  direction: MessageDirection;
   displayName?: string;
   profilePictureUrl?: string;
   occurredAt: Date;
@@ -32,7 +34,7 @@ export interface PersistInboundInput {
   media?: Readonly<Record<string, unknown>>;
 }
 
-export interface PersistInboundResult {
+export interface PersistWebhookMessageResult {
   readonly accepted: true;
   readonly duplicate: boolean;
   readonly messageId: string | null;
@@ -302,9 +304,9 @@ export abstract class WhatsAppRepository {
   abstract findWebhookChannel(
     channelId: string,
   ): Promise<WebhookChannelConfiguration | null>;
-  abstract persistInbound(
-    input: PersistInboundInput,
-  ): Promise<PersistInboundResult>;
+  abstract persistWebhookMessage(
+    input: PersistWebhookMessageInput,
+  ): Promise<PersistWebhookMessageResult>;
   abstract transition(input: TransitionCommand): Promise<unknown>;
   abstract ensureConversationForPhone(
     companyId: string,

@@ -222,6 +222,17 @@ function configureEnvironment(mediaStoragePath: string): string {
     EVOLUTION_INSTANCE_NAME: 'lume-e2e',
     EVOLUTION_API_KEY: 'evolution-api-key-for-e2e',
     EVOLUTION_WEBHOOK_SECRET: webhookSecret,
+    WHATSAPP_AI_PROVIDER_ORDER: 'openai',
+    WHATSAPP_AI_OPENAI_API_KEY: 'whatsapp-ai-openai-key-for-e2e',
+    MILENIUM_DIRECTOR_PHONE: '5511999999901',
+    MILENIUM_DEPARTMENT_PURCHASES_PHONE: '5511999999902',
+    MILENIUM_DEPARTMENT_CONTROLLING_PHONE: '5511999999903',
+    MILENIUM_DEPARTMENT_DP_PHONE: '5511999999904',
+    MILENIUM_DEPARTMENT_FINANCE_PHONE: '5511999999905',
+    MILENIUM_DEPARTMENT_MANAGEMENT_PHONE: '5511999999906',
+    MILENIUM_DEPARTMENT_MAINTENANCE_PHONE: '5511999999907',
+    MILENIUM_DEPARTMENT_MONITORING_PHONE: '5511999999908',
+    MILENIUM_DEPARTMENT_OPERATIONAL_PHONE: '5511999999909',
     WHATSAPP_ALLOWED_MIME_TYPES:
       'image/jpeg,image/png,image/webp,image/gif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/csv,application/octet-stream,audio/ogg,audio/mpeg,audio/mp4,audio/aac,audio/wav,video/mp4,video/webm,video/quicktime',
     WHATSAPP_MEDIA_STORAGE_DRIVER: 'filesystem',
@@ -535,6 +546,186 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       automationAllowed: true,
       isFirstContact: true,
     });
+  });
+
+  it('persiste saída do App/Web na conversa existente sem acionar automação', async () => {
+    const phone = '5511988776604';
+    const inbound = await signedWebhook(
+      app,
+      webhookPayload(
+        'provider-external-web-inbound',
+        phone,
+        'Mensagem recebida antes da resposta externa',
+      ),
+    ).expect(202);
+    const externalConversationId = inbound.body.conversationId as string;
+    const before = await prisma.whatsAppConversation.findUniqueOrThrow({
+      where: {
+        id_companyId: { id: externalConversationId, companyId: tenantId },
+      },
+    });
+    const inboundOutboxBefore = await prisma.integrationOutbox.count({
+      where: {
+        companyId: tenantId,
+        topic: {
+          in: [
+            'whatsapp.inbound.persisted',
+            'whatsapp.inbound.human-notification',
+          ],
+        },
+      },
+    });
+    const base = webhookPayload(
+      'provider-external-web',
+      phone,
+      'Enviada pelo WhatsApp Web',
+    );
+    const payload = {
+      ...base,
+      data: {
+        ...base.data,
+        key: {
+          ...base.data.key,
+          remoteJid: '123456789012345@lid',
+          remoteJidAlt: `${phone}@s.whatsapp.net`,
+          participant: '999999999999999@lid',
+          fromMe: true,
+        },
+      },
+    };
+
+    const first = await signedWebhook(app, payload).expect(202);
+    const duplicate = await signedWebhook(app, payload).expect(202);
+
+    expect(first.body).toMatchObject({
+      accepted: true,
+      duplicate: false,
+      automationAllowed: false,
+      canGenerateReply: false,
+      canSendReply: false,
+      conversationId: externalConversationId,
+    });
+    expect(duplicate.body).toMatchObject({
+      accepted: true,
+      duplicate: true,
+      conversationId: externalConversationId,
+    });
+
+    const [message, after, contacts, conversations, inboundOutboxAfter] =
+      await Promise.all([
+        prisma.whatsAppMessage.findUniqueOrThrow({
+          where: {
+            companyId_channelId_providerMessageId: {
+              companyId: tenantId,
+              channelId,
+              providerMessageId: 'provider-external-web',
+            },
+          },
+        }),
+        prisma.whatsAppConversation.findUniqueOrThrow({
+          where: {
+            id_companyId: {
+              id: externalConversationId,
+              companyId: tenantId,
+            },
+          },
+        }),
+        prisma.whatsAppContact.count({
+          where: { companyId: tenantId, phoneNormalized: phone },
+        }),
+        prisma.whatsAppConversation.count({
+          where: {
+            companyId: tenantId,
+            channelId,
+            contactId: before.contactId,
+          },
+        }),
+        prisma.integrationOutbox.count({
+          where: {
+            companyId: tenantId,
+            topic: {
+              in: [
+                'whatsapp.inbound.persisted',
+                'whatsapp.inbound.human-notification',
+              ],
+            },
+          },
+        }),
+      ]);
+    expect(message).toMatchObject({
+      conversationId: externalConversationId,
+      direction: MessageDirection.OUTBOUND,
+      deliveryStatus: DeliveryStatus.SENT,
+      text: 'Enviada pelo WhatsApp Web',
+      recipientPhone: phone,
+    });
+    expect(after).toMatchObject({
+      unreadCount: before.unreadCount,
+      version: before.version,
+      conversationState: before.conversationState,
+      flowStep: before.flowStep,
+    });
+    expect(contacts).toBe(1);
+    expect(conversations).toBe(1);
+    expect(inboundOutboxAfter).toBe(inboundOutboxBefore);
+  });
+
+  it('não duplica a mensagem local do painel quando chega o eco da Evolution', async () => {
+    const phone = '5511988776605';
+    const inbound = await signedWebhook(
+      app,
+      webhookPayload(
+        'provider-panel-echo-inbound',
+        phone,
+        'Conversa usada para testar o eco do painel',
+      ),
+    ).expect(202);
+    const panelConversationId = inbound.body.conversationId as string;
+    const conversation = await prisma.whatsAppConversation.findUniqueOrThrow({
+      where: {
+        id_companyId: { id: panelConversationId, companyId: tenantId },
+      },
+    });
+    const providerMessageId = 'provider-panel-echo-outbound';
+    const localPanelMessage = await prisma.whatsAppMessage.create({
+      data: {
+        companyId: tenantId,
+        conversationId: panelConversationId,
+        channelId,
+        contactId: conversation.contactId,
+        providerMessageId,
+        direction: MessageDirection.OUTBOUND,
+        deliveryStatus: DeliveryStatus.SENT,
+        kind: MessageKind.TEXT,
+        text: 'Mensagem enviada pelo painel',
+        recipientPhone: phone,
+        correlationId: `e2e-panel:${randomUUID()}`,
+        occurredAt: new Date(),
+      },
+    });
+    const echo = webhookPayload(
+      providerMessageId,
+      phone,
+      'Mensagem enviada pelo painel',
+    );
+    echo.data.key.fromMe = true;
+
+    await signedWebhook(app, echo)
+      .expect(202)
+      .expect(({ body }) =>
+        expect(body).toMatchObject({
+          accepted: true,
+          duplicate: true,
+          messageId: localPanelMessage.id,
+          conversationId: panelConversationId,
+        }),
+      );
+
+    expect(
+      await prisma.whatsAppMessage.count({
+        where: { companyId: tenantId, channelId, providerMessageId },
+      }),
+    ).toBe(1);
   });
 
   it('serializa duas primeiras mensagens concorrentes em uma conversa aberta', async () => {
@@ -899,6 +1090,65 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
       );
     },
   );
+
+  it('retém mídia enviada externamente e a exibe como outbound no histórico', async () => {
+    const providerMessageId = `provider-external-media-${randomUUID()}`;
+    const mediaPayload = webhookPayload(
+      providerMessageId,
+      '5511988776603',
+      'placeholder',
+    );
+    mediaPayload.data.key.fromMe = true;
+    mediaPayload.data.message = {
+      imageMessage: {
+        mimetype: 'image/jpeg',
+        fileLength: 256,
+        fileName: 'imagem-enviada.jpg',
+      },
+    } as unknown as typeof mediaPayload.data.message;
+
+    const outbound = await signedMediaWebhook(app, mediaPayload);
+    expect(outbound.status, JSON.stringify(outbound.body)).toBe(202);
+    expect(outbound.body).toMatchObject({
+      accepted: true,
+      duplicate: false,
+      automationAllowed: false,
+      mediaRetention: 'stored',
+    });
+
+    const persisted = await prisma.whatsAppMessage.findUniqueOrThrow({
+      where: {
+        companyId_channelId_providerMessageId: {
+          companyId: tenantId,
+          channelId,
+          providerMessageId,
+        },
+      },
+    });
+    expect(persisted).toMatchObject({
+      direction: MessageDirection.OUTBOUND,
+      deliveryStatus: DeliveryStatus.SENT,
+      kind: MessageKind.IMAGE,
+      mediaStorageKey: expect.any(String),
+      mediaStoredAt: expect.any(Date),
+    });
+
+    const history = await request(app.getHttpServer())
+      .get(
+        `/api/v1/whatsapp/conversations/${outbound.body.conversationId}/messages`,
+      )
+      .set('authorization', `Bearer ${accessToken}`)
+      .expect(200);
+    expect(history.body.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: persisted.id,
+          direction: 'outbound',
+          kind: 'image',
+        }),
+      ]),
+    );
+  });
 
   it('reprocessa uma falha transitória de retenção sem duplicar mensagem ou evento', async () => {
     const providerMessageId = `provider-media-retry-${randomUUID()}`;
