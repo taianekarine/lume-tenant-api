@@ -32,7 +32,9 @@
     "whatsapp:import:validate:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js validate",
     "whatsapp:import:apply:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js apply",
     "whatsapp:import:reconcile:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js reconcile",
-    "whatsapp:import:rollback:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js rollback"
+    "whatsapp:import:rollback:prod": "node dist/infra/cli/import-whatsapp-current-conversations.js rollback",
+    "whatsapp:android-media:attach": "npm run prisma:generate && ts-node src/infra/cli/import-whatsapp-android-media.ts",
+    "whatsapp:android-media:attach:prod": "node dist/infra/cli/import-whatsapp-android-media.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

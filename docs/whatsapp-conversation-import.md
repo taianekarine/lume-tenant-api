@@ -46,6 +46,42 @@ conversas é idempotente: as mensagens já confirmadas são reconhecidas por seu
 identificadores determinísticos, não invalidam o restante do lote e não são
 duplicadas.
 
+## Backup Android completo (`msgstore.db.crypt15`)
+
+O modo **Backup Android completo** recebe um único banco e importa em lote as
+conversas individuais. A chave deve possuir 64 caracteres hexadecimais, é usada
+somente para derivar a chave AES-GCM da requisição e nunca é escrita no
+manifesto, banco de dados, log ou Git.
+
+Antes da confirmação, a API autentica o arquivo, descompacta com limite de
+bytes, executa `PRAGMA quick_check` e apresenta totais de conversas, mensagens,
+mídias pendentes e itens excluídos. A situação final e o departamento são
+escolhidos explicitamente. A aplicação ocorre em segundo plano, em blocos
+determinísticos, e pode ser retomada sem duplicar mensagens.
+
+O banco guarda referências de mídia, mas não fotos, áudios, vídeos e documentos
+reproduzíveis. Enquanto a pasta `Media` não for carregada, essas mensagens são
+visíveis no histórico com mídia indisponível; a vinculação dos arquivos é uma
+etapa independente e idempotente.
+
+Para dezenas de milhares de arquivos, copie a pasta para um volume privado da
+VPS com `rsync` ou ferramenta equivalente. Depois execute, dentro do diretório
+da Tenant API:
+
+```bash
+npm run whatsapp:android-media:attach:prod -- \
+  --company-id <UUID_DO_TENANT> \
+  --batch-id <UUID_DO_LOTE_DA_TELA> \
+  --media-root /caminho/privado/WhatsApp\ Business/Media \
+  --confirm ATTACH:<UUID_DO_LOTE_DA_TELA>
+```
+
+O comando considera somente mensagens criadas pelos blocos daquele lote,
+ignora links simbólicos, limita o tamanho individual, usa caminho relativo e
+somente recorre ao nome do arquivo quando ele é único. Cada binário recebe
+SHA-256 e uma chave privada por tenant/conversa/mensagem. Reexecutar o mesmo
+comando ignora mídias já armazenadas e tenta novamente apenas as pendentes.
+
 ## Diretório privado
 
 O valor padrão é:

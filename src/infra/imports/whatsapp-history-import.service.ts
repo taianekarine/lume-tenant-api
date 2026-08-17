@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
 import { Injectable } from '@nestjs/common';
@@ -10,6 +10,12 @@ import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media
 import { notFound, validationError } from '../../core/errors/app-error';
 import { MessageKind, Prisma } from '../database/prisma/generated/client';
 import { PrismaService } from '../database/prisma/prisma.service';
+import {
+  inspectWhatsAppAndroidBackup,
+  readWhatsAppAndroidBackup,
+  type WhatsAppAndroidBackupSummary,
+} from './whatsapp-android-backup';
+import { decryptWhatsAppCrypt15 } from './whatsapp-crypt15';
 import {
   DEFAULT_WHATSAPP_EXPORT_LIMITS,
   normalizeBrazilianPhone,
@@ -44,6 +50,7 @@ const IMPORT_DEPARTMENTS = new Set([
   'operations',
 ]);
 const EXTERNAL_REFERENCE_CHUNK_SIZE = 250;
+const ANDROID_IMPORT_CHUNK_MESSAGES = 5_000;
 
 const MESSAGE_KIND_BY_EXPORT = {
   text: MessageKind.TEXT,
@@ -52,6 +59,7 @@ const MESSAGE_KIND_BY_EXPORT = {
   audio: MessageKind.AUDIO,
   video: MessageKind.VIDEO,
   sticker: MessageKind.STICKER,
+  location: MessageKind.LOCATION,
   contact: MessageKind.CONTACT,
   unknown: MessageKind.UNKNOWN,
 } as const;
@@ -73,6 +81,23 @@ interface StoredArchive {
   mapping: WhatsAppHistoryConversationMapping | null;
 }
 
+interface StoredAndroidBackup {
+  databaseFileName: string;
+  databaseSha256: string;
+  encryptedBytes: number;
+  decryptedBytes: number;
+  multiFileBackup: boolean;
+  summary: WhatsAppAndroidBackupSummary;
+  state: WhatsAppHistoryStateOption;
+  departmentCode: string;
+  ownerUsername: string | null;
+  cutoffAt: string | null;
+  chunksCompleted: number;
+  conversationsProcessed: number;
+  messagesProcessed: number;
+  errorMessage: string | null;
+}
+
 interface StoredManifest {
   schemaVersion: typeof MANIFEST_VERSION;
   id: string;
@@ -82,12 +107,13 @@ interface StoredManifest {
   channelPhoneE164: string;
   actorUserId: string;
   actorUsername: string;
-  status: 'draft' | 'applied';
+  status: 'draft' | 'applying' | 'applied' | 'failed';
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
   appliedAt: string | null;
   archives: StoredArchive[];
+  androidBackup: StoredAndroidBackup | null;
 }
 
 export interface CreateWhatsAppHistoryImportInput {
@@ -102,6 +128,16 @@ export interface UpdateWhatsAppHistoryMappingInput {
   phoneE164: string;
   contactName: string;
   companySenderName: string;
+  state: WhatsAppHistoryStateOption;
+  departmentCode: string;
+  ownerUsername?: string | null;
+}
+
+export interface AddWhatsAppAndroidBackupInput {
+  originalName: string;
+  sizeBytes: number;
+  temporaryPath: string;
+  rootKeyHex: string;
   state: WhatsAppHistoryStateOption;
   departmentCode: string;
   ownerUsername?: string | null;
@@ -128,6 +164,14 @@ function assertInside(root: string, candidate: string): void {
   if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
     throw validationError('O caminho do lote de importação é inválido.');
   }
+}
+
+function deterministicUuid(...parts: string[]): string {
+  const value = createHash('sha256').update(parts.join('\0')).digest('hex');
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-4${value.slice(
+    13,
+    16,
+  )}-8${value.slice(17, 20)}-${value.slice(20, 32)}`;
 }
 
 function mappingIssues(
@@ -179,8 +223,10 @@ function presentManifest(manifest: StoredManifest) {
       issues,
     };
   });
+  const android = manifest.androidBackup;
   return {
     schemaVersion: manifest.schemaVersion,
+    mode: android ? ('android-backup' as const) : ('zip-exports' as const),
     id: manifest.id,
     channel: {
       id: manifest.channelId,
@@ -193,25 +239,43 @@ function presentManifest(manifest: StoredManifest) {
     expiresAt: manifest.expiresAt,
     appliedAt: manifest.appliedAt,
     totals: {
-      archives: archives.length,
-      ready: archives.filter((archive) => archive.status === 'ready').length,
-      needsReview: archives.filter(
-        (archive) => archive.status === 'needs-review',
-      ).length,
-      messages: archives.reduce(
-        (sum, archive) => sum + archive.messageCount,
-        0,
-      ),
-      attachments: archives.reduce(
-        (sum, archive) => sum + archive.attachmentCount,
-        0,
-      ),
-      missingAttachments: archives.reduce(
-        (sum, archive) => sum + archive.missingAttachmentCount,
-        0,
-      ),
+      archives: android ? android.summary.directConversations : archives.length,
+      ready: android
+        ? android.summary.directConversations
+        : archives.filter((archive) => archive.status === 'ready').length,
+      needsReview: android
+        ? 0
+        : archives.filter((archive) => archive.status === 'needs-review')
+            .length,
+      messages: android
+        ? android.summary.directMessages
+        : archives.reduce((sum, archive) => sum + archive.messageCount, 0),
+      attachments: android
+        ? android.summary.mediaReferences
+        : archives.reduce((sum, archive) => sum + archive.attachmentCount, 0),
+      missingAttachments: android
+        ? android.summary.mediaReferences
+        : archives.reduce(
+            (sum, archive) => sum + archive.missingAttachmentCount,
+            0,
+          ),
     },
     archives,
+    androidBackup: android
+      ? {
+          databaseFileName: android.databaseFileName,
+          encryptedBytes: android.encryptedBytes,
+          decryptedBytes: android.decryptedBytes,
+          summary: android.summary,
+          state: android.state,
+          departmentCode: android.departmentCode,
+          ownerUsername: android.ownerUsername,
+          chunksCompleted: android.chunksCompleted,
+          conversationsProcessed: android.conversationsProcessed,
+          messagesProcessed: android.messagesProcessed,
+          errorMessage: android.errorMessage,
+        }
+      : null,
   };
 }
 
@@ -221,7 +285,9 @@ export class WhatsAppHistoryImportService {
   private readonly limits: WhatsAppExportParserLimits;
   private readonly maximumArchives: number;
   private readonly retentionMs: number;
+  private readonly maximumAndroidDatabaseBytes: number;
   private readonly locks = new Map<string, Promise<unknown>>();
+  private readonly androidJobs = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -242,6 +308,11 @@ export class WhatsAppHistoryImportService {
       60 *
       60 *
       1_000;
+    this.maximumAndroidDatabaseBytes = finiteConfig(
+      config,
+      'WHATSAPP_ANDROID_BACKUP_MAX_DECRYPTED_BYTES',
+      4_294_967_296,
+    );
     this.limits = {
       maximumArchiveBytes: finiteConfig(
         config,
@@ -322,6 +393,7 @@ export class WhatsAppHistoryImportService {
           expiresAt: new Date(now.getTime() + this.retentionMs).toISOString(),
           appliedAt: null,
           archives: [],
+          androidBackup: null,
         };
         await this.writeManifest(manifest);
         return presentManifest(manifest);
@@ -347,6 +419,11 @@ export class WhatsAppHistoryImportService {
       if (manifest.status !== 'draft') {
         throw validationError(
           'Uma importação concluída não aceita novos backups.',
+        );
+      }
+      if (manifest.androidBackup) {
+        throw validationError(
+          'Este lote já utiliza um backup completo do Android.',
         );
       }
       if (file.content.byteLength !== file.sizeBytes) {
@@ -391,6 +468,87 @@ export class WhatsAppHistoryImportService {
     });
   }
 
+  async addAndroidBackup(
+    companyId: string,
+    batchId: string,
+    input: AddWhatsAppAndroidBackupInput,
+  ) {
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      try {
+        const manifest = await this.readManifest(companyId, batchId);
+        if (manifest.status !== 'draft') {
+          throw validationError(
+            'Uma importação iniciada ou concluída não aceita outro backup.',
+          );
+        }
+        if (manifest.archives.length > 0) {
+          throw validationError(
+            'Crie um lote separado para o backup completo do Android.',
+          );
+        }
+        if (!input.originalName.toLowerCase().endsWith('.crypt15')) {
+          throw validationError('Selecione o arquivo msgstore.db.crypt15.');
+        }
+        if (input.sizeBytes < 64 || input.sizeBytes > 2_147_483_647) {
+          throw validationError('O arquivo msgstore possui tamanho inválido.');
+        }
+        if (!WHATSAPP_HISTORY_STATE_OPTIONS.includes(input.state)) {
+          throw validationError('Selecione o estado das conversas importadas.');
+        }
+        if (!IMPORT_DEPARTMENTS.has(input.departmentCode)) {
+          throw validationError('Selecione um departamento válido.');
+        }
+        const ownerUsername = input.ownerUsername?.trim() || null;
+        if (input.state === 'human-active' && !ownerUsername) {
+          throw validationError(
+            'Atendimento humano ativo exige um atendente responsável.',
+          );
+        }
+
+        const androidPath = resolve(
+          this.batchPath(companyId, batchId),
+          'android',
+        );
+        assertInside(this.batchPath(companyId, batchId), androidPath);
+        await mkdir(androidPath, { recursive: true });
+        const databasePath = resolve(androidPath, 'msgstore.db');
+        const decrypted = await decryptWhatsAppCrypt15({
+          encryptedPath: input.temporaryPath,
+          outputPath: databasePath,
+          rootKeyHex: input.rootKeyHex,
+          maximumOutputBytes: this.maximumAndroidDatabaseBytes,
+        });
+        const summary = inspectWhatsAppAndroidBackup(databasePath);
+        if (summary.directConversations < 1 || summary.directMessages < 1) {
+          throw validationError(
+            'Nenhuma conversa individual importável foi encontrada no backup.',
+          );
+        }
+        manifest.androidBackup = {
+          databaseFileName: input.originalName.slice(0, 255),
+          databaseSha256: decrypted.encryptedSha256,
+          encryptedBytes: decrypted.encryptedBytes,
+          decryptedBytes: decrypted.decryptedBytes,
+          multiFileBackup: decrypted.multiFileBackup,
+          summary,
+          state: input.state,
+          departmentCode: input.departmentCode,
+          ownerUsername,
+          cutoffAt: null,
+          chunksCompleted: 0,
+          conversationsProcessed: 0,
+          messagesProcessed: 0,
+          errorMessage: null,
+        };
+        manifest.updatedAt = new Date().toISOString();
+        await this.writeManifest(manifest);
+        return presentManifest(manifest);
+      } finally {
+        await rm(input.temporaryPath, { force: true });
+      }
+    });
+  }
+
   async updateMapping(
     companyId: string,
     batchId: string,
@@ -431,6 +589,11 @@ export class WhatsAppHistoryImportService {
 
   async workbook(companyId: string, batchId: string) {
     const manifest = await this.readManifest(companyId, batchId);
+    if (manifest.androidBackup) {
+      throw validationError(
+        'O backup completo é processado diretamente e não gera uma única planilha.',
+      );
+    }
     const generated = await this.generateWorkbook(manifest);
     return {
       ...generated,
@@ -445,6 +608,33 @@ export class WhatsAppHistoryImportService {
       const manifest = await this.readManifest(companyId, batchId);
       if (!Number.isFinite(cutoffAt.getTime())) {
         throw validationError('Informe uma data de corte válida.');
+      }
+      if (manifest.androidBackup) {
+        if (manifest.status === 'applied') return presentManifest(manifest);
+        const cutoffIso = cutoffAt.toISOString();
+        if (
+          manifest.androidBackup.cutoffAt &&
+          manifest.androidBackup.cutoffAt !== cutoffIso
+        ) {
+          throw validationError(
+            'Uma retomada deve usar a mesma data de corte da primeira execução.',
+          );
+        }
+        manifest.androidBackup.cutoffAt = cutoffIso;
+        manifest.androidBackup.errorMessage = null;
+        manifest.status = 'applying';
+        manifest.updatedAt = new Date().toISOString();
+        await this.writeManifest(manifest);
+        const jobKey = `${companyId}:${batchId}`;
+        if (!this.androidJobs.has(jobKey)) {
+          this.androidJobs.add(jobKey);
+          setImmediate(() => {
+            void this.runAndroidImport(companyId, batchId).finally(() =>
+              this.androidJobs.delete(jobKey),
+            );
+          });
+        }
+        return presentManifest(manifest);
       }
       const loaded = await this.loadExports(manifest);
       const previouslyImported = await this.previouslyImportedArchives(
@@ -521,6 +711,170 @@ export class WhatsAppHistoryImportService {
       await this.writeManifest(manifest);
       return result;
     });
+  }
+
+  private async runAndroidImport(
+    companyId: string,
+    batchId: string,
+  ): Promise<void> {
+    try {
+      const manifest = await this.readManifest(companyId, batchId);
+      const android = manifest.androidBackup;
+      if (!android?.cutoffAt) {
+        throw validationError('O backup Android não possui data de corte.');
+      }
+      const cutoffAt = new Date(android.cutoffAt);
+      const databasePath = resolve(
+        this.batchPath(companyId, batchId),
+        'android',
+        'msgstore.db',
+      );
+      assertInside(this.batchPath(companyId, batchId), databasePath);
+      const importer = new WhatsAppImportService(this.prisma, this.root);
+      let chunkIndex = 0;
+      let chunkMessages = 0;
+      let exports: ParsedWhatsAppExport[] = [];
+      let mappings: WhatsAppHistoryConversationMapping[] = [];
+      const processedPhones = new Set<string>();
+
+      android.chunksCompleted = 0;
+      android.conversationsProcessed = 0;
+      android.messagesProcessed = 0;
+      android.errorMessage = null;
+      manifest.updatedAt = new Date().toISOString();
+      await this.writeManifest(manifest);
+
+      const flush = async (): Promise<void> => {
+        if (exports.length === 0) return;
+        const generated = await createWhatsAppImportWorkbook(
+          exports,
+          mappings,
+          manifest.channelPhoneE164,
+        );
+        chunkIndex += 1;
+        const packagePath = resolve(
+          this.batchPath(companyId, batchId),
+          'android',
+          'package',
+          `chunk-${chunkIndex.toString().padStart(4, '0')}`,
+        );
+        assertInside(this.batchPath(companyId, batchId), packagePath);
+        await mkdir(packagePath, { recursive: true });
+        await writeFile(
+          resolve(packagePath, 'modelo-importacao-atendimentos-whatsapp.xlsx'),
+          generated.content,
+          { mode: 0o600 },
+        );
+        const childBatchId = deterministicUuid(
+          'whatsapp-android-import',
+          batchId,
+          String(chunkIndex),
+        );
+        const importInput = {
+          companyId,
+          channelId: manifest.channelId,
+          actorUsername: manifest.actorUsername,
+          batchName: `android-${batchId.slice(0, 8)}-${chunkIndex
+            .toString()
+            .padStart(4, '0')}`,
+          batchId: childBatchId,
+          packagePath,
+          cutoffAt,
+          confirmation: `APPLY:${childBatchId}`,
+        };
+        const validation = await importer.validate(importInput);
+        if (!validation.valid) {
+          const details = validation.issues
+            .filter((issue) => issue.severity === 'error')
+            .slice(0, 3)
+            .map((issue) => issue.message.trim())
+            .filter(Boolean)
+            .join(' ');
+          throw validationError(
+            details || `O bloco ${chunkIndex} do backup é inválido.`,
+          );
+        }
+        await importer.apply(importInput);
+        for (const mapping of mappings) {
+          processedPhones.add(mapping.phoneE164);
+        }
+        android.chunksCompleted = chunkIndex;
+        android.conversationsProcessed = processedPhones.size;
+        android.messagesProcessed += generated.messageCount;
+        manifest.updatedAt = new Date().toISOString();
+        await this.writeManifest(manifest);
+        exports = [];
+        mappings = [];
+        chunkMessages = 0;
+      };
+
+      for (const item of readWhatsAppAndroidBackup(databasePath, {
+        cutoffAt,
+        departmentCode: android.departmentCode,
+        state: android.state,
+        ownerUsername: android.ownerUsername,
+      })) {
+        for (
+          let offset = 0;
+          offset < item.parsed.messages.length;
+          offset += ANDROID_IMPORT_CHUNK_MESSAGES
+        ) {
+          const messages = item.parsed.messages.slice(
+            offset,
+            offset + ANDROID_IMPORT_CHUNK_MESSAGES,
+          );
+          if (
+            chunkMessages > 0 &&
+            chunkMessages + messages.length > ANDROID_IMPORT_CHUNK_MESSAGES
+          ) {
+            await flush();
+          }
+          const segment: ParsedWhatsAppExport = {
+            ...item.parsed,
+            messages,
+            messageCount: messages.length,
+            attachmentCount: messages.filter((message) => message.attachment)
+              .length,
+            missingAttachmentCount: messages.filter(
+              (message) => message.attachment,
+            ).length,
+            startedAt: messages[0]?.occurredAt ?? null,
+            endedAt: messages.at(-1)?.occurredAt ?? null,
+          };
+          exports.push(segment);
+          mappings.push(item.mapping);
+          chunkMessages += messages.length;
+          if (
+            offset + ANDROID_IMPORT_CHUNK_MESSAGES <
+            item.parsed.messages.length
+          ) {
+            await flush();
+          }
+        }
+      }
+      await flush();
+      if (chunkIndex < 1) {
+        throw validationError(
+          'Nenhuma mensagem anterior à data de corte foi encontrada.',
+        );
+      }
+      manifest.status = 'applied';
+      manifest.appliedAt = new Date().toISOString();
+      manifest.updatedAt = manifest.appliedAt;
+      await this.writeManifest(manifest);
+    } catch (error) {
+      const manifest = await this.readManifest(companyId, batchId);
+      manifest.status = 'failed';
+      if (manifest.androidBackup) {
+        manifest.androidBackup.errorMessage = (
+          error instanceof Error
+            ? error.message
+            : 'Falha desconhecida ao importar o backup Android.'
+        ).slice(0, 1_000);
+      }
+      manifest.updatedAt = new Date().toISOString();
+      await this.writeManifest(manifest);
+    }
   }
 
   private async generateWorkbook(manifest: StoredManifest) {
@@ -876,6 +1230,7 @@ export class WhatsAppHistoryImportService {
     ) {
       throw validationError('O lote de importação é inválido.');
     }
+    manifest.androidBackup ??= null;
     if (
       new Date(manifest.expiresAt) < new Date() &&
       manifest.status === 'draft'

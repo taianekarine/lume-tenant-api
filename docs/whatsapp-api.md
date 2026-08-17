@@ -18,22 +18,39 @@ da Evolution e dos provedores de IA permanecem no servidor.
 ## Importação de históricos
 
 O subfluxo `whatsapp/history-imports` recebe backups ZIP exportados pelo
-WhatsApp, mantém um manifesto privado por empresa e gera uma planilha no
-contrato do importador oficial. Todas as rotas exigem
+WhatsApp ou um `msgstore.db.crypt15` completo do Android, mantém um manifesto
+privado por empresa e reutiliza o contrato do importador oficial. Todas as rotas exigem
 `whatsapp-conversations:manage`:
 
 - `GET /channels`: canais disponíveis no tenant;
 - `POST /`: inicia um lote idempotente por `commandId`;
 - `GET /:batchId`: consulta totais, erros e revisões;
 - `POST /:batchId/archives`: valida um ZIP por vez;
+- `POST /:batchId/android-backup`: recebe o `msgstore.db.crypt15`, a chave
+  hexadecimal e a situação/departamento confirmados pelo operador;
 - `PATCH /:batchId/archives/:archiveId`: confirma identidade e estado;
 - `GET /:batchId/workbook`: baixa a planilha consolidada;
 - `POST /:batchId/apply`: valida e aplica pelo importador existente.
+
+No modo Android, a chave permanece somente na memória da requisição e é
+descartada após a descriptografia autenticada. O SQLite é validado antes de ser
+aceito e processado assincronamente em blocos idempotentes de até 5.000
+mensagens. Conversas individuais com JID telefônico são consolidadas; grupos,
+listas, status e chats técnicos são contabilizados e excluídos porque o modelo
+atual do painel é orientado a atendimentos individuais.
 
 O lote não dispara respostas, IA, menus ou outbox. Depois da aplicação, as
 conversas passam a usar exatamente as mesmas entidades, transições e regras do
 fluxo corrente. Anexos realmente contidos no ZIP são retidos no volume próprio
 de mídias; referências ausentes permanecem identificadas como indisponíveis.
+O `msgstore` não contém os binários das mídias: caminhos de imagens, áudios,
+vídeos e documentos são preservados como pendentes para uma carga posterior.
+
+Uploads grandes também precisam ser liberados no proxy reverso da VPS. Para um
+backup de 454 MB, configure o equivalente a `client_max_body_size 2g` e um
+timeout de leitura superior ao tempo do upload. O volume de importação deve ter
+espaço para o arquivo criptografado temporário, o SQLite descriptografado e os
+blocos XLSX; recomenda-se pelo menos três vezes o tamanho do banco aberto.
 
 ## Garantias de processamento
 

@@ -56,12 +56,15 @@ export function identifyWhatsAppExportMessages(
     channelPhoneE164,
     mapping.phoneE164,
   )}`;
+  const resolvedExternalConversationId =
+    parsed.externalConversationId ?? externalConversationId;
   const duplicateOrdinals = new Map<string, number>();
 
   return parsed.messages.map((message) => {
-    const outbound = message.senderName === mapping.companySenderName;
+    const outbound =
+      message.outbound ?? message.senderName === mapping.companySenderName;
     const signature = deterministicWhatsAppExportId(
-      externalConversationId,
+      resolvedExternalConversationId,
       message.wallClockAt.toISOString(),
       message.senderName,
       message.kind,
@@ -73,11 +76,10 @@ export function identifyWhatsAppExportMessages(
 
     return {
       archiveId: parsed.archiveId,
-      externalConversationId,
-      externalMessageId: `chat-message-${deterministicWhatsAppExportId(
-        signature,
-        ordinal,
-      )}`,
+      externalConversationId: resolvedExternalConversationId,
+      externalMessageId:
+        message.externalMessageId ??
+        `chat-message-${deterministicWhatsAppExportId(signature, ordinal)}`,
       outbound,
       message,
     };
@@ -182,15 +184,17 @@ export async function createWhatsAppImportWorkbook(
     const mapping = mappingByArchive.get(parsed.archiveId);
     if (!mapping) continue;
     const state = stateColumns(mapping);
-    const externalConversationId = `chat-export-${deterministicWhatsAppExportId(
-      channelPhoneE164,
-      mapping.phoneE164,
-    )}`;
+    const externalConversationId =
+      parsed.externalConversationId ??
+      `chat-export-${deterministicWhatsAppExportId(
+        channelPhoneE164,
+        mapping.phoneE164,
+      )}`;
     const lastMessage = parsed.messages.at(-1);
     conversations.push(
       asRow(CONVERSATION_HEADERS, {
         external_conversation_id: externalConversationId,
-        source_system: WHATSAPP_EXPORT_SOURCE_SYSTEM,
+        source_system: parsed.sourceSystem ?? WHATSAPP_EXPORT_SOURCE_SYSTEM,
         phone_e164: mapping.phoneE164,
         contact_name: mapping.contactName,
         channel_phone_e164: channelPhoneE164,
@@ -216,9 +220,10 @@ export async function createWhatsAppImportWorkbook(
     )) {
       const { externalMessageId, message, outbound } = identity;
       const mediaReference = message.attachment
-        ? `whatsapp-export://${parsed.archiveId}/${encodeURIComponent(
+        ? (message.attachment.reference ??
+          `whatsapp-export://${parsed.archiveId}/${encodeURIComponent(
             message.attachment.fileName,
-          )}`
+          )}`)
         : '';
       if (message.attachment) attachmentCount += 1;
       messages.push(

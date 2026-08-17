@@ -10,9 +10,13 @@ import {
   Res,
   StreamableFile,
   UploadedFile,
+  UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import {
+  FileFieldsInterceptor,
+  FileInterceptor,
+} from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
@@ -30,6 +34,7 @@ import { WhatsAppHistoryImportService } from '../../infra/imports/whatsapp-histo
 import { CurrentUser } from '../../shared/http/decorators/current-user.decorator';
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
+  AddWhatsAppAndroidBackupDto,
   ApplyWhatsAppHistoryImportDto,
   CreateWhatsAppHistoryImportDto,
   UpdateWhatsAppHistoryMappingDto,
@@ -39,6 +44,12 @@ interface UploadedWhatsAppHistoryArchive {
   originalname: string;
   size: number;
   buffer: Buffer;
+}
+
+interface UploadedWhatsAppAndroidDatabase {
+  originalname: string;
+  size: number;
+  path: string;
 }
 
 function contentDisposition(fileName: string): string {
@@ -114,6 +125,55 @@ export class WhatsAppHistoryImportController {
       originalName: file.originalname,
       sizeBytes: file.size,
       content: file.buffer,
+    });
+  }
+
+  @Post(':batchId/android-backup')
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @UseInterceptors(
+    FileFieldsInterceptor([{ name: 'database', maxCount: 1 }], {
+      limits: { files: 1, fileSize: 2_147_483_647 },
+      dest:
+        process.env.WHATSAPP_IMPORT_UPLOAD_TEMP_ROOT ??
+        'var/imports/whatsapp/incoming',
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['database', 'rootKey', 'state', 'departmentCode'],
+      properties: {
+        database: { type: 'string', format: 'binary' },
+        rootKey: { type: 'string', format: 'password', minLength: 64 },
+        state: {
+          type: 'string',
+          enum: ['human-queue', 'human-active', 'closed', 'bot-menu'],
+        },
+        departmentCode: { type: 'string' },
+        ownerUsername: { type: 'string', nullable: true },
+      },
+    },
+  })
+  addAndroidBackup(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @UploadedFiles()
+    files: { database?: UploadedWhatsAppAndroidDatabase[] } | undefined,
+    @Body() body: AddWhatsAppAndroidBackupDto,
+  ) {
+    const database = files?.database?.[0];
+    if (!database) {
+      throw validationError('Selecione o arquivo msgstore.db.crypt15.');
+    }
+    return this.imports.addAndroidBackup(current.companyId, batchId, {
+      originalName: database.originalname,
+      sizeBytes: database.size,
+      temporaryPath: database.path,
+      rootKeyHex: body.rootKey,
+      state: body.state,
+      departmentCode: body.departmentCode,
+      ownerUsername: body.ownerUsername,
     });
   }
 

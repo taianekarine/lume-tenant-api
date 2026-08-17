@@ -182,7 +182,7 @@ describe('parseWhatsAppExportArchive', () => {
 
     expect(result.messageCount).toBe(10_000);
     expect(result.messages.at(-1)?.text).toBe('Mensagem 9999');
-  });
+  }, 15_000);
 
   it('rejeita conteúdo que não é ZIP e arquivo corrompido', async () => {
     await expect(

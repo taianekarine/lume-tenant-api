@@ -219,9 +219,11 @@ export function importedMediaMetadata(
   if (!mediaReference && !correlationId) return undefined;
 
   let fileName: string | undefined;
-  const isWhatsAppExport =
-    mediaReference?.startsWith('whatsapp-export://') ?? false;
-  if (isWhatsAppExport && mediaReference) {
+  const isRetainedImportReference =
+    mediaReference?.startsWith('whatsapp-export://') ||
+    mediaReference?.startsWith('whatsapp-android-media://') ||
+    false;
+  if (isRetainedImportReference && mediaReference) {
     const encodedFileName = mediaReference.split('/').at(-1);
     if (encodedFileName) {
       try {
@@ -236,7 +238,7 @@ export function importedMediaMetadata(
     ...(mediaReference ? { legacyReference: mediaReference } : {}),
     ...(correlationId ? { legacyCorrelationId: correlationId } : {}),
     ...(fileName ? { fileName } : {}),
-    ...(isWhatsAppExport ? { retentionStatus: 'unavailable' } : {}),
+    ...(isRetainedImportReference ? { retentionStatus: 'unavailable' } : {}),
   });
 }
 

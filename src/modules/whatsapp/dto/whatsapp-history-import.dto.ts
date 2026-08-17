@@ -66,3 +66,29 @@ export class ApplyWhatsAppHistoryImportDto {
   @IsISO8601({ strict: true })
   cutoffAt!: string;
 }
+
+export class AddWhatsAppAndroidBackupDto {
+  @ApiProperty({
+    description: 'Chave crypt15 hexadecimal. Nunca é persistida.',
+    minLength: 64,
+    maxLength: 64,
+  })
+  @IsString()
+  @Matches(/^[0-9a-fA-F]{64}$/)
+  rootKey!: string;
+
+  @ApiProperty({ enum: WHATSAPP_HISTORY_STATE_OPTIONS })
+  @IsIn(WHATSAPP_HISTORY_STATE_OPTIONS)
+  state!: (typeof WHATSAPP_HISTORY_STATE_OPTIONS)[number];
+
+  @ApiProperty({ enum: IMPORT_DEPARTMENT_CODES })
+  @IsIn(IMPORT_DEPARTMENT_CODES)
+  departmentCode!: (typeof IMPORT_DEPARTMENT_CODES)[number];
+
+  @ApiPropertyOptional({ nullable: true, maxLength: 80 })
+  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value != null && value !== '')
+  @IsString()
+  @MaxLength(80)
+  ownerUsername?: string | null;
+}
