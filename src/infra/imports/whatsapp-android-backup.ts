@@ -90,6 +90,7 @@ interface AndroidMessageRow {
   mimeType: string | null;
   mediaName: string | null;
   mediaCaption: string | null;
+  uiElementContent: string | null;
 }
 
 function database(path: string): DatabaseSync {
@@ -140,6 +141,22 @@ function assertSchema(db: DatabaseSync): void {
       );
     }
   }
+}
+
+function tableHasColumns(
+  db: DatabaseSync,
+  table: string,
+  required: readonly string[],
+): boolean {
+  const columns = new Set(
+    (
+      db.prepare(`PRAGMA table_info('${table}')`).all() as Record<
+        string,
+        unknown
+      >[]
+    ).map((column) => String(column.name)),
+  );
+  return required.every((column) => columns.has(column));
 }
 
 function isoFromTimestamp(value: number | null): string | null {
@@ -239,6 +256,44 @@ function messageKind(
   return 'unknown';
 }
 
+function uiElementText(value: string | null): string | null {
+  const normalized = value?.trim();
+  if (!normalized) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(normalized);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const element = parsed as Record<string, unknown>;
+    const parts: string[] = [];
+    for (const field of ['content', 'footer'] as const) {
+      const text = element[field];
+      if (typeof text === 'string' && text.trim()) parts.push(text.trim());
+    }
+
+    if (Array.isArray(element.buttons)) {
+      const buttons = element.buttons
+        .map((button) => {
+          if (!button || typeof button !== 'object' || Array.isArray(button)) {
+            return null;
+          }
+          const displayText = (button as Record<string, unknown>).displayText;
+          return typeof displayText === 'string' && displayText.trim()
+            ? displayText.trim()
+            : null;
+        })
+        .filter((button): button is string => Boolean(button));
+      if (buttons.length > 0) parts.push(`Opções: ${buttons.join(' · ')}`);
+    }
+
+    return [...new Set(parts)].join('\n') || null;
+  } catch {
+    return null;
+  }
+}
+
 function attachment(row: AndroidMessageRow): WhatsAppExportAttachment | null {
   const kind = messageKind(row.messageType, row.mimeType);
   if (
@@ -304,13 +359,20 @@ function toMessage(
 ): WhatsAppExportMessage {
   const media = attachment(row);
   const kind = media?.kind ?? messageKind(row.messageType, row.mimeType);
-  const text = row.textData?.trim() || row.mediaCaption?.trim() || null;
+  const text =
+    row.textData?.trim() ||
+    row.mediaCaption?.trim() ||
+    uiElementText(row.uiElementContent);
   const fallback =
-    kind === 'unknown' && !text
-      ? row.messageType === 7
+    text || media
+      ? null
+      : row.messageType === 7
         ? '[Evento do sistema do WhatsApp]'
-        : `[Mensagem do WhatsApp sem conteúdo textual — tipo ${row.messageType ?? 'desconhecido'}]`
-      : null;
+        : kind === 'text'
+          ? '[Mensagem de texto sem conteúdo disponível no backup]'
+          : kind === 'unknown'
+            ? `[Mensagem do WhatsApp sem conteúdo textual — tipo ${row.messageType ?? 'desconhecido'}]`
+            : null;
   const wallClockAt = wallClockInSaoPaulo(row.timestamp);
   return {
     index,
@@ -394,6 +456,16 @@ export function* readWhatsAppAndroidBackup(
   const db = database(databasePath);
   try {
     assertSchema(db);
+    const hasUiElements = tableHasColumns(db, 'message_ui_elements', [
+      'message_row_id',
+      'element_content',
+    ]);
+    const uiElementContentProjection = hasUiElements
+      ? `(SELECT ui.element_content
+          FROM message_ui_elements ui
+          WHERE ui.message_row_id = message._id
+          LIMIT 1)`
+      : 'NULL';
     const cutoffTimestamp =
       options.cutoffAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
     const statement = db.prepare(
@@ -411,7 +483,8 @@ export function* readWhatsAppAndroidBackup(
          message_media.file_size AS fileSize,
          message_media.mime_type AS mimeType,
          message_media.media_name AS mediaName,
-         message_media.media_caption AS mediaCaption
+         message_media.media_caption AS mediaCaption,
+         ${uiElementContentProjection} AS uiElementContent
        FROM message
        JOIN chat ON chat._id = message.chat_row_id
        JOIN jid chat_jid ON chat_jid._id = chat.jid_row_id
@@ -445,6 +518,7 @@ export function* readWhatsAppAndroidBackup(
         mimeType: nullableText(raw.mimeType),
         mediaName: nullableText(raw.mediaName),
         mediaCaption: nullableText(raw.mediaCaption),
+        uiElementContent: nullableText(raw.uiElementContent),
       };
       if (currentPhone !== null && row.phone !== currentPhone) {
         const parsed = exportFor(currentPhone, rows);

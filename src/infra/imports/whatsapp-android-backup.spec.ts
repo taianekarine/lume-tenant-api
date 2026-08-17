@@ -127,4 +127,56 @@ describe('WhatsApp Android backup reader', () => {
       departmentCode: 'commercial',
     });
   });
+
+  it('reads interactive message text from optional WhatsApp UI elements', async () => {
+    const path = await fixture();
+    const db = new DatabaseSync(path);
+    db.exec(`
+      CREATE TABLE message_ui_elements (
+        message_row_id INTEGER PRIMARY KEY,
+        element_content TEXT
+      );
+      INSERT INTO message VALUES
+        (102, 10, 0, 'interactive-1', 4, 1700000040000, 0, NULL);
+      INSERT INTO message_ui_elements VALUES
+        (102, '{"content":"Escolha uma opção","footer":"Atendimento Lume","buttons":[{"displayText":"Comercial"},{"displayText":"Suporte"}]}');
+    `);
+    db.close();
+
+    const rows = [
+      ...readWhatsAppAndroidBackup(path, {
+        departmentCode: 'commercial',
+        state: 'closed',
+      }),
+    ];
+
+    expect(rows[0]?.parsed.messages[2]).toMatchObject({
+      kind: 'text',
+      text: 'Escolha uma opção\nAtendimento Lume\nOpções: Comercial · Suporte',
+      attachment: null,
+    });
+  });
+
+  it('keeps genuinely empty text messages importable', async () => {
+    const path = await fixture();
+    const db = new DatabaseSync(path);
+    db.exec(`
+      INSERT INTO message VALUES
+        (102, 10, 0, 'empty-text-1', 4, 1700000040000, 0, NULL);
+    `);
+    db.close();
+
+    const rows = [
+      ...readWhatsAppAndroidBackup(path, {
+        departmentCode: 'commercial',
+        state: 'closed',
+      }),
+    ];
+
+    expect(rows[0]?.parsed.messages[2]).toMatchObject({
+      kind: 'text',
+      text: '[Mensagem de texto sem conteúdo disponível no backup]',
+      attachment: null,
+    });
+  });
 });
