@@ -15,6 +15,7 @@ import {
   readWhatsAppAndroidBackup,
   type WhatsAppAndroidBackupSummary,
 } from './whatsapp-android-backup';
+import { WhatsAppAndroidMediaImportService } from './whatsapp-android-media-import.service';
 import { decryptWhatsAppCrypt15 } from './whatsapp-crypt15';
 import {
   DEFAULT_WHATSAPP_EXPORT_LIMITS,
@@ -50,7 +51,6 @@ const IMPORT_DEPARTMENTS = new Set([
   'operations',
 ]);
 const EXTERNAL_REFERENCE_CHUNK_SIZE = 250;
-const ANDROID_IMPORT_CHUNK_MESSAGES = 5_000;
 
 const MESSAGE_KIND_BY_EXPORT = {
   text: MessageKind.TEXT,
@@ -96,6 +96,16 @@ interface StoredAndroidBackup {
   conversationsProcessed: number;
   messagesProcessed: number;
   errorMessage: string | null;
+  mediaImport?: {
+    archivesProcessed: number;
+    filesScanned: number;
+    stored: number;
+    pending: number;
+    ambiguous: number;
+    skippedOversize: number;
+    updatedAt: string;
+    lastArchiveName: string;
+  } | null;
 }
 
 interface StoredManifest {
@@ -141,6 +151,12 @@ export interface AddWhatsAppAndroidBackupInput {
   state: WhatsAppHistoryStateOption;
   departmentCode: string;
   ownerUsername?: string | null;
+}
+
+export interface AddWhatsAppAndroidMediaArchiveInput {
+  originalName: string;
+  sizeBytes: number;
+  temporaryPath: string;
 }
 
 function finiteConfig(
@@ -274,6 +290,7 @@ function presentManifest(manifest: StoredManifest) {
           conversationsProcessed: android.conversationsProcessed,
           messagesProcessed: android.messagesProcessed,
           errorMessage: android.errorMessage,
+          mediaImport: android.mediaImport ?? null,
         }
       : null,
   };
@@ -286,12 +303,14 @@ export class WhatsAppHistoryImportService {
   private readonly maximumArchives: number;
   private readonly retentionMs: number;
   private readonly maximumAndroidDatabaseBytes: number;
+  private readonly androidImportChunkMessages: number;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly androidJobs = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly mediaStorage: WhatsAppMediaStorage,
+    private readonly androidMediaImporter: WhatsAppAndroidMediaImportService,
     config: ConfigService,
   ) {
     this.root = resolve(
@@ -312,6 +331,13 @@ export class WhatsAppHistoryImportService {
       config,
       'WHATSAPP_ANDROID_BACKUP_MAX_DECRYPTED_BYTES',
       4_294_967_296,
+    );
+    this.androidImportChunkMessages = Math.min(
+      50_000,
+      Math.max(
+        1_000,
+        finiteConfig(config, 'WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES', 10_000),
+      ),
     );
     this.limits = {
       maximumArchiveBytes: finiteConfig(
@@ -539,6 +565,48 @@ export class WhatsAppHistoryImportService {
           conversationsProcessed: 0,
           messagesProcessed: 0,
           errorMessage: null,
+          mediaImport: null,
+        };
+        manifest.updatedAt = new Date().toISOString();
+        await this.writeManifest(manifest);
+        return presentManifest(manifest);
+      } finally {
+        await rm(input.temporaryPath, { force: true });
+      }
+    });
+  }
+
+  async addAndroidMediaArchive(
+    companyId: string,
+    batchId: string,
+    input: AddWhatsAppAndroidMediaArchiveInput,
+  ) {
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      try {
+        const manifest = await this.readManifest(companyId, batchId);
+        if (!manifest.androidBackup || manifest.status !== 'applied') {
+          throw validationError(
+            'Conclua a importação do backup Android antes de vincular mídias.',
+          );
+        }
+        const result = await this.androidMediaImporter.attachArchive({
+          companyId,
+          batchId,
+          archivePath: input.temporaryPath,
+          originalName: input.originalName,
+          sizeBytes: input.sizeBytes,
+        });
+        const previous = manifest.androidBackup.mediaImport;
+        manifest.androidBackup.mediaImport = {
+          archivesProcessed: (previous?.archivesProcessed ?? 0) + 1,
+          filesScanned: (previous?.filesScanned ?? 0) + result.filesScanned,
+          stored: result.alreadyStored + result.attached,
+          pending: result.missing,
+          ambiguous: (previous?.ambiguous ?? 0) + result.ambiguous,
+          skippedOversize:
+            (previous?.skippedOversize ?? 0) + result.skippedOversize,
+          updatedAt: new Date().toISOString(),
+          lastArchiveName: input.originalName.slice(0, 255),
         };
         manifest.updatedAt = new Date().toISOString();
         await this.writeManifest(manifest);
@@ -782,18 +850,6 @@ export class WhatsAppHistoryImportService {
           cutoffAt,
           confirmation: `APPLY:${childBatchId}`,
         };
-        const validation = await importer.validate(importInput);
-        if (!validation.valid) {
-          const details = validation.issues
-            .filter((issue) => issue.severity === 'error')
-            .slice(0, 3)
-            .map((issue) => issue.message.trim())
-            .filter(Boolean)
-            .join(' ');
-          throw validationError(
-            details || `O bloco ${chunkIndex} do backup é inválido.`,
-          );
-        }
         await importer.apply(importInput);
         for (const mapping of mappings) {
           processedPhones.add(mapping.phoneE164);
@@ -817,15 +873,15 @@ export class WhatsAppHistoryImportService {
         for (
           let offset = 0;
           offset < item.parsed.messages.length;
-          offset += ANDROID_IMPORT_CHUNK_MESSAGES
+          offset += this.androidImportChunkMessages
         ) {
           const messages = item.parsed.messages.slice(
             offset,
-            offset + ANDROID_IMPORT_CHUNK_MESSAGES,
+            offset + this.androidImportChunkMessages,
           );
           if (
             chunkMessages > 0 &&
-            chunkMessages + messages.length > ANDROID_IMPORT_CHUNK_MESSAGES
+            chunkMessages + messages.length > this.androidImportChunkMessages
           ) {
             await flush();
           }
@@ -845,7 +901,7 @@ export class WhatsAppHistoryImportService {
           mappings.push(item.mapping);
           chunkMessages += messages.length;
           if (
-            offset + ANDROID_IMPORT_CHUNK_MESSAGES <
+            offset + this.androidImportChunkMessages <
             item.parsed.messages.length
           ) {
             await flush();

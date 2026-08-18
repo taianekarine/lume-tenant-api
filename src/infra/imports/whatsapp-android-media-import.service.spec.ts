@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import JSZip from 'jszip';
 
 import { WhatsAppAndroidMediaImportService } from './whatsapp-android-media-import.service';
 
@@ -130,5 +131,34 @@ describe('WhatsAppAndroidMediaImportService', () => {
       alreadyStored: 1,
     });
     expect(storage.write).not.toHaveBeenCalled();
+  });
+
+  it('links media received in a ZIP uploaded by the administration screen', async () => {
+    const { mediaRoot, prisma, storage, service } = await setup();
+    const archivePath = join(mediaRoot, 'midias.zip');
+    const zip = new JSZip();
+    zip.file(
+      'WhatsApp Business/Media/WhatsApp Images/foto.jpg',
+      Buffer.from('imagem-historica'),
+    );
+    const content = await zip.generateAsync({ type: 'nodebuffer' });
+    await writeFile(archivePath, content);
+
+    const result = await service.attachArchive({
+      companyId: COMPANY_ID,
+      batchId: BATCH_ID,
+      archivePath,
+      originalName: 'midias.zip',
+      sizeBytes: content.byteLength,
+    });
+
+    expect(result).toMatchObject({
+      candidates: 1,
+      filesScanned: 1,
+      attached: 1,
+      missing: 0,
+    });
+    expect(storage.write).toHaveBeenCalledOnce();
+    expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledOnce();
   });
 });

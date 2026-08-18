@@ -52,6 +52,12 @@ interface UploadedWhatsAppAndroidDatabase {
   path: string;
 }
 
+interface UploadedWhatsAppAndroidMediaArchive {
+  originalname: string;
+  size: number;
+  path: string;
+}
+
 function contentDisposition(fileName: string): string {
   const fallback =
     fileName
@@ -174,6 +180,42 @@ export class WhatsAppHistoryImportController {
       state: body.state,
       departmentCode: body.departmentCode,
       ownerUsername: body.ownerUsername,
+    });
+  }
+
+  @Post(':batchId/android-media-archives')
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor('archive', {
+      limits: { files: 1, fileSize: 512 * 1024 * 1024 },
+      dest:
+        process.env.WHATSAPP_IMPORT_UPLOAD_TEMP_ROOT ??
+        'var/imports/whatsapp/incoming',
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['archive'],
+      properties: {
+        archive: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  addAndroidMediaArchive(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @UploadedFile()
+    file: UploadedWhatsAppAndroidMediaArchive | undefined,
+  ) {
+    if (!file) {
+      throw validationError('Selecione um arquivo ZIP da pasta Media.');
+    }
+    return this.imports.addAndroidMediaArchive(current.companyId, batchId, {
+      originalName: file.originalname,
+      sizeBytes: file.size,
+      temporaryPath: file.path,
     });
   }
 
