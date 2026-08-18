@@ -115,7 +115,7 @@ interface StoredAndroidBackup {
     skippedOversize: number;
     updatedAt: string;
     lastArchiveName: string;
-    status?: 'uploading' | 'processing' | 'completed' | 'failed';
+    status?: 'uploading' | 'ready' | 'processing' | 'completed' | 'failed';
     phase?: 'uploading' | 'scanning' | 'storing' | null;
     uploadId?: string | null;
     uploadBytesReceived?: number;
@@ -136,7 +136,7 @@ interface StoredAndroidMediaUpload {
   originalName: string;
   expectedBytes: number;
   receivedBytes: number;
-  status: 'uploading' | 'processing' | 'completed' | 'failed';
+  status: 'uploading' | 'ready' | 'processing' | 'completed' | 'failed';
   createdAt: string;
   updatedAt: string;
 }
@@ -752,9 +752,12 @@ export class WhatsAppHistoryImportService {
   ) {
     return this.withBatchLock(`${companyId}:${batchId}`, async () => {
       const manifest = await this.readManifest(companyId, batchId);
-      if (!manifest.androidBackup || manifest.status !== 'applied') {
+      if (
+        !manifest.androidBackup ||
+        !['draft', 'failed', 'applied'].includes(manifest.status)
+      ) {
         throw validationError(
-          'Conclua a importação do backup Android antes de vincular mídias.',
+          'O backup Android não está disponível para receber mídias.',
         );
       }
       const originalName = input.originalName.trim().slice(0, 255);
@@ -824,7 +827,10 @@ export class WhatsAppHistoryImportService {
         );
       }
 
-      if (current?.status === 'failed' && current.uploadId) {
+      if (
+        (current?.status === 'failed' || current?.status === 'ready') &&
+        current.uploadId
+      ) {
         await rm(
           this.androidMediaUploadPath(companyId, batchId, current.uploadId),
           { recursive: true, force: true },
@@ -908,7 +914,10 @@ export class WhatsAppHistoryImportService {
         );
       }
       const manifest = await this.readManifest(companyId, batchId);
-      if (!manifest.androidBackup || manifest.status !== 'applied') {
+      if (
+        !manifest.androidBackup ||
+        !['draft', 'failed', 'applied'].includes(manifest.status)
+      ) {
         throw validationError(
           'O backup Android não está disponível para mídias.',
         );
@@ -975,7 +984,7 @@ export class WhatsAppHistoryImportService {
         const currentManifest = await this.readManifest(companyId, batchId);
         if (
           !currentManifest.androidBackup ||
-          currentManifest.status !== 'applied'
+          !['draft', 'failed', 'applied'].includes(currentManifest.status)
         ) {
           throw validationError(
             'O backup Android não está disponível para mídias.',
@@ -995,8 +1004,18 @@ export class WhatsAppHistoryImportService {
             `O ZIP ainda não foi enviado por completo: ${upload.receivedBytes} de ${upload.expectedBytes} bytes.`,
           );
         }
-        if (upload.status === 'completed') return currentManifest;
-        upload.status = 'processing';
+        if (upload.status === 'completed' || upload.status === 'ready') {
+          return currentManifest;
+        }
+        const shouldStage = currentManifest.status !== 'applied';
+        if (shouldStage) {
+          await this.androidMediaImporter.validateArchive({
+            archivePath: this.androidMediaArchivePath(uploadDirectory),
+            originalName: upload.originalName,
+            sizeBytes: upload.expectedBytes,
+          });
+        }
+        upload.status = shouldStage ? 'ready' : 'processing';
         upload.updatedAt = new Date().toISOString();
         await this.writeAndroidMediaUpload(uploadDirectory, upload);
         const mediaImport = currentManifest.androidBackup.mediaImport;
@@ -1011,8 +1030,8 @@ export class WhatsAppHistoryImportService {
           skippedOversize: mediaImport?.skippedOversize ?? 0,
           updatedAt: upload.updatedAt,
           lastArchiveName: upload.originalName,
-          status: 'processing',
-          phase: 'scanning',
+          status: shouldStage ? 'ready' : 'processing',
+          phase: shouldStage ? null : 'scanning',
           uploadId,
           uploadBytesReceived: upload.receivedBytes,
           uploadBytesTotal: upload.expectedBytes,
@@ -1027,7 +1046,9 @@ export class WhatsAppHistoryImportService {
         return currentManifest;
       },
     );
-    this.resumeAndroidMediaJob(manifest, true);
+    if (manifest.status === 'applied') {
+      this.resumeAndroidMediaJob(manifest, true);
+    }
     return presentManifest(manifest);
   }
 
@@ -1093,6 +1114,14 @@ export class WhatsAppHistoryImportService {
       }
       if (manifest.androidBackup) {
         if (manifest.status === 'applied') return presentManifest(manifest);
+        if (
+          manifest.androidBackup.summary.mediaReferences > 0 &&
+          manifest.androidBackup.mediaImport?.status !== 'ready'
+        ) {
+          throw validationError(
+            'Selecione e envie por completo o ZIP da pasta Media antes de aplicar o backup.',
+          );
+        }
         const cutoffIso = cutoffAt.toISOString();
         if (
           manifest.androidBackup.cutoffAt &&
@@ -1328,10 +1357,40 @@ export class WhatsAppHistoryImportService {
           'Nenhuma mensagem anterior à data de corte foi encontrada.',
         );
       }
+      const mediaImport = android.mediaImport;
+      if (mediaImport?.status === 'ready' && mediaImport.uploadId) {
+        const uploadDirectory = this.androidMediaUploadPath(
+          companyId,
+          batchId,
+          mediaImport.uploadId,
+        );
+        const upload = await this.readAndroidMediaUpload(uploadDirectory);
+        if (
+          upload.status !== 'ready' ||
+          upload.receivedBytes !== upload.expectedBytes
+        ) {
+          throw validationError(
+            'O ZIP da pasta Media não está pronto para ser vinculado.',
+          );
+        }
+        const now = new Date().toISOString();
+        upload.status = 'processing';
+        upload.updatedAt = now;
+        await this.writeAndroidMediaUpload(uploadDirectory, upload);
+        mediaImport.status = 'processing';
+        mediaImport.phase = 'scanning';
+        mediaImport.updatedAt = now;
+        mediaImport.processingFilesScanned = 0;
+        mediaImport.processingFilesTotal = 0;
+        mediaImport.processingFilesProcessed = 0;
+        mediaImport.processingAttached = 0;
+        mediaImport.errorMessage = null;
+      }
       manifest.status = 'applied';
       manifest.appliedAt = new Date().toISOString();
       manifest.updatedAt = manifest.appliedAt;
       await this.writeManifest(manifest);
+      this.resumeAndroidMediaJob(manifest, true);
     } catch (error) {
       const manifest = await this.readManifest(companyId, batchId);
       manifest.status = 'failed';

@@ -49,6 +49,7 @@ async function setup() {
     delete: vi.fn(),
   };
   const androidMediaImporter = {
+    validateArchive: vi.fn().mockResolvedValue({ filesTotal: 1 }),
     attachArchive: vi.fn().mockResolvedValue({
       schemaVersion: '1.0',
       candidates: 1,
@@ -190,6 +191,85 @@ describe('WhatsAppHistoryImportService.create', () => {
 });
 
 describe('WhatsAppHistoryImportService media retention', () => {
+  it('prepara o ZIP de mídias antes de liberar a aplicação do backup Android', async () => {
+    const { root, service, androidMediaImporter } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 1,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: null,
+      chunksCompleted: 0,
+      conversationsProcessed: 0,
+      messagesProcessed: 0,
+      errorMessage: null,
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+
+    await expect(
+      service.apply(COMPANY_ID, COMMAND_ID, new Date()),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    const started = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    await service.addAndroidMediaUploadChunk(COMPANY_ID, COMMAND_ID, {
+      uploadId: started.uploadId,
+      offsetBytes: 0,
+      content: Buffer.alloc(30, 1),
+    });
+    const ready = await service.completeAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      started.uploadId,
+    );
+
+    expect(ready).toMatchObject({
+      status: 'draft',
+      androidBackup: { mediaImport: { status: 'ready' } },
+    });
+    expect(androidMediaImporter.validateArchive).toHaveBeenCalledOnce();
+    expect(androidMediaImporter.attachArchive).not.toHaveBeenCalled();
+  });
+
   it('recebe um ZIP grande em blocos retomáveis e processa em segundo plano', async () => {
     const { root, service, androidMediaImporter } = await setup();
     await service.create({
@@ -271,7 +351,7 @@ describe('WhatsAppHistoryImportService media retention', () => {
       content: Buffer.alloc(10, 2),
     });
 
-    androidMediaImporter.attachArchive.mockRejectedValueOnce(
+    androidMediaImporter.attachArchive.mockRejectedValue(
       new Error('falha transitória'),
     );
     const processing = await service.completeAndroidMediaUpload(
@@ -301,6 +381,16 @@ describe('WhatsAppHistoryImportService media retention', () => {
       uploadId: started.uploadId,
       uploadedBytes: 30,
       status: 'failed',
+    });
+    androidMediaImporter.attachArchive.mockResolvedValue({
+      schemaVersion: '1.0',
+      candidates: 1,
+      filesScanned: 1,
+      attached: 1,
+      alreadyStored: 0,
+      missing: 0,
+      ambiguous: 0,
+      skippedOversize: 0,
     });
     await service.completeAndroidMediaUpload(
       COMPANY_ID,
