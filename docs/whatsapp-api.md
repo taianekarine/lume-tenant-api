@@ -78,6 +78,12 @@ consolida conversas duplicadas antes de criar a chave única canônica.
 
 ## Conversa e atendimento
 
+A listagem autenticada de conversas é sempre paginada e aceita pesquisa e
+filtros de departamento, condução e situação comercial. A resposta inclui um
+resumo agregado da seleção, portanto o painel não precisa percorrer todas as
+páginas para calcular os indicadores. Esse contrato evita rajadas de centenas
+de requisições depois da importação de um histórico grande.
+
 Existe uma conversa canônica para cada combinação de empresa, canal e contato.
 Encerrar atendimento finaliza somente a sessão humana atual: remove o atendente
 e preserva mensagens, anexos e orçamentos. A conversa permanece encerrada até o
