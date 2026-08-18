@@ -60,6 +60,7 @@ import type {
 } from '../../../domain/whatsapp/whatsapp.constants';
 import { UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT } from '../../../domain/whatsapp/whatsapp.constants';
 import { sanitizeLogText } from '../../../shared/utils/sensitive-data';
+import { formatWhatsAppPhone } from '../../../shared/utils/normalization';
 import {
   ConversationState,
   DeliveryStatus,
@@ -659,7 +660,7 @@ function presentConversation(row: ConversationWithRelations) {
     channel: row.channel,
     contact: {
       id: row.contact.id,
-      phone: row.contact.phoneNormalized,
+      phone: row.contact.phoneDisplay,
       displayName: row.contact.displayName,
       profilePictureUrl: row.contact.profilePictureUrl,
     },
@@ -812,7 +813,8 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         create: {
           companyId,
           phoneNormalized,
-          displayName: phoneNormalized,
+          phoneDisplay: formatWhatsAppPhone(phoneNormalized),
+          displayName: formatWhatsAppPhone(phoneNormalized),
         },
         update: {},
         select: { id: true },
@@ -920,18 +922,27 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           create: {
             companyId: input.channel.companyId,
             phoneNormalized: input.phoneNormalized,
+            phoneDisplay: formatWhatsAppPhone(input.phoneNormalized),
             displayName: input.displayName,
             profilePictureUrl: input.profilePictureUrl,
           },
           update: {
-            ...(input.direction === 'inbound' && input.displayName
-              ? { displayName: input.displayName }
-              : {}),
             ...(input.profilePictureUrl
               ? { profilePictureUrl: input.profilePictureUrl }
               : {}),
           },
         });
+
+        if (input.direction === 'inbound' && input.displayName) {
+          await transaction.whatsAppContact.updateMany({
+            where: {
+              id: contact.id,
+              companyId: input.channel.companyId,
+              isSaved: false,
+            },
+            data: { displayName: input.displayName },
+          });
+        }
 
         // Serializa o primeiro contato por tenant/canal/contato. O índice
         // parcial da migration continua sendo a última linha de defesa.

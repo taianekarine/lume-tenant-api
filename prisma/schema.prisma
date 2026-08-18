@@ -1272,7 +1272,10 @@ model WhatsAppContact {
   id                String   @id @default(uuid()) @db.Uuid
   companyId         String   @map("company_id") @db.Uuid
   phoneNormalized   String   @map("phone_normalized") @db.VarChar(16)
+  phoneDisplay      String   @map("phone_display") @db.VarChar(24)
   displayName       String?  @map("display_name") @db.VarChar(160)
+  isSaved           Boolean  @default(false) @map("is_saved")
+  nameNeedsReview   Boolean  @default(false) @map("name_needs_review")
   profilePictureUrl String?  @map("profile_picture_url") @db.VarChar(1000)
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
@@ -1284,6 +1287,7 @@ model WhatsAppContact {
   @@unique([companyId, phoneNormalized])
   @@unique([id, companyId])
   @@index([companyId, displayName])
+  @@index([companyId, isSaved, nameNeedsReview, displayName])
   @@map("whatsapp_contacts")
 }
 

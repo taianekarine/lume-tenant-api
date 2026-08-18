@@ -28,6 +28,8 @@ import { NotificationsController } from './notifications.controller';
 import { QuoteProposalController } from './quote-proposal.controller';
 import { WhatsAppPanelController } from './whatsapp-panel.controller';
 import { WhatsAppHistoryImportController } from './whatsapp-history-import.controller';
+import { WhatsAppContactsController } from './whatsapp-contacts.controller';
+import { WhatsAppContactsService } from './whatsapp-contacts.service';
 
 @Module({
   controllers: [
@@ -36,6 +38,7 @@ import { WhatsAppHistoryImportController } from './whatsapp-history-import.contr
     QuoteProposalController,
     NotificationsController,
     WhatsAppHistoryImportController,
+    WhatsAppContactsController,
   ],
   providers: [
     EvolutionWebhookService,
@@ -56,6 +59,7 @@ import { WhatsAppHistoryImportController } from './whatsapp-history-import.contr
     WhatsAppRetentionService,
     WhatsAppAndroidMediaImportService,
     WhatsAppHistoryImportService,
+    WhatsAppContactsService,
     {
       provide: EnsureWhatsAppConversationUseCase,
       useFactory: (repository: WhatsAppRepository) =>
