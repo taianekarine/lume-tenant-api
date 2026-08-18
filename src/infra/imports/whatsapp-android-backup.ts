@@ -91,6 +91,7 @@ interface AndroidMessageRow {
   mimeType: string | null;
   mediaName: string | null;
   mediaCaption: string | null;
+  fileHash: string | null;
   uiElementContent: string | null;
 }
 
@@ -241,6 +242,18 @@ function safeFileName(value: string): string {
   );
 }
 
+function contentSha256(value: string | null): string | null {
+  const normalized = value?.trim();
+  if (!normalized) return null;
+  if (/^[0-9a-f]{64}$/i.test(normalized)) return normalized.toLowerCase();
+  try {
+    const decoded = Buffer.from(normalized, 'base64');
+    return decoded.byteLength === 32 ? decoded.toString('hex') : null;
+  } catch {
+    return null;
+  }
+}
+
 function messageKind(
   messageType: number | null,
   mimeType: string | null,
@@ -306,6 +319,10 @@ function attachment(row: AndroidMessageRow): WhatsAppExportAttachment | null {
     return null;
   }
   const sourceName = row.filePath ?? row.mediaName ?? `midia-${row.messageId}`;
+  const normalizedContentSha256 = contentSha256(row.fileHash);
+  const hashFragment = normalizedContentSha256
+    ? `#sha256=${normalizedContentSha256}`
+    : '';
   return {
     entryName: null,
     fileName: safeFileName(sourceName),
@@ -314,7 +331,7 @@ function attachment(row: AndroidMessageRow): WhatsAppExportAttachment | null {
     sizeBytes: row.fileSize !== null && row.fileSize >= 0 ? row.fileSize : null,
     reference: `whatsapp-android-media://${encodeURIComponent(
       row.filePath ?? sourceName,
-    )}`,
+    )}${hashFragment}`,
   };
 }
 
@@ -468,6 +485,15 @@ export function* readWhatsAppAndroidBackup(
           WHERE ui.message_row_id = message._id
           LIMIT 1)`
       : 'NULL';
+    const fileHashProjection = tableHasColumns(db, 'message_media', [
+      'file_hash',
+    ])
+      ? `CASE
+           WHEN typeof(message_media.file_hash) = 'blob'
+             THEN lower(hex(message_media.file_hash))
+           ELSE CAST(message_media.file_hash AS TEXT)
+         END`
+      : 'NULL';
     const cutoffTimestamp =
       options.cutoffAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
     const statement = db.prepare(
@@ -486,6 +512,7 @@ export function* readWhatsAppAndroidBackup(
          message_media.mime_type AS mimeType,
          message_media.media_name AS mediaName,
          message_media.media_caption AS mediaCaption,
+         ${fileHashProjection} AS fileHash,
          ${uiElementContentProjection} AS uiElementContent
        FROM message
        JOIN chat ON chat._id = message.chat_row_id
@@ -520,6 +547,7 @@ export function* readWhatsAppAndroidBackup(
         mimeType: nullableText(raw.mimeType),
         mediaName: nullableText(raw.mediaName),
         mediaCaption: nullableText(raw.mediaCaption),
+        fileHash: nullableText(raw.fileHash),
         uiElementContent: nullableText(raw.uiElementContent),
       };
       if (currentPhone !== null && row.phone !== currentPhone) {

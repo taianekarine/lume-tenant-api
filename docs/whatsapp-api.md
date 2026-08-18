@@ -30,7 +30,8 @@ privado por empresa e reutiliza o contrato do importador oficial. Todas as rotas
   hexadecimal e a situação/departamento confirmados pelo operador;
 - `PATCH /:batchId/archives/:archiveId`: confirma identidade e estado;
 - `GET /:batchId/workbook`: baixa a planilha consolidada;
-- `POST /:batchId/apply`: valida e aplica pelo importador existente.
+- `POST /:batchId/apply`: valida e aplica mensagens e mídias pelo importador
+  existente.
 
 No modo Android, a chave permanece somente na memória da requisição e é
 descartada após a descriptografia autenticada. O SQLite é validado antes de ser
@@ -39,12 +40,19 @@ mensagens. Conversas individuais com JID telefônico são consolidadas; grupos,
 listas, status e chats técnicos são contabilizados e excluídos porque o modelo
 atual do painel é orientado a atendimentos individuais.
 
+Quando o banco Android contém referências de mídia, o ZIP da pasta `Media` é
+validado e preparado antes de o botão de aplicação ser liberado. A aplicação
+grava primeiro as mensagens e, no mesmo fluxo, inicia a vinculação dos arquivos
+por caminho e SHA-256. A etapa posterior de mídias permanece disponível apenas
+para recuperação ou ZIPs adicionais.
+
 O lote não dispara respostas, IA, menus ou outbox. Depois da aplicação, as
 conversas passam a usar exatamente as mesmas entidades, transições e regras do
 fluxo corrente. Anexos realmente contidos no ZIP são retidos no volume próprio
 de mídias; referências ausentes permanecem identificadas como indisponíveis.
-O `msgstore` não contém os binários das mídias: caminhos de imagens, áudios,
-vídeos e documentos são preservados como pendentes para uma carga posterior.
+O `msgstore` não contém os binários das mídias: caminhos e hashes de imagens,
+áudios, vídeos e documentos são preservados até que o ZIP selecionado forneça o
+conteúdo correspondente.
 
 Uploads grandes também precisam ser liberados no proxy reverso da VPS. Para um
 backup de 454 MB, configure o equivalente a `client_max_body_size 2g` e um

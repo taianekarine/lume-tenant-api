@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -160,5 +161,82 @@ describe('WhatsAppAndroidMediaImportService', () => {
     });
     expect(storage.write).toHaveBeenCalledOnce();
     expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledOnce();
+  });
+
+  it('links every repeated reference and recovers pathless documents by content hash', async () => {
+    const { mediaRoot, prisma, storage, service } = await setup();
+    const archivePath = join(mediaRoot, 'midias-completas.zip');
+    const pdf = Buffer.from('%PDF-1.7 documento histórico');
+    const sha256 = createHash('sha256').update(pdf).digest('hex');
+    const audio = Buffer.from('audio histórico sem extensão');
+    const audioSha256 = createHash('sha256').update(audio).digest('hex');
+    const messageIds = [
+      MESSAGE_ID,
+      '66666666-6666-4666-8666-666666666666',
+      '77777777-7777-4777-8777-777777777777',
+      '88888888-8888-4888-8888-888888888888',
+    ];
+    prisma.whatsAppImportExternalRef.findMany.mockResolvedValue(
+      messageIds.map((internalId, index) => ({
+        id: `${index + 6}5555555-5555-4555-8555-555555555555`,
+        internalId,
+      })),
+    );
+    prisma.whatsAppMessage.findMany.mockResolvedValue(
+      messageIds.map((id, index) => ({
+        id,
+        conversationId: CONVERSATION_ID,
+        media: {
+          legacyReference:
+            index === 3
+              ? `whatsapp-android-media://Media%2FWhatsApp%20Voice%20Notes%2FPTT-2026#sha256=${audioSha256}`
+              : index === 2
+                ? `whatsapp-android-media://midia-3#sha256=${sha256}`
+                : `whatsapp-android-media://Media%2FWhatsApp%20Documents%2Fcontrato.pdf#sha256=${sha256}`,
+          mimeType: index === 3 ? 'audio/ogg' : 'application/pdf',
+          retentionStatus: 'unavailable',
+        },
+        mediaStorageKey: null,
+      })),
+    );
+    const zip = new JSZip();
+    zip.file('WhatsApp Business/Media/WhatsApp Documents/contrato.pdf', pdf);
+    zip.file('WhatsApp Business/Media/WhatsApp Voice Notes/PTT-2026', audio);
+    const content = await zip.generateAsync({ type: 'nodebuffer' });
+    await writeFile(archivePath, content);
+
+    const result = await service.attachArchive({
+      companyId: COMPANY_ID,
+      batchId: BATCH_ID,
+      archivePath,
+      originalName: 'midias-completas.zip',
+      sizeBytes: content.byteLength,
+    });
+
+    expect(result).toMatchObject({
+      candidates: 4,
+      filesScanned: 2,
+      attached: 4,
+      missing: 0,
+      ambiguous: 0,
+    });
+    expect(storage.write).toHaveBeenCalledTimes(4);
+    expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledTimes(4);
+    expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          mediaMimeType: 'application/pdf',
+          mediaOriginalName: 'contrato.pdf',
+        }),
+      }),
+    );
+    expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          mediaMimeType: 'audio/ogg',
+          mediaOriginalName: 'PTT-2026',
+        }),
+      }),
+    );
   });
 });

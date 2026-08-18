@@ -31,6 +31,7 @@ interface CandidateMessage {
   reference: string;
   canonicalPath: string;
   baseName: string;
+  contentSha256: string | null;
 }
 
 export interface AttachWhatsAppAndroidMediaInput {
@@ -47,6 +48,11 @@ export interface AttachWhatsAppAndroidMediaArchiveInput {
   sizeBytes: number;
   onProgress?: (progress: AttachWhatsAppAndroidMediaProgress) => Promise<void>;
 }
+
+export type ValidateWhatsAppAndroidMediaArchiveInput = Pick<
+  AttachWhatsAppAndroidMediaArchiveInput,
+  'archivePath' | 'originalName' | 'sizeBytes'
+>;
 
 export interface AttachWhatsAppAndroidMediaProgress {
   phase: 'scanning' | 'storing';
@@ -111,12 +117,19 @@ function mediaReference(value: Prisma.JsonValue | null): string | null {
 }
 
 function decodedReference(value: string): string {
-  const encoded = value.slice('whatsapp-android-media://'.length);
+  const encoded = value
+    .slice('whatsapp-android-media://'.length)
+    .split('#sha256=', 1)[0];
   try {
     return decodeURIComponent(encoded);
   } catch {
     return encoded;
   }
+}
+
+function referenceSha256(value: string): string | null {
+  const match = /#sha256=([0-9a-f]{64})$/i.exec(value);
+  return match?.[1]?.toLowerCase() ?? null;
 }
 
 function normalizedPath(value: string): string {
@@ -164,6 +177,16 @@ function mimeType(fileName: string): string {
         '.xls': 'application/vnd.ms-excel',
         '.xlsx':
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.ppt': 'application/vnd.ms-powerpoint',
+        '.pptx':
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        '.odt': 'application/vnd.oasis.opendocument.text',
+        '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+        '.csv': 'text/csv',
+        '.rtf': 'application/rtf',
+        '.zip': 'application/zip',
+        '.rar': 'application/vnd.rar',
+        '.7z': 'application/x-7z-compressed',
         '.txt': 'text/plain',
         '.vcf': 'text/vcard',
       } as Record<string, string>
@@ -348,6 +371,7 @@ export class WhatsAppAndroidMediaImportService {
 
     const byPath = new Map<string, CandidateMessage[]>();
     const byBaseName = new Map<string, CandidateMessage[]>();
+    const byHash = new Map<string, CandidateMessage[]>();
     for (const candidate of candidates) {
       byPath.set(candidate.canonicalPath, [
         ...(byPath.get(candidate.canonicalPath) ?? []),
@@ -357,6 +381,12 @@ export class WhatsAppAndroidMediaImportService {
         ...(byBaseName.get(candidate.baseName) ?? []),
         candidate,
       ]);
+      if (candidate.contentSha256) {
+        byHash.set(candidate.contentSha256, [
+          ...(byHash.get(candidate.contentSha256) ?? []),
+          candidate,
+        ]);
+      }
     }
 
     let filesScanned = 0;
@@ -367,30 +397,34 @@ export class WhatsAppAndroidMediaImportService {
     for await (const filePath of files(mediaRoot)) {
       filesScanned += 1;
       const relativePath = relative(mediaRoot, filePath);
-      const matched = this.matchCandidate(
-        relativePath,
-        byPath,
-        byBaseName,
-        attachedIds,
-      );
-      if (matched.ambiguous) ambiguous += 1;
-      if (!matched.candidate) continue;
-      const candidate = matched.candidate;
       const fileStat = await stat(filePath);
       if (fileStat.size < 1 || fileStat.size > this.maximumFileBytes) {
         skippedOversize += 1;
         continue;
       }
       const content = await readFile(filePath);
-      const stored = await this.storeCandidate(
-        input.companyId,
-        candidate,
-        basename(filePath),
-        content,
+      const sha256 = createHash('sha256').update(content).digest('hex');
+      const matched = this.matchCandidates(
+        relativePath,
+        sha256,
+        byPath,
+        byBaseName,
+        byHash,
+        attachedIds,
       );
-      if (stored) {
-        attachedIds.add(candidate.id);
-        attached += 1;
+      if (matched.ambiguous) ambiguous += 1;
+      for (const candidate of matched.candidates) {
+        const stored = await this.storeCandidate(
+          input.companyId,
+          candidate,
+          basename(filePath),
+          content,
+          sha256,
+        );
+        if (stored) {
+          attachedIds.add(candidate.id);
+          attached += 1;
+        }
       }
     }
 
@@ -404,6 +438,63 @@ export class WhatsAppAndroidMediaImportService {
       ambiguous,
       skippedOversize,
     };
+  }
+
+  async validateArchive(
+    input: ValidateWhatsAppAndroidMediaArchiveInput,
+  ): Promise<{ filesTotal: number }> {
+    if (!input.originalName.toLocaleLowerCase('pt-BR').endsWith('.zip')) {
+      throw validationError('Selecione um arquivo ZIP da pasta Media.');
+    }
+    const archivePath = resolve(input.archivePath);
+    const archiveStat = await stat(archivePath);
+    if (
+      !archiveStat.isFile() ||
+      archiveStat.size !== input.sizeBytes ||
+      archiveStat.size < 22 ||
+      archiveStat.size > this.maximumArchiveBytes
+    ) {
+      throw validationError('O arquivo ZIP de mídias possui tamanho inválido.');
+    }
+    let archive: ZipFile | null = null;
+    try {
+      archive = await openZip(archivePath);
+      let filesTotal = 0;
+      let declaredUncompressedBytes = 0;
+      for await (const entry of zipEntries(archive)) {
+        if (entry.fileName.endsWith('/')) continue;
+        filesTotal += 1;
+        if (filesTotal > this.maximumArchiveEntries) {
+          throw validationError(
+            `Cada ZIP deve conter entre 1 e ${this.maximumArchiveEntries} arquivos.`,
+          );
+        }
+        if (
+          !Number.isSafeInteger(entry.uncompressedSize) ||
+          entry.uncompressedSize < 0
+        ) {
+          throw validationError('O ZIP possui um item com tamanho inválido.');
+        }
+        declaredUncompressedBytes += entry.uncompressedSize;
+        if (declaredUncompressedBytes > this.maximumUncompressedBytes) {
+          throw validationError(
+            'O conteúdo descompactado excede o limite seguro por arquivo ZIP.',
+          );
+        }
+        if (unsafeZipEntry(entry)) {
+          throw validationError('O ZIP contém um caminho de arquivo inseguro.');
+        }
+      }
+      if (filesTotal < 1) {
+        throw validationError('O ZIP deve conter pelo menos um arquivo.');
+      }
+      return { filesTotal };
+    } catch (error) {
+      if ((error as { code?: string }).code === 'VALIDATION_ERROR') throw error;
+      throw validationError('O arquivo ZIP de mídias está corrompido.');
+    } finally {
+      archive?.close();
+    }
   }
 
   async attachArchive(
@@ -472,6 +563,7 @@ export class WhatsAppAndroidMediaImportService {
       });
       const byPath = new Map<string, CandidateMessage[]>();
       const byBaseName = new Map<string, CandidateMessage[]>();
+      const byHash = new Map<string, CandidateMessage[]>();
       for (const candidate of loaded.candidates) {
         byPath.set(candidate.canonicalPath, [
           ...(byPath.get(candidate.canonicalPath) ?? []),
@@ -481,6 +573,12 @@ export class WhatsAppAndroidMediaImportService {
           ...(byBaseName.get(candidate.baseName) ?? []),
           candidate,
         ]);
+        if (candidate.contentSha256) {
+          byHash.set(candidate.contentSha256, [
+            ...(byHash.get(candidate.contentSha256) ?? []),
+            candidate,
+          ]);
+        }
       }
       const reservedIds = new Set<string>();
       let ambiguous = 0;
@@ -492,9 +590,10 @@ export class WhatsAppAndroidMediaImportService {
       let lastReportedProcessed = 0;
       let lastReportedAt = Date.now();
       const batch: {
-        candidate: CandidateMessage;
+        candidates: CandidateMessage[];
         fileName: string;
         content: Buffer;
+        sha256: string;
       }[] = [];
       const reportStorageProgress = async (force = false) => {
         const now = Date.now();
@@ -520,16 +619,22 @@ export class WhatsAppAndroidMediaImportService {
       const flush = async () => {
         if (batch.length === 0) return;
         const results = await Promise.all(
-          batch.map((job) =>
-            this.storeCandidate(
-              input.companyId,
-              job.candidate,
-              job.fileName,
-              job.content,
-            ),
-          ),
+          batch.map(async (job) => {
+            const stored = await Promise.all(
+              job.candidates.map((candidate) =>
+                this.storeCandidate(
+                  input.companyId,
+                  candidate,
+                  job.fileName,
+                  job.content,
+                  job.sha256,
+                ),
+              ),
+            );
+            return stored.filter(Boolean).length;
+          }),
         );
-        attached += results.filter(Boolean).length;
+        attached += results.reduce((total, count) => total + count, 0);
         filesProcessed += results.length;
         batch.length = 0;
         batchBytes = 0;
@@ -540,13 +645,6 @@ export class WhatsAppAndroidMediaImportService {
       for await (const entry of zipEntries(processingArchive)) {
         if (entry.fileName.endsWith('/')) continue;
         filesScanned += 1;
-        const matched = this.matchCandidate(
-          entry.fileName,
-          byPath,
-          byBaseName,
-          reservedIds,
-        );
-        if (matched.ambiguous) ambiguous += 1;
         if (
           input.onProgress &&
           (filesScanned === 1 || filesScanned % 1_000 === 0)
@@ -561,7 +659,6 @@ export class WhatsAppAndroidMediaImportService {
             skippedOversize,
           });
         }
-        if (!matched.candidate) continue;
         if (
           entry.uncompressedSize < 1 ||
           entry.uncompressedSize > this.maximumFileBytes
@@ -569,7 +666,26 @@ export class WhatsAppAndroidMediaImportService {
           skippedOversize += 1;
           continue;
         }
-        reservedIds.add(matched.candidate.id);
+        const content = await readEntry(
+          processingArchive,
+          entry,
+          this.maximumFileBytes,
+        );
+        if (content.byteLength < 1) continue;
+        const sha256 = createHash('sha256').update(content).digest('hex');
+        const matched = this.matchCandidates(
+          entry.fileName,
+          sha256,
+          byPath,
+          byBaseName,
+          byHash,
+          reservedIds,
+        );
+        if (matched.ambiguous) ambiguous += 1;
+        if (matched.candidates.length === 0) continue;
+        matched.candidates.forEach((candidate) =>
+          reservedIds.add(candidate.id),
+        );
         if (
           batch.length > 0 &&
           (batch.length >= this.archiveConcurrency ||
@@ -577,16 +693,11 @@ export class WhatsAppAndroidMediaImportService {
         ) {
           await flush();
         }
-        const content = await readEntry(
-          processingArchive,
-          entry,
-          this.maximumFileBytes,
-        );
-        if (content.byteLength < 1) continue;
         batch.push({
-          candidate: matched.candidate,
+          candidates: matched.candidates,
           fileName: basename(entry.fileName),
           content,
+          sha256,
         });
         batchBytes += content.byteLength;
       }
@@ -686,6 +797,7 @@ export class WhatsAppAndroidMediaImportService {
           reference,
           canonicalPath: canonicalMediaPath(decoded),
           baseName: basename(normalizedPath(decoded)),
+          contentSha256: referenceSha256(reference),
         });
       }
       if (references.length < PAGE_SIZE) break;
@@ -693,22 +805,38 @@ export class WhatsAppAndroidMediaImportService {
     return { candidates, alreadyStored };
   }
 
-  private matchCandidate(
+  private matchCandidates(
     path: string,
+    contentSha256: string,
     byPath: ReadonlyMap<string, CandidateMessage[]>,
     byBaseName: ReadonlyMap<string, CandidateMessage[]>,
+    byHash: ReadonlyMap<string, CandidateMessage[]>,
     excludedIds: ReadonlySet<string>,
-  ): { candidate: CandidateMessage | null; ambiguous: boolean } {
+  ): { candidates: CandidateMessage[]; ambiguous: boolean } {
     const exact = (byPath.get(canonicalMediaPath(path)) ?? []).filter(
+      (candidate) =>
+        !excludedIds.has(candidate.id) &&
+        (!candidate.contentSha256 || candidate.contentSha256 === contentSha256),
+    );
+    const hashes = (byHash.get(contentSha256) ?? []).filter(
       (candidate) => !excludedIds.has(candidate.id),
     );
+    const identified = new Map(
+      [...exact, ...hashes].map((candidate) => [candidate.id, candidate]),
+    );
+    if (identified.size > 0) {
+      return { candidates: [...identified.values()], ambiguous: false };
+    }
     const fallback = (
       byBaseName.get(basename(normalizedPath(path))) ?? []
-    ).filter((candidate) => !excludedIds.has(candidate.id));
-    const matches = exact.length > 0 ? exact : fallback;
+    ).filter(
+      (candidate) =>
+        !excludedIds.has(candidate.id) &&
+        (!candidate.contentSha256 || candidate.contentSha256 === contentSha256),
+    );
     return {
-      candidate: matches.length === 1 ? matches[0] : null,
-      ambiguous: matches.length > 1,
+      candidates: fallback.length === 1 ? fallback : [],
+      ambiguous: fallback.length > 1,
     };
   }
 
@@ -717,8 +845,10 @@ export class WhatsAppAndroidMediaImportService {
     candidate: CandidateMessage,
     fileName: string,
     content: Buffer,
+    knownSha256?: string,
   ): Promise<boolean> {
-    const sha256 = createHash('sha256').update(content).digest('hex');
+    const sha256 =
+      knownSha256 ?? createHash('sha256').update(content).digest('hex');
     const storageKey = [
       'v1',
       companyId,
@@ -734,7 +864,11 @@ export class WhatsAppAndroidMediaImportService {
         ? candidate.media
         : {};
     const originalName = basename(fileName).slice(0, 255);
-    const detectedMimeType = mimeType(originalName);
+    const sourceMimeType = currentMedia.mimeType;
+    const detectedMimeType =
+      typeof sourceMimeType === 'string' && sourceMimeType.includes('/')
+        ? sourceMimeType
+        : mimeType(originalName);
     const updated = await this.prisma.whatsAppMessage.updateMany({
       where: {
         id: candidate.id,

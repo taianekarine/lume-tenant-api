@@ -128,6 +128,28 @@ describe('WhatsApp Android backup reader', () => {
     });
   });
 
+  it('preserves the plaintext media hash used to recover files without paths', async () => {
+    const path = await fixture();
+    const db = new DatabaseSync(path);
+    const hash = Buffer.from('a'.repeat(64), 'hex');
+    db.exec('ALTER TABLE message_media ADD COLUMN file_hash TEXT');
+    db.prepare(
+      'UPDATE message_media SET file_hash = ? WHERE message_row_id = 101',
+    ).run(hash.toString('base64'));
+    db.close();
+
+    const rows = [
+      ...readWhatsAppAndroidBackup(path, {
+        departmentCode: 'commercial',
+        state: 'closed',
+      }),
+    ];
+
+    expect(rows[0]?.parsed.messages[1]?.attachment?.reference).toBe(
+      `whatsapp-android-media://Media%2FWhatsApp%20Images%2Ffoto.jpg#sha256=${hash.toString('hex')}`,
+    );
+  });
+
   it('normalizes legacy Brazilian mobile numbers before importing chats', async () => {
     const path = await fixture();
     const db = new DatabaseSync(path);

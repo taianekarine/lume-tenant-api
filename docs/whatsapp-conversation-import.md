@@ -66,18 +66,19 @@ independentes são aplicadas em paralelo. Os valores podem ser ajustados por
 de dados da instalação.
 
 O banco guarda referências de mídia, mas não fotos, áudios, vídeos e documentos
-reproduzíveis. Enquanto a pasta `Media` não for carregada, essas mensagens são
-visíveis no histórico com mídia indisponível; a vinculação dos arquivos é uma
-etapa independente e idempotente.
+reproduzíveis. Depois de validar o `msgstore`, a tela exige um ZIP contendo
+`WhatsApp/Media` ou `WhatsApp Business/Media` antes de liberar **Aplicar**. O
+navegador envia o arquivo em blocos retomáveis de 16 MiB; uma interrupção pode
+ser retomada selecionando o mesmo arquivo. A aplicação grava as mensagens e
+inicia a vinculação das mídias no mesmo fluxo, mantendo o progresso disponível
+na tela. A etapa posterior continua disponível para recuperação ou ZIPs
+adicionais, sem duplicar o histórico.
 
-A tela apresenta a etapa **Vincular mídias** após concluir as mensagens. Nela é
-possível selecionar um ZIP contendo `WhatsApp/Media` ou
-`WhatsApp Business/Media`. O navegador envia o arquivo em blocos retomáveis de
-16 MiB; uma interrupção pode ser retomada selecionando o mesmo arquivo. Ao fim
-do envio, a API lê o diretório do ZIP como stream e vincula somente os arquivos
-citados no banco, sem manter o ZIP inteiro nem todos os arquivos descompactados
-na memória. O processamento continua em segundo plano e seu progresso pode ser
-acompanhado na própria tela mesmo depois de sair e retornar à página.
+A API lê o diretório do ZIP como stream e considera imagens, figurinhas, áudios,
+vídeos, PDFs, documentos Office, arquivos compactados e demais binários citados
+no banco. A associação usa caminho e SHA-256: um mesmo arquivo pode pertencer a
+várias mensagens, e referências sem nome ou caminho ainda podem ser resolvidas
+pelo hash armazenado pelo WhatsApp. O ZIP não é carregado inteiro na memória.
 
 Os limites padrão desse fluxo são 8 GiB por ZIP, 250.000 entradas e 16 GiB
 descompactados. Eles podem ser ajustados por
