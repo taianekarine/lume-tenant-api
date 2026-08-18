@@ -1,5 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
 import { Injectable } from '@nestjs/common';
@@ -369,6 +378,46 @@ export class WhatsAppHistoryImportService {
       orderBy: { name: 'asc' },
       select: { id: true, name: true, phoneNumber: true },
     });
+  }
+
+  async appliedAndroidBackups(companyId: string) {
+    assertUuid(companyId, 'companyId');
+    const companyDirectory = resolve(this.root, 'history-batches', companyId);
+    assertInside(this.root, companyDirectory);
+
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(companyDirectory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+
+    const manifests = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory() && UUID_PATTERN.test(entry.name))
+        .map(async (entry) => {
+          try {
+            return await this.readManifest(companyId, entry.name);
+          } catch {
+            return null;
+          }
+        }),
+    );
+
+    return manifests
+      .filter(
+        (manifest): manifest is StoredManifest =>
+          manifest !== null &&
+          manifest.status === 'applied' &&
+          manifest.androidBackup !== null,
+      )
+      .sort(
+        (left, right) =>
+          new Date(right.appliedAt ?? right.updatedAt).getTime() -
+          new Date(left.appliedAt ?? left.updatedAt).getTime(),
+      )
+      .map(presentManifest);
   }
 
   async create(input: CreateWhatsAppHistoryImportInput) {
