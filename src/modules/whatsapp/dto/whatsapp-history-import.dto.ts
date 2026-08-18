@@ -1,13 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
+  IsInt,
   IsIn,
   IsISO8601,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
@@ -91,4 +94,28 @@ export class AddWhatsAppAndroidBackupDto {
   @IsString()
   @MaxLength(80)
   ownerUsername?: string | null;
+}
+
+export class CreateWhatsAppAndroidMediaUploadDto {
+  @ApiProperty({ minLength: 1, maxLength: 255, example: 'Media.zip' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  fileName!: string;
+
+  @ApiProperty({ minimum: 22, maximum: 8_589_934_592 })
+  @IsInt()
+  @Min(22)
+  @Max(8_589_934_592)
+  sizeBytes!: number;
+}
+
+export class AddWhatsAppAndroidMediaChunkDto {
+  @ApiProperty({ minimum: 0 })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? Number.parseInt(value, 10) : value,
+  )
+  @IsInt()
+  @Min(0)
+  offsetBytes!: number;
 }

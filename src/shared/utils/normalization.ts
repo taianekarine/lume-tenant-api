@@ -71,6 +71,28 @@ export function normalizeWhatsAppPhone(value: string): string {
   return digits;
 }
 
+/**
+ * Retorna as chaves que podem representar o mesmo celular brasileiro.
+ *
+ * Backups antigos do WhatsApp podem guardar o telefone sem o nono dígito,
+ * enquanto agendas atuais usam o formato completo. A primeira chave é sempre
+ * a forma canônica usada para novos registros.
+ */
+export function whatsAppPhoneAliases(value: string): string[] {
+  const normalized = normalizeWhatsAppPhone(value);
+  const aliases = [normalized];
+
+  if (
+    normalized.startsWith('55') &&
+    normalized.length === 13 &&
+    normalized[4] === '9'
+  ) {
+    aliases.push(`${normalized.slice(0, 4)}${normalized.slice(5)}`);
+  }
+
+  return aliases;
+}
+
 export function formatWhatsAppPhone(value: string): string {
   const normalized = normalizeWhatsAppPhone(value);
   if (!normalized.startsWith('55')) return `+${normalized}`;

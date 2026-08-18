@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { validationError } from '../../core/errors/app-error';
+import { normalizeWhatsAppPhone } from '../../shared/utils/normalization';
 import type {
   ParsedWhatsAppExport,
   WhatsAppExportAttachment,
@@ -397,27 +398,28 @@ function exportFor(
   phone: string,
   rows: AndroidMessageRow[],
 ): ParsedWhatsAppExport {
+  const normalizedPhone = normalizeWhatsAppPhone(phone);
   const messages = rows.map(toMessage);
   const archiveId = createHash('sha256')
-    .update(phone)
+    .update(normalizedPhone)
     .digest('hex')
     .slice(0, 32);
   return {
     archiveId,
     sourceSystem: WHATSAPP_ANDROID_BACKUP_SOURCE_SYSTEM,
-    externalConversationId: externalConversationId(phone),
-    archiveName: `Backup Android · ${phone}`,
+    externalConversationId: externalConversationId(normalizedPhone),
+    archiveName: `Backup Android · ${normalizedPhone}`,
     archiveSha256: archiveId.padEnd(64, '0'),
     chatFileName: 'msgstore.db',
-    suggestedContactName: phone,
-    suggestedPhoneE164: phone,
+    suggestedContactName: normalizedPhone,
+    suggestedPhoneE164: normalizedPhone,
     senders: [
       {
         name: ANDROID_BACKUP_COMPANY_SENDER,
         messageCount: messages.filter((message) => message.outbound).length,
       },
       {
-        name: phone,
+        name: normalizedPhone,
         messageCount: messages.filter((message) => !message.outbound).length,
       },
     ],

@@ -35,7 +35,9 @@ import { CurrentUser } from '../../shared/http/decorators/current-user.decorator
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
   AddWhatsAppAndroidBackupDto,
+  AddWhatsAppAndroidMediaChunkDto,
   ApplyWhatsAppHistoryImportDto,
+  CreateWhatsAppAndroidMediaUploadDto,
   CreateWhatsAppHistoryImportDto,
   UpdateWhatsAppHistoryMappingDto,
 } from './dto/whatsapp-history-import.dto';
@@ -56,6 +58,11 @@ interface UploadedWhatsAppAndroidMediaArchive {
   originalname: string;
   size: number;
   path: string;
+}
+
+interface UploadedWhatsAppAndroidMediaChunk {
+  size: number;
+  buffer: Buffer;
 }
 
 function contentDisposition(fileName: string): string {
@@ -225,6 +232,70 @@ export class WhatsAppHistoryImportController {
       sizeBytes: file.size,
       temporaryPath: file.path,
     });
+  }
+
+  @Post(':batchId/android-media-uploads')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiCreatedResponse({ description: 'Envio fracionado de mídias iniciado.' })
+  createAndroidMediaUpload(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Body() body: CreateWhatsAppAndroidMediaUploadDto,
+  ) {
+    return this.imports.createAndroidMediaUpload(current.companyId, batchId, {
+      originalName: body.fileName,
+      sizeBytes: body.sizeBytes,
+    });
+  }
+
+  @Post(':batchId/android-media-uploads/:uploadId/chunks')
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor('chunk', {
+      limits: { files: 1, fileSize: 32 * 1024 * 1024 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['chunk', 'offsetBytes'],
+      properties: {
+        chunk: { type: 'string', format: 'binary' },
+        offsetBytes: { type: 'integer', minimum: 0 },
+      },
+    },
+  })
+  addAndroidMediaUploadChunk(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+    @UploadedFile() file: UploadedWhatsAppAndroidMediaChunk | undefined,
+    @Body() body: AddWhatsAppAndroidMediaChunkDto,
+  ) {
+    if (!file?.buffer?.byteLength) {
+      throw validationError('O bloco do ZIP de mídias está vazio.');
+    }
+    return this.imports.addAndroidMediaUploadChunk(current.companyId, batchId, {
+      uploadId,
+      offsetBytes: body.offsetBytes,
+      content: file.buffer,
+    });
+  }
+
+  @Post(':batchId/android-media-uploads/:uploadId/complete')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiOkResponse({ description: 'Processamento do ZIP iniciado.' })
+  completeAndroidMediaUpload(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+  ) {
+    return this.imports.completeAndroidMediaUpload(
+      current.companyId,
+      batchId,
+      uploadId,
+    );
   }
 
   @Patch(':batchId/archives/:archiveId')

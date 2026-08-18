@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import {
+  appendFile,
   mkdir,
   readFile,
   readdir,
@@ -114,7 +115,30 @@ interface StoredAndroidBackup {
     skippedOversize: number;
     updatedAt: string;
     lastArchiveName: string;
+    status?: 'uploading' | 'processing' | 'completed' | 'failed';
+    phase?: 'uploading' | 'scanning' | 'storing' | null;
+    uploadId?: string | null;
+    uploadBytesReceived?: number;
+    uploadBytesTotal?: number;
+    processingFilesScanned?: number;
+    processingFilesTotal?: number;
+    processingFilesProcessed?: number;
+    processingAttached?: number;
+    errorMessage?: string | null;
   } | null;
+}
+
+interface StoredAndroidMediaUpload {
+  schemaVersion: '1.0';
+  uploadId: string;
+  companyId: string;
+  batchId: string;
+  originalName: string;
+  expectedBytes: number;
+  receivedBytes: number;
+  status: 'uploading' | 'processing' | 'completed' | 'failed';
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface StoredManifest {
@@ -166,6 +190,28 @@ export interface AddWhatsAppAndroidMediaArchiveInput {
   originalName: string;
   sizeBytes: number;
   temporaryPath: string;
+}
+
+export interface CreateWhatsAppAndroidMediaUploadInput {
+  originalName: string;
+  sizeBytes: number;
+}
+
+export interface AddWhatsAppAndroidMediaChunkInput {
+  uploadId: string;
+  offsetBytes: number;
+  content: Buffer;
+}
+
+function presentAndroidMediaUpload(upload: StoredAndroidMediaUpload) {
+  return {
+    schemaVersion: upload.schemaVersion,
+    uploadId: upload.uploadId,
+    fileName: upload.originalName,
+    totalBytes: upload.expectedBytes,
+    uploadedBytes: upload.receivedBytes,
+    status: upload.status,
+  };
 }
 
 function finiteConfig(
@@ -312,9 +358,13 @@ export class WhatsAppHistoryImportService {
   private readonly maximumArchives: number;
   private readonly retentionMs: number;
   private readonly maximumAndroidDatabaseBytes: number;
+  private readonly maximumAndroidMediaArchiveBytes: number;
+  private readonly androidMediaUploadChunkBytes: number;
   private readonly androidImportChunkMessages: number;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly androidJobs = new Set<string>();
+  private readonly androidMediaJobs = new Set<string>();
+  private readonly androidMediaJobResumeRequested = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -340,6 +390,22 @@ export class WhatsAppHistoryImportService {
       config,
       'WHATSAPP_ANDROID_BACKUP_MAX_DECRYPTED_BYTES',
       4_294_967_296,
+    );
+    this.maximumAndroidMediaArchiveBytes = finiteConfig(
+      config,
+      'WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_BYTES',
+      8_589_934_592,
+    );
+    this.androidMediaUploadChunkBytes = Math.min(
+      32 * 1024 * 1024,
+      Math.max(
+        1 * 1024 * 1024,
+        finiteConfig(
+          config,
+          'WHATSAPP_ANDROID_MEDIA_UPLOAD_CHUNK_BYTES',
+          16 * 1024 * 1024,
+        ),
+      ),
     );
     this.androidImportChunkMessages = Math.min(
       50_000,
@@ -405,7 +471,7 @@ export class WhatsAppHistoryImportService {
         }),
     );
 
-    return manifests
+    const applied = manifests
       .filter(
         (manifest): manifest is StoredManifest =>
           manifest !== null &&
@@ -416,8 +482,9 @@ export class WhatsAppHistoryImportService {
         (left, right) =>
           new Date(right.appliedAt ?? right.updatedAt).getTime() -
           new Date(left.appliedAt ?? left.updatedAt).getTime(),
-      )
-      .map(presentManifest);
+      );
+    for (const manifest of applied) this.resumeAndroidMediaJob(manifest);
+    return applied.map(presentManifest);
   }
 
   async create(input: CreateWhatsAppHistoryImportInput) {
@@ -477,7 +544,9 @@ export class WhatsAppHistoryImportService {
   }
 
   async detail(companyId: string, batchId: string) {
-    return presentManifest(await this.readManifest(companyId, batchId));
+    const manifest = await this.readManifest(companyId, batchId);
+    this.resumeAndroidMediaJob(manifest);
+    return presentManifest(manifest);
   }
 
   async addArchive(
@@ -656,6 +725,16 @@ export class WhatsAppHistoryImportService {
             (previous?.skippedOversize ?? 0) + result.skippedOversize,
           updatedAt: new Date().toISOString(),
           lastArchiveName: input.originalName.slice(0, 255),
+          status: 'completed',
+          phase: null,
+          uploadId: null,
+          uploadBytesReceived: input.sizeBytes,
+          uploadBytesTotal: input.sizeBytes,
+          processingFilesScanned: result.filesScanned,
+          processingFilesTotal: result.filesScanned,
+          processingFilesProcessed: result.filesScanned,
+          processingAttached: result.attached,
+          errorMessage: null,
         };
         manifest.updatedAt = new Date().toISOString();
         await this.writeManifest(manifest);
@@ -664,6 +743,292 @@ export class WhatsAppHistoryImportService {
         await rm(input.temporaryPath, { force: true });
       }
     });
+  }
+
+  async createAndroidMediaUpload(
+    companyId: string,
+    batchId: string,
+    input: CreateWhatsAppAndroidMediaUploadInput,
+  ) {
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      const manifest = await this.readManifest(companyId, batchId);
+      if (!manifest.androidBackup || manifest.status !== 'applied') {
+        throw validationError(
+          'Conclua a importação do backup Android antes de vincular mídias.',
+        );
+      }
+      const originalName = input.originalName.trim().slice(0, 255);
+      if (!originalName.toLocaleLowerCase('pt-BR').endsWith('.zip')) {
+        throw validationError('Selecione um arquivo ZIP da pasta Media.');
+      }
+      if (
+        !Number.isSafeInteger(input.sizeBytes) ||
+        input.sizeBytes < 22 ||
+        input.sizeBytes > this.maximumAndroidMediaArchiveBytes
+      ) {
+        throw validationError(
+          `O ZIP de mídias deve possuir no máximo ${Math.floor(
+            this.maximumAndroidMediaArchiveBytes / 1_073_741_824,
+          )} GB.`,
+        );
+      }
+      const current = manifest.androidBackup.mediaImport;
+      if (
+        current?.status === 'uploading' &&
+        current.uploadId &&
+        current.lastArchiveName === originalName &&
+        current.uploadBytesTotal === input.sizeBytes
+      ) {
+        const existingDirectory = this.androidMediaUploadPath(
+          companyId,
+          batchId,
+          current.uploadId,
+        );
+        const existing = await this.readAndroidMediaUpload(existingDirectory);
+        return {
+          ...presentAndroidMediaUpload(existing),
+          chunkSizeBytes: this.androidMediaUploadChunkBytes,
+        };
+      }
+      if (
+        current?.status === 'failed' &&
+        current.uploadId &&
+        current.lastArchiveName === originalName &&
+        current.uploadBytesTotal === input.sizeBytes
+      ) {
+        const existingDirectory = this.androidMediaUploadPath(
+          companyId,
+          batchId,
+          current.uploadId,
+        );
+        const existing = await this.readAndroidMediaUpload(existingDirectory);
+        if (existing.receivedBytes < existing.expectedBytes) {
+          existing.status = 'uploading';
+          existing.updatedAt = new Date().toISOString();
+          await this.writeAndroidMediaUpload(existingDirectory, existing);
+          current.status = 'uploading';
+          current.phase = 'uploading';
+          current.errorMessage = null;
+          current.updatedAt = existing.updatedAt;
+          manifest.updatedAt = existing.updatedAt;
+          await this.writeManifest(manifest);
+        }
+        return {
+          ...presentAndroidMediaUpload(existing),
+          chunkSizeBytes: this.androidMediaUploadChunkBytes,
+        };
+      }
+      if (current?.status === 'uploading' || current?.status === 'processing') {
+        throw validationError(
+          'Já existe um ZIP de mídias sendo enviado ou processado para este backup.',
+        );
+      }
+
+      if (current?.status === 'failed' && current.uploadId) {
+        await rm(
+          this.androidMediaUploadPath(companyId, batchId, current.uploadId),
+          { recursive: true, force: true },
+        );
+      }
+
+      const uploadId = randomUUID();
+      const now = new Date().toISOString();
+      const upload: StoredAndroidMediaUpload = {
+        schemaVersion: '1.0',
+        uploadId,
+        companyId,
+        batchId,
+        originalName,
+        expectedBytes: input.sizeBytes,
+        receivedBytes: 0,
+        status: 'uploading',
+        createdAt: now,
+        updatedAt: now,
+      };
+      const uploadDirectory = this.androidMediaUploadPath(
+        companyId,
+        batchId,
+        uploadId,
+      );
+      await mkdir(uploadDirectory, { recursive: true });
+      await writeFile(
+        this.androidMediaArchivePath(uploadDirectory),
+        Buffer.alloc(0),
+        {
+          mode: 0o600,
+        },
+      );
+      await this.writeAndroidMediaUpload(uploadDirectory, upload);
+
+      manifest.androidBackup.mediaImport = {
+        archivesProcessed: current?.archivesProcessed ?? 0,
+        filesScanned: current?.filesScanned ?? 0,
+        stored: current?.stored ?? 0,
+        pending:
+          current?.pending ?? manifest.androidBackup.summary.mediaReferences,
+        ambiguous: current?.ambiguous ?? 0,
+        skippedOversize: current?.skippedOversize ?? 0,
+        updatedAt: now,
+        lastArchiveName: originalName,
+        status: 'uploading',
+        phase: 'uploading',
+        uploadId,
+        uploadBytesReceived: 0,
+        uploadBytesTotal: input.sizeBytes,
+        processingFilesScanned: 0,
+        processingFilesTotal: 0,
+        processingFilesProcessed: 0,
+        processingAttached: 0,
+        errorMessage: null,
+      };
+      manifest.updatedAt = now;
+      await this.writeManifest(manifest);
+      return {
+        ...presentAndroidMediaUpload(upload),
+        chunkSizeBytes: this.androidMediaUploadChunkBytes,
+      };
+    });
+  }
+
+  async addAndroidMediaUploadChunk(
+    companyId: string,
+    batchId: string,
+    input: AddWhatsAppAndroidMediaChunkInput,
+  ) {
+    assertUuid(input.uploadId, 'uploadId');
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      if (
+        !Number.isSafeInteger(input.offsetBytes) ||
+        input.offsetBytes < 0 ||
+        input.content.byteLength < 1 ||
+        input.content.byteLength > this.androidMediaUploadChunkBytes
+      ) {
+        throw validationError(
+          'O bloco enviado possui tamanho ou posição inválida.',
+        );
+      }
+      const manifest = await this.readManifest(companyId, batchId);
+      if (!manifest.androidBackup || manifest.status !== 'applied') {
+        throw validationError(
+          'O backup Android não está disponível para mídias.',
+        );
+      }
+      const uploadDirectory = this.androidMediaUploadPath(
+        companyId,
+        batchId,
+        input.uploadId,
+      );
+      const upload = await this.readAndroidMediaUpload(uploadDirectory);
+      if (
+        upload.companyId !== companyId ||
+        upload.batchId !== batchId ||
+        upload.status !== 'uploading'
+      ) {
+        throw validationError('Este envio de mídias não está disponível.');
+      }
+      if (upload.receivedBytes !== input.offsetBytes) {
+        throw validationError(
+          `O envio deve continuar a partir de ${upload.receivedBytes} bytes.`,
+        );
+      }
+      if (
+        upload.receivedBytes + input.content.byteLength >
+        upload.expectedBytes
+      ) {
+        throw validationError('O bloco excede o tamanho declarado do ZIP.');
+      }
+      const archivePath = this.androidMediaArchivePath(uploadDirectory);
+      const archiveStat = await stat(archivePath);
+      if (archiveStat.size !== upload.receivedBytes) {
+        throw validationError(
+          'O envio parcial não pôde ser retomado com segurança.',
+        );
+      }
+      await appendFile(archivePath, input.content);
+      upload.receivedBytes += input.content.byteLength;
+      upload.updatedAt = new Date().toISOString();
+      await this.writeAndroidMediaUpload(uploadDirectory, upload);
+
+      const mediaImport = manifest.androidBackup.mediaImport;
+      if (mediaImport?.uploadId === upload.uploadId) {
+        mediaImport.uploadBytesReceived = upload.receivedBytes;
+        mediaImport.updatedAt = upload.updatedAt;
+        manifest.updatedAt = upload.updatedAt;
+        await this.writeManifest(manifest);
+      }
+      return {
+        ...presentAndroidMediaUpload(upload),
+        chunkSizeBytes: this.androidMediaUploadChunkBytes,
+      };
+    });
+  }
+
+  async completeAndroidMediaUpload(
+    companyId: string,
+    batchId: string,
+    uploadId: string,
+  ) {
+    assertUuid(uploadId, 'uploadId');
+    const manifest = await this.withBatchLock(
+      `${companyId}:${batchId}`,
+      async () => {
+        const currentManifest = await this.readManifest(companyId, batchId);
+        if (
+          !currentManifest.androidBackup ||
+          currentManifest.status !== 'applied'
+        ) {
+          throw validationError(
+            'O backup Android não está disponível para mídias.',
+          );
+        }
+        const uploadDirectory = this.androidMediaUploadPath(
+          companyId,
+          batchId,
+          uploadId,
+        );
+        const upload = await this.readAndroidMediaUpload(uploadDirectory);
+        if (upload.companyId !== companyId || upload.batchId !== batchId) {
+          throw validationError('Este envio de mídias não pertence ao backup.');
+        }
+        if (upload.receivedBytes !== upload.expectedBytes) {
+          throw validationError(
+            `O ZIP ainda não foi enviado por completo: ${upload.receivedBytes} de ${upload.expectedBytes} bytes.`,
+          );
+        }
+        if (upload.status === 'completed') return currentManifest;
+        upload.status = 'processing';
+        upload.updatedAt = new Date().toISOString();
+        await this.writeAndroidMediaUpload(uploadDirectory, upload);
+        const mediaImport = currentManifest.androidBackup.mediaImport;
+        currentManifest.androidBackup.mediaImport = {
+          archivesProcessed: mediaImport?.archivesProcessed ?? 0,
+          filesScanned: mediaImport?.filesScanned ?? 0,
+          stored: mediaImport?.stored ?? 0,
+          pending:
+            mediaImport?.pending ??
+            currentManifest.androidBackup.summary.mediaReferences,
+          ambiguous: mediaImport?.ambiguous ?? 0,
+          skippedOversize: mediaImport?.skippedOversize ?? 0,
+          updatedAt: upload.updatedAt,
+          lastArchiveName: upload.originalName,
+          status: 'processing',
+          phase: 'scanning',
+          uploadId,
+          uploadBytesReceived: upload.receivedBytes,
+          uploadBytesTotal: upload.expectedBytes,
+          processingFilesScanned: 0,
+          processingFilesTotal: 0,
+          processingFilesProcessed: 0,
+          processingAttached: 0,
+          errorMessage: null,
+        };
+        currentManifest.updatedAt = upload.updatedAt;
+        await this.writeManifest(currentManifest);
+        return currentManifest;
+      },
+    );
+    this.resumeAndroidMediaJob(manifest, true);
+    return presentManifest(manifest);
   }
 
   async updateMapping(
@@ -1282,6 +1647,207 @@ export class WhatsAppHistoryImportService {
       endedAt: parsed.endedAt?.toISOString() ?? null,
       mapping: null,
     };
+  }
+
+  private androidMediaUploadPath(
+    companyId: string,
+    batchId: string,
+    uploadId: string,
+  ): string {
+    assertUuid(uploadId, 'uploadId');
+    const batchPath = this.batchPath(companyId, batchId);
+    const path = resolve(batchPath, 'android-media-uploads', uploadId);
+    assertInside(batchPath, path);
+    return path;
+  }
+
+  private androidMediaArchivePath(uploadDirectory: string): string {
+    const path = resolve(uploadDirectory, 'archive.zip');
+    assertInside(uploadDirectory, path);
+    return path;
+  }
+
+  private async readAndroidMediaUpload(
+    uploadDirectory: string,
+  ): Promise<StoredAndroidMediaUpload> {
+    const path = resolve(uploadDirectory, 'upload.json');
+    assertInside(uploadDirectory, path);
+    let upload: StoredAndroidMediaUpload;
+    try {
+      upload = JSON.parse(
+        await readFile(path, 'utf8'),
+      ) as StoredAndroidMediaUpload;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw notFound('Envio de mídias');
+      }
+      throw validationError('O envio de mídias está corrompido.');
+    }
+    if (
+      upload.schemaVersion !== '1.0' ||
+      !UUID_PATTERN.test(upload.uploadId) ||
+      !Number.isSafeInteger(upload.expectedBytes) ||
+      !Number.isSafeInteger(upload.receivedBytes)
+    ) {
+      throw validationError('O envio de mídias é inválido.');
+    }
+    return upload;
+  }
+
+  private async writeAndroidMediaUpload(
+    uploadDirectory: string,
+    upload: StoredAndroidMediaUpload,
+  ): Promise<void> {
+    await mkdir(uploadDirectory, { recursive: true });
+    const destination = resolve(uploadDirectory, 'upload.json');
+    const temporary = resolve(uploadDirectory, `upload.${randomUUID()}.tmp`);
+    assertInside(uploadDirectory, destination);
+    assertInside(uploadDirectory, temporary);
+    await writeFile(temporary, JSON.stringify(upload), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await rename(temporary, destination);
+  }
+
+  private resumeAndroidMediaJob(
+    manifest: StoredManifest,
+    resumeAfterActiveJob = false,
+  ): void {
+    const mediaImport = manifest.androidBackup?.mediaImport;
+    if (
+      manifest.status !== 'applied' ||
+      mediaImport?.status !== 'processing' ||
+      !mediaImport.uploadId ||
+      !UUID_PATTERN.test(mediaImport.uploadId)
+    ) {
+      return;
+    }
+    const jobKey = `${manifest.companyId}:${manifest.id}:${mediaImport.uploadId}`;
+    if (this.androidMediaJobs.has(jobKey)) {
+      if (resumeAfterActiveJob) {
+        // A tentativa anterior pode estar terminando no mesmo instante em que
+        // o usuário solicita a retomada. Reconfira o manifesto quando ela
+        // liberar a chave para não perder essa nova execução.
+        this.androidMediaJobResumeRequested.add(jobKey);
+      }
+      return;
+    }
+    this.androidMediaJobs.add(jobKey);
+    setImmediate(() => {
+      void this.runAndroidMediaJob(
+        manifest.companyId,
+        manifest.id,
+        mediaImport.uploadId as string,
+      ).finally(() => {
+        this.androidMediaJobs.delete(jobKey);
+        if (!this.androidMediaJobResumeRequested.delete(jobKey)) return;
+        void this.readManifest(manifest.companyId, manifest.id)
+          .then((current) => this.resumeAndroidMediaJob(current))
+          .catch(() => undefined);
+      });
+    });
+  }
+
+  private async runAndroidMediaJob(
+    companyId: string,
+    batchId: string,
+    uploadId: string,
+  ): Promise<void> {
+    const uploadDirectory = this.androidMediaUploadPath(
+      companyId,
+      batchId,
+      uploadId,
+    );
+    try {
+      const upload = await this.readAndroidMediaUpload(uploadDirectory);
+      const archivePath = this.androidMediaArchivePath(uploadDirectory);
+      const result = await this.androidMediaImporter.attachArchive({
+        companyId,
+        batchId,
+        archivePath,
+        originalName: upload.originalName,
+        sizeBytes: upload.expectedBytes,
+        onProgress: async (progress) => {
+          await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+            const manifest = await this.readManifest(companyId, batchId);
+            const mediaImport = manifest.androidBackup?.mediaImport;
+            if (
+              !mediaImport ||
+              mediaImport.uploadId !== uploadId ||
+              mediaImport.status !== 'processing'
+            ) {
+              return;
+            }
+            mediaImport.phase = progress.phase;
+            mediaImport.processingFilesScanned = progress.filesScanned;
+            mediaImport.processingFilesTotal = progress.filesTotal;
+            mediaImport.processingFilesProcessed = progress.filesProcessed;
+            mediaImport.processingAttached = progress.attached;
+            mediaImport.updatedAt = new Date().toISOString();
+            manifest.updatedAt = mediaImport.updatedAt;
+            await this.writeManifest(manifest);
+          });
+        },
+      });
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const manifest = await this.readManifest(companyId, batchId);
+        const mediaImport = manifest.androidBackup?.mediaImport;
+        if (!manifest.androidBackup || mediaImport?.uploadId !== uploadId)
+          return;
+        const now = new Date().toISOString();
+        manifest.androidBackup.mediaImport = {
+          ...mediaImport,
+          archivesProcessed: mediaImport.archivesProcessed + 1,
+          filesScanned: mediaImport.filesScanned + result.filesScanned,
+          stored: result.alreadyStored + result.attached,
+          pending: result.missing,
+          ambiguous: mediaImport.ambiguous + result.ambiguous,
+          skippedOversize: mediaImport.skippedOversize + result.skippedOversize,
+          updatedAt: now,
+          status: 'completed',
+          phase: null,
+          uploadId: null,
+          processingFilesScanned: result.filesScanned,
+          processingFilesTotal: result.filesScanned,
+          processingFilesProcessed: result.filesScanned,
+          processingAttached: result.attached,
+          errorMessage: null,
+        };
+        manifest.updatedAt = now;
+        await this.writeManifest(manifest);
+      });
+      upload.status = 'completed';
+      upload.updatedAt = new Date().toISOString();
+      await this.writeAndroidMediaUpload(uploadDirectory, upload);
+      await rm(uploadDirectory, { recursive: true, force: true });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim().slice(0, 500)
+          : 'Não foi possível processar o ZIP de mídias.';
+      const upload = await this.readAndroidMediaUpload(uploadDirectory).catch(
+        () => null,
+      );
+      if (upload) {
+        upload.status = 'failed';
+        upload.updatedAt = new Date().toISOString();
+        await this.writeAndroidMediaUpload(uploadDirectory, upload).catch(
+          () => undefined,
+        );
+      }
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const manifest = await this.readManifest(companyId, batchId);
+        const mediaImport = manifest.androidBackup?.mediaImport;
+        if (!mediaImport || mediaImport.uploadId !== uploadId) return;
+        mediaImport.status = 'failed';
+        mediaImport.phase = null;
+        mediaImport.errorMessage = message;
+        mediaImport.updatedAt = new Date().toISOString();
+        manifest.updatedAt = mediaImport.updatedAt;
+        await this.writeManifest(manifest);
+      }).catch(() => undefined);
+    }
   }
 
   private batchPath(companyId: string, batchId: string): string {
