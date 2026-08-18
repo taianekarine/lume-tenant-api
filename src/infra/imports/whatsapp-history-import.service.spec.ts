@@ -50,6 +50,12 @@ async function setup() {
   };
   const androidMediaImporter = {
     validateArchive: vi.fn().mockResolvedValue({ filesTotal: 1 }),
+    previewArchive: vi.fn().mockResolvedValue({
+      filesTotal: 1,
+      mediaStored: 0,
+      mediaNew: 1,
+      mediaMissing: 0,
+    }),
     attachArchive: vi.fn().mockResolvedValue({
       schemaVersion: '1.0',
       candidates: 1,
@@ -238,9 +244,39 @@ describe('WhatsAppHistoryImportService media retention', () => {
       conversationsProcessed: 0,
       messagesProcessed: 0,
       errorMessage: null,
+      comparison: {
+        status: 'ready',
+        messagesExisting: 0,
+        messagesNew: 2,
+        messagesDivergent: 0,
+        mediaStored: 0,
+        mediaNew: 0,
+        mediaMissing: 1,
+        updatedAt: new Date().toISOString(),
+        errorMessage: null,
+      },
       mediaImport: null,
     };
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const androidPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'android',
+    );
+    await mkdir(androidPath, { recursive: true });
+    await writeFile(
+      join(androidPath, 'media-preview-references.json'),
+      JSON.stringify([
+        {
+          id: 'android-message-1',
+          reference: 'whatsapp-android-media://Media%2Ffoto.jpg',
+          stored: false,
+        },
+      ]),
+      'utf8',
+    );
 
     await expect(
       service.apply(COMPANY_ID, COMMAND_ID, new Date()),
@@ -266,7 +302,12 @@ describe('WhatsAppHistoryImportService media retention', () => {
       status: 'draft',
       androidBackup: { mediaImport: { status: 'ready' } },
     });
-    expect(androidMediaImporter.validateArchive).toHaveBeenCalledOnce();
+    expect(androidMediaImporter.previewArchive).toHaveBeenCalledOnce();
+    expect(ready.androidBackup?.comparison).toMatchObject({
+      mediaStored: 0,
+      mediaNew: 1,
+      mediaMissing: 0,
+    });
     expect(androidMediaImporter.attachArchive).not.toHaveBeenCalled();
   });
 

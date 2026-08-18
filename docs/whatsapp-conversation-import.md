@@ -59,6 +59,14 @@ mídias pendentes e itens excluídos. A situação final e o departamento são
 escolhidos explicitamente. A aplicação ocorre em segundo plano, em blocos
 determinísticos, e pode ser retomada sem duplicar mensagens.
 
+A comparação incremental usa prioritariamente o `key_id` estável do WhatsApp;
+o identificador interno do chat não participa da identidade porque pode mudar
+entre backups do mesmo aparelho. A prévia separa mensagens já existentes,
+novas e divergentes. Repetir o mesmo backup produz zero mensagens novas; um
+backup posterior que contém todo o histórico anterior aplica somente as
+mensagens ausentes. O mesmo `key_id` com conteúdo diferente é apresentado como
+divergência e bloqueia a aplicação para revisão.
+
 Por padrão, cada bloco contém até 10.000 mensagens e quatro conversas
 independentes são aplicadas em paralelo. Os valores podem ser ajustados por
 `WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES` e
@@ -107,11 +115,12 @@ npm run whatsapp:android-media:attach:prod -- \
   --confirm ATTACH:<UUID_DO_LOTE_DA_TELA>
 ```
 
-O comando considera somente mensagens criadas pelos blocos daquele lote,
-ignora links simbólicos, limita o tamanho individual, usa caminho relativo e
-somente recorre ao nome do arquivo quando ele é único. Cada binário recebe
-SHA-256 e uma chave privada por tenant/conversa/mensagem. Reexecutar o mesmo
-comando ignora mídias já armazenadas e tenta novamente apenas as pendentes.
+O comando considera as mensagens Android do mesmo canal, inclusive pendências
+de importações anteriores. Ele ignora links simbólicos, limita o tamanho
+individual, usa caminho relativo e somente recorre ao nome do arquivo quando
+ele é único. Cada binário recebe SHA-256 e uma chave privada por
+tenant/conversa/mensagem. Reexecutar o mesmo comando ignora mídias já
+armazenadas e tenta novamente apenas as pendentes.
 
 ## Diretório privado
 

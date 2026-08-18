@@ -128,6 +128,61 @@ describe('WhatsApp Android backup reader', () => {
     });
   });
 
+  it('keeps the message identity stable when a later backup changes internal chat ids', async () => {
+    const firstPath = await fixture();
+    const secondPath = await fixture();
+    const secondDatabase = new DatabaseSync(secondPath);
+    secondDatabase.exec(`
+      UPDATE chat SET _id = 99 WHERE _id = 10;
+      UPDATE message SET chat_row_id = 99 WHERE chat_row_id = 10;
+      UPDATE message_media SET chat_row_id = 99 WHERE chat_row_id = 10;
+    `);
+    secondDatabase.close();
+
+    const read = (path: string) =>
+      [
+        ...readWhatsAppAndroidBackup(path, {
+          departmentCode: 'commercial',
+          state: 'closed' as const,
+        }),
+      ][0]?.parsed.messages.map((message) => message.externalMessageId);
+
+    expect(read(secondPath)).toEqual(read(firstPath));
+  });
+
+  it('identifies only the increment when two backups contain overlapping history', async () => {
+    const firstPath = await fixture();
+    const laterPath = await fixture();
+    const laterDatabase = new DatabaseSync(laterPath);
+    laterDatabase.exec(`
+      INSERT INTO message VALUES
+        (102, 10, 0, 'inbound-2', 4, 1700000040000, 0, 'Mensagem posterior');
+    `);
+    laterDatabase.close();
+
+    const identities = (path: string) =>
+      new Set(
+        [
+          ...readWhatsAppAndroidBackup(path, {
+            departmentCode: 'commercial',
+            state: 'closed' as const,
+          }),
+        ].flatMap((item) =>
+          item.parsed.messages.flatMap((message) =>
+            message.externalMessageId ? [message.externalMessageId] : [],
+          ),
+        ),
+      );
+
+    const incorporated = identities(firstPath);
+    const repeated = identities(firstPath);
+    const later = identities(laterPath);
+
+    expect([...repeated].filter((id) => !incorporated.has(id))).toEqual([]);
+    expect([...later].filter((id) => !incorporated.has(id))).toHaveLength(1);
+    expect([...later].filter((id) => incorporated.has(id))).toHaveLength(2);
+  });
+
   it('preserves the plaintext media hash used to recover files without paths', async () => {
     const path = await fixture();
     const db = new DatabaseSync(path);
