@@ -128,6 +128,23 @@ describe('WhatsApp Android backup reader', () => {
     });
   });
 
+  it('normalizes legacy Brazilian mobile numbers before importing chats', async () => {
+    const path = await fixture();
+    const db = new DatabaseSync(path);
+    db.exec("UPDATE jid SET user = '553488687758' WHERE _id = 1");
+    db.close();
+
+    const rows = [
+      ...readWhatsAppAndroidBackup(path, {
+        departmentCode: 'commercial',
+        state: 'closed',
+      }),
+    ];
+
+    expect(rows[0]?.mapping.phoneE164).toBe('5534988687758');
+    expect(rows[0]?.parsed.suggestedContactName).toBe('5534988687758');
+  });
+
   it('reads interactive message text from optional WhatsApp UI elements', async () => {
     const path = await fixture();
     const db = new DatabaseSync(path);

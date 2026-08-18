@@ -287,6 +287,40 @@ describe('WhatsAppContactsService', () => {
     expect(mocks.transaction).toHaveBeenCalled();
   });
 
+  it('propaga o nome para conversas ligadas ao celular sem o nono dígito', async () => {
+    const mocks = mockPrisma();
+    mocks.whatsAppContact.findMany.mockResolvedValue([
+      { id: CONTACT_ID, phoneNormalized: '5534988687758' },
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        phoneNormalized: '553488687758',
+      },
+    ]);
+    mocks.whatsAppContact.update.mockResolvedValue(row());
+    mocks.whatsAppContact.updateMany.mockResolvedValue({ count: 1 });
+    const service = new WhatsAppContactsService(mocks.prisma);
+    const csv = 'Nome,Telefone\nMaria da Silva,(34) 98868-7758';
+
+    await service.importCsv(COMPANY_ID, {
+      originalname: 'contatos.csv',
+      size: Buffer.byteLength(csv),
+      buffer: Buffer.from(csv),
+    });
+
+    expect(mocks.whatsAppContact.updateMany).toHaveBeenCalledWith({
+      where: {
+        companyId: COMPANY_ID,
+        phoneNormalized: { in: ['553488687758'] },
+        id: { not: CONTACT_ID },
+      },
+      data: {
+        displayName: 'Maria da Silva',
+        nameNeedsReview: false,
+        isSaved: false,
+      },
+    });
+  });
+
   it('rejeita importação sem arquivo CSV e contato inexistente', async () => {
     const mocks = mockPrisma();
     const service = new WhatsAppContactsService(mocks.prisma);

@@ -71,9 +71,27 @@ visíveis no histórico com mídia indisponível; a vinculação dos arquivos é
 etapa independente e idempotente.
 
 A tela apresenta a etapa **Vincular mídias** após concluir as mensagens. Nela é
-possível selecionar um ou vários ZIPs contendo `WhatsApp/Media` ou
-`WhatsApp Business/Media`. Os arquivos são enviados e processados um por vez;
-interrupções podem ser retomadas sem regravar mídias já vinculadas.
+possível selecionar um ZIP contendo `WhatsApp/Media` ou
+`WhatsApp Business/Media`. O navegador envia o arquivo em blocos retomáveis de
+16 MiB; uma interrupção pode ser retomada selecionando o mesmo arquivo. Ao fim
+do envio, a API lê o diretório do ZIP como stream e vincula somente os arquivos
+citados no banco, sem manter o ZIP inteiro nem todos os arquivos descompactados
+na memória. O processamento continua em segundo plano e seu progresso pode ser
+acompanhado na própria tela mesmo depois de sair e retornar à página.
+
+Os limites padrão desse fluxo são 8 GiB por ZIP, 250.000 entradas e 16 GiB
+descompactados. Eles podem ser ajustados por
+`WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_BYTES`,
+`WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_ENTRIES` e
+`WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_UNCOMPRESSED_BYTES`. O tamanho do bloco é
+configurado por `WHATSAPP_ANDROID_MEDIA_UPLOAD_CHUNK_BYTES`. O volume
+`lume_tenant_whatsapp_imports` precisa ter espaço para o ZIP durante o envio e o
+processamento; a cópia temporária é removida quando a vinculação termina.
+
+Telefones móveis brasileiros antigos sem o nono dígito são normalizados para
+a mesma identidade usada pela agenda. Assim, nomes importados por CSV também
+aparecem nas conversas históricas que ainda tenham sido gravadas com a forma
+antiga do número.
 
 `Backups.zip` não é um arquivo de mídias: ele contém bancos auxiliares
 criptografados do Android. Para dezenas de milhares de arquivos, também é

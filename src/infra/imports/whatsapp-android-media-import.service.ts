@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { opendir, readFile, stat } from 'node:fs/promises';
 import { basename, extname, relative, resolve, sep } from 'node:path';
+import type { Readable } from 'node:stream';
 
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import JSZip from 'jszip';
+import yauzl, { type Entry, type ZipFile } from 'yauzl';
 
 import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
 import { validationError } from '../../core/errors/app-error';
@@ -44,6 +45,17 @@ export interface AttachWhatsAppAndroidMediaArchiveInput {
   archivePath: string;
   originalName: string;
   sizeBytes: number;
+  onProgress?: (progress: AttachWhatsAppAndroidMediaProgress) => Promise<void>;
+}
+
+export interface AttachWhatsAppAndroidMediaProgress {
+  phase: 'scanning' | 'storing';
+  filesScanned: number;
+  filesTotal: number;
+  filesProcessed: number;
+  attached: number;
+  ambiguous: number;
+  skippedOversize: number;
 }
 
 export interface AttachWhatsAppAndroidMediaResult {
@@ -172,6 +184,110 @@ async function* files(root: string, directory = root): AsyncGenerator<string> {
   }
 }
 
+function openZip(path: string): Promise<ZipFile> {
+  return new Promise((resolvePromise, reject) => {
+    yauzl.open(
+      path,
+      {
+        autoClose: false,
+        lazyEntries: true,
+        validateEntrySizes: true,
+      },
+      (error, archive) => {
+        if (error || !archive) {
+          reject(error ?? new Error('ZIP não pôde ser aberto.'));
+          return;
+        }
+        resolvePromise(archive);
+      },
+    );
+  });
+}
+
+function nextZipEntry(archive: ZipFile): Promise<Entry | null> {
+  return new Promise((resolvePromise, reject) => {
+    const cleanup = () => {
+      archive.removeListener('entry', onEntry);
+      archive.removeListener('end', onEnd);
+      archive.removeListener('error', onError);
+    };
+    const onEntry = (entry: Entry) => {
+      cleanup();
+      resolvePromise(entry);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolvePromise(null);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    archive.on('entry', onEntry);
+    archive.once('end', onEnd);
+    archive.once('error', onError);
+    archive.readEntry();
+  });
+}
+
+async function* zipEntries(archive: ZipFile): AsyncGenerator<Entry> {
+  for (;;) {
+    const entry = await nextZipEntry(archive);
+    if (!entry) return;
+    yield entry;
+  }
+}
+
+function entryStream(archive: ZipFile, entry: Entry): Promise<Readable> {
+  return new Promise((resolvePromise, reject) => {
+    archive.openReadStream(entry, (error, stream) => {
+      if (error || !stream) {
+        reject(error ?? new Error('Item do ZIP não pôde ser lido.'));
+        return;
+      }
+      resolvePromise(stream);
+    });
+  });
+}
+
+async function readEntry(
+  archive: ZipFile,
+  entry: Entry,
+  maximumBytes: number,
+): Promise<Buffer> {
+  const stream = await entryStream(archive, entry);
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    stream.on('data', (chunk: Buffer | Uint8Array) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.byteLength;
+      if (total > maximumBytes) {
+        stream.destroy(
+          validationError('Uma mídia do ZIP excede o limite permitido.'),
+        );
+        return;
+      }
+      chunks.push(buffer);
+    });
+    stream.once('end', () => resolvePromise(Buffer.concat(chunks, total)));
+    stream.once('error', reject);
+  });
+}
+
+function unsafeZipEntry(entry: Entry): boolean {
+  const normalized = entry.fileName.replace(/\\/g, '/');
+  const unixMode = (entry.externalFileAttributes >>> 16) & 0xffff;
+  const isSymbolicLink = (unixMode & 0o170000) === 0o120000;
+  return (
+    entry.isEncrypted() ||
+    isSymbolicLink ||
+    normalized.startsWith('/') ||
+    /^[a-z]:\//i.test(normalized) ||
+    normalized.split('/').includes('..')
+  );
+}
+
 @Injectable()
 export class WhatsAppAndroidMediaImportService {
   private readonly importsRoot: string;
@@ -198,17 +314,17 @@ export class WhatsAppAndroidMediaImportService {
     this.maximumArchiveBytes = finiteConfig(
       config,
       'WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_BYTES',
-      536_870_912,
+      8_589_934_592,
     );
     this.maximumArchiveEntries = finiteConfig(
       config,
       'WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_ENTRIES',
-      50_000,
+      250_000,
     );
     this.maximumUncompressedBytes = finiteConfig(
       config,
       'WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_UNCOMPRESSED_BYTES',
-      4_294_967_296,
+      17_179_869_184,
     );
     this.archiveConcurrency = Math.min(
       8,
@@ -308,127 +424,192 @@ export class WhatsAppAndroidMediaImportService {
     ) {
       throw validationError('O arquivo ZIP de mídias possui tamanho inválido.');
     }
-    const archive = await JSZip.loadAsync(await readFile(archivePath), {
-      createFolders: false,
-    }).catch(() => {
-      throw validationError('O arquivo ZIP de mídias está corrompido.');
-    });
-    const entries = Object.values(archive.files).filter((entry) => !entry.dir);
-    if (entries.length < 1 || entries.length > this.maximumArchiveEntries) {
-      throw validationError(
-        `Cada ZIP deve conter entre 1 e ${this.maximumArchiveEntries} arquivos.`,
-      );
-    }
-    let declaredUncompressedBytes = 0;
-    for (const entry of entries) {
-      const declared = Number(
-        (
-          entry as unknown as {
-            _data?: { uncompressedSize?: number };
-          }
-        )._data?.uncompressedSize ?? 0,
-      );
-      if (!Number.isSafeInteger(declared) || declared < 0) {
-        throw validationError('O ZIP possui um item com tamanho inválido.');
+    let archive: ZipFile | null = null;
+    let processingArchive: ZipFile | null = null;
+    try {
+      archive = await openZip(archivePath);
+      let filesTotal = 0;
+      let declaredUncompressedBytes = 0;
+      for await (const entry of zipEntries(archive)) {
+        if (entry.fileName.endsWith('/')) continue;
+        filesTotal += 1;
+        if (filesTotal > this.maximumArchiveEntries) {
+          throw validationError(
+            `Cada ZIP deve conter entre 1 e ${this.maximumArchiveEntries} arquivos.`,
+          );
+        }
+        if (
+          !Number.isSafeInteger(entry.uncompressedSize) ||
+          entry.uncompressedSize < 0
+        ) {
+          throw validationError('O ZIP possui um item com tamanho inválido.');
+        }
+        declaredUncompressedBytes += entry.uncompressedSize;
+        if (declaredUncompressedBytes > this.maximumUncompressedBytes) {
+          throw validationError(
+            'O conteúdo descompactado excede o limite seguro por arquivo ZIP.',
+          );
+        }
+        if (unsafeZipEntry(entry)) {
+          throw validationError('O ZIP contém um caminho de arquivo inseguro.');
+        }
       }
-      declaredUncompressedBytes += declared;
-      if (declaredUncompressedBytes > this.maximumUncompressedBytes) {
-        throw validationError(
-          'O conteúdo descompactado excede o limite seguro por arquivo ZIP.',
-        );
+      if (filesTotal < 1) {
+        throw validationError('O ZIP deve conter pelo menos um arquivo.');
       }
-      const unsafeName =
-        (entry as unknown as { unsafeOriginalName?: string })
-          .unsafeOriginalName ?? entry.name;
-      const normalized = unsafeName.replace(/\\/g, '/');
-      if (
-        normalized.startsWith('/') ||
-        /^[a-z]:\//i.test(normalized) ||
-        normalized.split('/').includes('..')
-      ) {
-        throw validationError('O ZIP contém um caminho de arquivo inseguro.');
-      }
-    }
+      archive.close();
+      archive = null;
 
-    const loaded = await this.loadCandidates(input.companyId, input.batchId);
-    const byPath = new Map<string, CandidateMessage[]>();
-    const byBaseName = new Map<string, CandidateMessage[]>();
-    for (const candidate of loaded.candidates) {
-      byPath.set(candidate.canonicalPath, [
-        ...(byPath.get(candidate.canonicalPath) ?? []),
-        candidate,
-      ]);
-      byBaseName.set(candidate.baseName, [
-        ...(byBaseName.get(candidate.baseName) ?? []),
-        candidate,
-      ]);
-    }
-    const reservedIds = new Set<string>();
-    const jobs: { entry: JSZip.JSZipObject; candidate: CandidateMessage }[] =
-      [];
-    let ambiguous = 0;
-    let skippedOversize = 0;
-    for (const entry of entries) {
-      const matched = this.matchCandidate(
-        entry.name,
-        byPath,
-        byBaseName,
-        reservedIds,
-      );
-      if (matched.ambiguous) ambiguous += 1;
-      if (!matched.candidate) continue;
-      const declared = Number(
-        (
-          entry as unknown as {
-            _data?: { uncompressedSize?: number };
-          }
-        )._data?.uncompressedSize ?? 0,
-      );
-      if (declared < 1 || declared > this.maximumFileBytes) {
-        skippedOversize += 1;
-        continue;
+      const loaded = await this.loadCandidates(input.companyId, input.batchId);
+      await input.onProgress?.({
+        phase: 'scanning',
+        filesScanned: 0,
+        filesTotal,
+        filesProcessed: 0,
+        attached: 0,
+        ambiguous: 0,
+        skippedOversize: 0,
+      });
+      const byPath = new Map<string, CandidateMessage[]>();
+      const byBaseName = new Map<string, CandidateMessage[]>();
+      for (const candidate of loaded.candidates) {
+        byPath.set(candidate.canonicalPath, [
+          ...(byPath.get(candidate.canonicalPath) ?? []),
+          candidate,
+        ]);
+        byBaseName.set(candidate.baseName, [
+          ...(byBaseName.get(candidate.baseName) ?? []),
+          candidate,
+        ]);
       }
-      reservedIds.add(matched.candidate.id);
-      jobs.push({ entry, candidate: matched.candidate });
-    }
-    let attached = 0;
-    for (
-      let offset = 0;
-      offset < jobs.length;
-      offset += this.archiveConcurrency
-    ) {
-      const results = await Promise.all(
-        jobs
-          .slice(offset, offset + this.archiveConcurrency)
-          .map(async (job) => {
-            const content = await job.entry.async('nodebuffer');
-            if (
-              content.byteLength < 1 ||
-              content.byteLength > this.maximumFileBytes
-            ) {
-              return false;
-            }
-            return this.storeCandidate(
+      const reservedIds = new Set<string>();
+      let ambiguous = 0;
+      let skippedOversize = 0;
+      let filesScanned = 0;
+      let filesProcessed = 0;
+      let attached = 0;
+      let batchBytes = 0;
+      let lastReportedProcessed = 0;
+      let lastReportedAt = Date.now();
+      const batch: {
+        candidate: CandidateMessage;
+        fileName: string;
+        content: Buffer;
+      }[] = [];
+      const reportStorageProgress = async (force = false) => {
+        const now = Date.now();
+        if (
+          !force &&
+          filesProcessed - lastReportedProcessed < 250 &&
+          now - lastReportedAt < 1_000
+        ) {
+          return;
+        }
+        lastReportedProcessed = filesProcessed;
+        lastReportedAt = now;
+        await input.onProgress?.({
+          phase: 'storing',
+          filesScanned,
+          filesTotal,
+          filesProcessed,
+          attached,
+          ambiguous,
+          skippedOversize,
+        });
+      };
+      const flush = async () => {
+        if (batch.length === 0) return;
+        const results = await Promise.all(
+          batch.map((job) =>
+            this.storeCandidate(
               input.companyId,
               job.candidate,
-              basename(job.entry.name),
-              content,
-            );
-          }),
-      );
-      attached += results.filter(Boolean).length;
-    }
+              job.fileName,
+              job.content,
+            ),
+          ),
+        );
+        attached += results.filter(Boolean).length;
+        filesProcessed += results.length;
+        batch.length = 0;
+        batchBytes = 0;
+        await reportStorageProgress();
+      };
 
-    return {
-      schemaVersion: '1.0',
-      candidates: loaded.candidates.length,
-      filesScanned: entries.length,
-      attached,
-      alreadyStored: loaded.alreadyStored,
-      missing: Math.max(0, loaded.candidates.length - attached),
-      ambiguous,
-      skippedOversize,
-    };
+      processingArchive = await openZip(archivePath);
+      for await (const entry of zipEntries(processingArchive)) {
+        if (entry.fileName.endsWith('/')) continue;
+        filesScanned += 1;
+        const matched = this.matchCandidate(
+          entry.fileName,
+          byPath,
+          byBaseName,
+          reservedIds,
+        );
+        if (matched.ambiguous) ambiguous += 1;
+        if (
+          input.onProgress &&
+          (filesScanned === 1 || filesScanned % 1_000 === 0)
+        ) {
+          await input.onProgress({
+            phase: 'scanning',
+            filesScanned,
+            filesTotal,
+            filesProcessed,
+            attached,
+            ambiguous,
+            skippedOversize,
+          });
+        }
+        if (!matched.candidate) continue;
+        if (
+          entry.uncompressedSize < 1 ||
+          entry.uncompressedSize > this.maximumFileBytes
+        ) {
+          skippedOversize += 1;
+          continue;
+        }
+        reservedIds.add(matched.candidate.id);
+        if (
+          batch.length > 0 &&
+          (batch.length >= this.archiveConcurrency ||
+            batchBytes + entry.uncompressedSize > this.maximumFileBytes)
+        ) {
+          await flush();
+        }
+        const content = await readEntry(
+          processingArchive,
+          entry,
+          this.maximumFileBytes,
+        );
+        if (content.byteLength < 1) continue;
+        batch.push({
+          candidate: matched.candidate,
+          fileName: basename(entry.fileName),
+          content,
+        });
+        batchBytes += content.byteLength;
+      }
+      await flush();
+      await reportStorageProgress(true);
+
+      return {
+        schemaVersion: '1.0',
+        candidates: loaded.candidates.length,
+        filesScanned,
+        attached,
+        alreadyStored: loaded.alreadyStored,
+        missing: Math.max(0, loaded.candidates.length - attached),
+        ambiguous,
+        skippedOversize,
+      };
+    } catch (error) {
+      if ((error as { code?: string }).code === 'VALIDATION_ERROR') throw error;
+      throw validationError('O arquivo ZIP de mídias está corrompido.');
+    } finally {
+      archive?.close();
+      processingArchive?.close();
+    }
   }
 
   private async loadCandidates(companyId: string, batchId: string) {

@@ -55,7 +55,8 @@
     "jszip": "^3.10.1",
     "pg": "^8.22.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "yauzl": "^3.2.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -66,6 +67,7 @@
     "@types/node": "^24.0.0",
     "@types/pg": "^8.20.0",
     "@types/supertest": "^6.0.3",
+    "@types/yauzl": "^2.10.3",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",

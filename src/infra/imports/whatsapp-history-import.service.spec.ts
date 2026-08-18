@@ -49,7 +49,16 @@ async function setup() {
     delete: vi.fn(),
   };
   const androidMediaImporter = {
-    attachArchive: vi.fn(),
+    attachArchive: vi.fn().mockResolvedValue({
+      schemaVersion: '1.0',
+      candidates: 1,
+      filesScanned: 1,
+      attached: 1,
+      alreadyStored: 0,
+      missing: 0,
+      ambiguous: 0,
+      skippedOversize: 0,
+    }),
   };
   return {
     root,
@@ -61,6 +70,7 @@ async function setup() {
       androidMediaImporter as never,
       config as never,
     ),
+    androidMediaImporter,
   };
 }
 
@@ -180,6 +190,134 @@ describe('WhatsAppHistoryImportService.create', () => {
 });
 
 describe('WhatsAppHistoryImportService media retention', () => {
+  it('recebe um ZIP grande em blocos retomáveis e processa em segundo plano', async () => {
+    const { root, service, androidMediaImporter } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.status = 'applied';
+    manifest.appliedAt = new Date().toISOString();
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 1,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: new Date().toISOString(),
+      chunksCompleted: 1,
+      conversationsProcessed: 1,
+      messagesProcessed: 2,
+      errorMessage: null,
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+
+    const started = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    const resumed = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    expect(resumed.uploadId).toBe(started.uploadId);
+
+    const partial = await service.addAndroidMediaUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: Buffer.alloc(20, 1),
+      },
+    );
+    expect(partial.uploadedBytes).toBe(20);
+    await service.addAndroidMediaUploadChunk(COMPANY_ID, COMMAND_ID, {
+      uploadId: started.uploadId,
+      offsetBytes: 20,
+      content: Buffer.alloc(10, 2),
+    });
+
+    androidMediaImporter.attachArchive.mockRejectedValueOnce(
+      new Error('falha transitória'),
+    );
+    const processing = await service.completeAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      started.uploadId,
+    );
+    expect(processing.androidBackup?.mediaImport).toMatchObject({
+      status: 'processing',
+      uploadBytesReceived: 30,
+      uploadBytesTotal: 30,
+    });
+    await vi.waitFor(async () => {
+      const failed = await service.detail(COMPANY_ID, COMMAND_ID);
+      expect(failed.androidBackup?.mediaImport).toMatchObject({
+        status: 'failed',
+        errorMessage: 'falha transitória',
+      });
+    });
+
+    const retry = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    expect(retry).toMatchObject({
+      uploadId: started.uploadId,
+      uploadedBytes: 30,
+      status: 'failed',
+    });
+    await service.completeAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      retry.uploadId,
+    );
+    await vi.waitFor(async () => {
+      const completed = await service.detail(COMPANY_ID, COMMAND_ID);
+      expect(completed.androidBackup?.mediaImport).toMatchObject({
+        status: 'completed',
+        stored: 1,
+        pending: 0,
+      });
+    });
+    expect(androidMediaImporter.attachArchive).toHaveBeenCalledTimes(2);
+  });
+
   it('stores a ZIP attachment and links it to the imported message', async () => {
     const { root, prisma, mediaStorage, service } = await setup();
     const zip = new JSZip();

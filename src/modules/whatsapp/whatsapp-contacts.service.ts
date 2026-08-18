@@ -9,6 +9,7 @@ import {
   formatWhatsAppPhone,
   normalizeWhatsAppPhone,
   onlyDigits,
+  whatsAppPhoneAliases,
 } from '../../shared/utils/normalization';
 import { PrismaService } from '../../infra/database/prisma/prisma.service';
 import type {
@@ -323,6 +324,13 @@ export class WhatsAppContactsService {
         updatedAt: true,
       },
     });
+    await this.updateEquivalentLegacyContacts(
+      companyId,
+      phoneNormalized,
+      name.displayName,
+      name.needsReview,
+      contact.id,
+    );
     return presentContact(contact);
   }
 
@@ -361,6 +369,13 @@ export class WhatsAppContactsService {
         updatedAt: true,
       },
     });
+    await this.updateEquivalentLegacyContacts(
+      companyId,
+      phoneNormalized,
+      name.displayName,
+      name.needsReview,
+      contact.id,
+    );
     return presentContact(contact);
   }
 
@@ -397,7 +412,13 @@ export class WhatsAppContactsService {
       throw validationError('Selecione um arquivo CSV válido.');
     }
     const parsed = parseContactCsv(file.buffer);
-    const phones = parsed.contacts.map((contact) => contact.phoneNormalized);
+    const phones = [
+      ...new Set(
+        parsed.contacts.flatMap((contact) =>
+          whatsAppPhoneAliases(contact.phoneNormalized),
+        ),
+      ),
+    ];
     const existing = await this.prisma.whatsAppContact.findMany({
       where: { companyId, phoneNormalized: { in: phones } },
       select: { id: true, phoneNormalized: true },
@@ -433,7 +454,7 @@ export class WhatsAppContactsService {
         index + CONTACT_IMPORT_CHUNK_SIZE,
       );
       await this.prisma.$transaction(
-        chunk.map((contact) =>
+        chunk.flatMap((contact) => [
           this.prisma.whatsAppContact.update({
             where: {
               id_companyId: {
@@ -443,6 +464,33 @@ export class WhatsAppContactsService {
             },
             data: { ...contact, isSaved: true },
           }),
+          this.updateEquivalentLegacyContactsOperation(
+            companyId,
+            contact.phoneNormalized,
+            contact.displayName,
+            contact.nameNeedsReview,
+            existingByPhone.get(contact.phoneNormalized),
+          ),
+        ]),
+      );
+    }
+    for (
+      let index = 0;
+      index < contactsToCreate.length;
+      index += CONTACT_IMPORT_CHUNK_SIZE
+    ) {
+      const chunk = contactsToCreate.slice(
+        index,
+        index + CONTACT_IMPORT_CHUNK_SIZE,
+      );
+      await this.prisma.$transaction(
+        chunk.map((contact) =>
+          this.updateEquivalentLegacyContactsOperation(
+            companyId,
+            contact.phoneNormalized,
+            contact.displayName,
+            contact.nameNeedsReview,
+          ),
         ),
       );
     }
@@ -463,6 +511,46 @@ export class WhatsAppContactsService {
     } catch {
       throw validationError('Informe um telefone válido com DDD.');
     }
+  }
+
+  private updateEquivalentLegacyContactsOperation(
+    companyId: string,
+    phoneNormalized: string,
+    displayName: string,
+    nameNeedsReview: boolean,
+    canonicalContactId?: string,
+  ) {
+    const aliases = whatsAppPhoneAliases(phoneNormalized).filter(
+      (phone) => phone !== phoneNormalized,
+    );
+    return this.prisma.whatsAppContact.updateMany({
+      where: {
+        companyId,
+        phoneNormalized: { in: aliases },
+        ...(canonicalContactId ? { id: { not: canonicalContactId } } : {}),
+      },
+      data: {
+        displayName,
+        nameNeedsReview,
+        isSaved: false,
+      },
+    });
+  }
+
+  private async updateEquivalentLegacyContacts(
+    companyId: string,
+    phoneNormalized: string,
+    displayName: string,
+    nameNeedsReview: boolean,
+    canonicalContactId: string,
+  ): Promise<void> {
+    await this.updateEquivalentLegacyContactsOperation(
+      companyId,
+      phoneNormalized,
+      displayName,
+      nameNeedsReview,
+      canonicalContactId,
+    );
   }
 
   private async savedContact(companyId: string, contactId: string) {

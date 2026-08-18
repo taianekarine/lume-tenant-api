@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatWhatsAppPhone, normalizeWhatsAppPhone } from './normalization';
+import {
+  formatWhatsAppPhone,
+  normalizeWhatsAppPhone,
+  whatsAppPhoneAliases,
+} from './normalization';
 
 describe('normalização de telefones do WhatsApp', () => {
   it.each([
@@ -19,6 +23,14 @@ describe('normalização de telefones do WhatsApp', () => {
 
   it('apresenta celular no formato brasileiro atual', () => {
     expect(formatWhatsAppPhone('34988687758')).toBe('(34) 98868-7758');
+  });
+
+  it('reconhece como equivalentes celulares antigos sem o nono dígito', () => {
+    expect(normalizeWhatsAppPhone('553488687758')).toBe('5534988687758');
+    expect(whatsAppPhoneAliases('(34) 98868-7758')).toEqual([
+      '5534988687758',
+      '553488687758',
+    ]);
   });
 
   it('não confunde o DDD 55 com o código do país', () => {
