@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
+import { formatWhatsAppPhone } from '../../shared/utils/normalization';
+
 import {
   ConversationState,
   DeliveryStatus,
@@ -2637,7 +2639,12 @@ export class WhatsAppImportService {
           phoneNormalized: row.phoneE164,
         },
       },
-      select: { id: true, displayName: true, updatedAt: true },
+      select: {
+        id: true,
+        displayName: true,
+        isSaved: true,
+        updatedAt: true,
+      },
     });
     await this.assertNoDriftSinceLastImport(
       transaction,
@@ -2648,6 +2655,7 @@ export class WhatsAppImportService {
     );
     const contact = existingContact
       ? existingReference &&
+        !existingContact.isSaved &&
         row.contactName &&
         row.contactName !== existingContact.displayName
         ? await transaction.whatsAppContact.update({
@@ -2665,6 +2673,7 @@ export class WhatsAppImportService {
           data: {
             companyId: input.companyId,
             phoneNormalized: row.phoneE164,
+            phoneDisplay: formatWhatsAppPhone(row.phoneE164),
             displayName: row.contactName,
           },
           select: { id: true, displayName: true },
