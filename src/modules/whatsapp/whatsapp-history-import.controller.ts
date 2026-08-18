@@ -81,6 +81,14 @@ export class WhatsAppHistoryImportController {
     return this.imports.channels(current.companyId);
   }
 
+  @Get('android-backups')
+  @ApiOkResponse({
+    description: 'Backups Android concluídos disponíveis para vincular mídias.',
+  })
+  appliedAndroidBackups(@CurrentUser() current: AuthenticatedPrincipal) {
+    return this.imports.appliedAndroidBackups(current.companyId);
+  }
+
   @Post()
   @ApiCreatedResponse({ description: 'Lote de importação criado.' })
   create(

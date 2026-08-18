@@ -107,6 +107,76 @@ describe('WhatsAppHistoryImportService.create', () => {
       }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
+
+  it('lista somente backups Android concluídos do tenant', async () => {
+    const { root, service } = await setup();
+    const input = {
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    };
+    await service.create(input);
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.status = 'applied';
+    manifest.appliedAt = new Date().toISOString();
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 3,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: new Date().toISOString(),
+      chunksCompleted: 1,
+      conversationsProcessed: 1,
+      messagesProcessed: 2,
+      errorMessage: null,
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+
+    const result = await service.appliedAndroidBackups(COMPANY_ID);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: COMMAND_ID,
+      mode: 'android-backup',
+      status: 'applied',
+      androidBackup: {
+        databaseFileName: 'msgstore.db.crypt15',
+      },
+    });
+    await expect(
+      service.appliedAndroidBackups('77777777-7777-4777-8777-777777777777'),
+    ).resolves.toEqual([]);
+  });
 });
 
 describe('WhatsAppHistoryImportService media retention', () => {
