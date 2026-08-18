@@ -185,6 +185,7 @@ export interface ConversationListQuery {
   pageSize: number;
   department?: Department;
   state?: ConversationState;
+  control?: 'bot' | 'human' | 'paused' | 'closed';
   requestStatus?: RequestStatus;
   search?: string;
 }

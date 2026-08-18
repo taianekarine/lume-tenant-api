@@ -6028,6 +6028,18 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         ? departmentToPrisma[query.department]
         : undefined;
     const state = query.state ? stateToPrisma[query.state] : undefined;
+    const controlStates = query.control
+      ? query.control === 'bot'
+        ? [ConversationState.BOT_ACTIVE]
+        : query.control === 'human'
+          ? [ConversationState.HUMAN_ACTIVE]
+          : query.control === 'paused'
+            ? [
+                ConversationState.WAITING_FOR_CUSTOMER,
+                ConversationState.SENT_TO_HUMAN,
+              ]
+            : [ConversationState.CLOSED]
+      : undefined;
     const requestStatus = query.requestStatus
       ? requestToPrisma[query.requestStatus]
       : undefined;
@@ -6036,19 +6048,37 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       companyId,
       ...(department ? { department } : {}),
       ...(state ? { conversationState: state } : {}),
+      ...(controlStates ? { conversationState: { in: controlStates } } : {}),
       ...(requestStatus ? { requestStatus } : {}),
       ...(search
         ? {
-            contact: {
-              OR: [
-                { displayName: { contains: search, mode: 'insensitive' } },
-                { phoneNormalized: { contains: search } },
-              ],
-            },
+            OR: [
+              {
+                contact: {
+                  displayName: { contains: search, mode: 'insensitive' },
+                },
+              },
+              { contact: { phoneNormalized: { contains: search } } },
+              {
+                lastMessagePreview: {
+                  contains: search,
+                  mode: 'insensitive',
+                },
+              },
+            ],
           }
         : {}),
     };
-    const [rows, total] = await this.prisma.$transaction([
+    const [
+      rows,
+      total,
+      botActive,
+      attendantActive,
+      waitingForCustomer,
+      sentToHuman,
+      unreadTotals,
+      unreadConversations,
+    ] = await this.prisma.$transaction([
       this.prisma.whatsAppConversation.findMany({
         where,
         include: conversationInclude,
@@ -6057,6 +6087,42 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         take: query.pageSize,
       }),
       this.prisma.whatsAppConversation.count({ where }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [where, { conversationState: ConversationState.BOT_ACTIVE }],
+        },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [where, { conversationState: ConversationState.HUMAN_ACTIVE }],
+        },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [
+            where,
+            { conversationState: ConversationState.WAITING_FOR_CUSTOMER },
+          ],
+        },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [where, { conversationState: ConversationState.SENT_TO_HUMAN }],
+        },
+      }),
+      this.prisma.whatsAppConversation.aggregate({
+        where,
+        _sum: { unreadCount: true },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [
+            where,
+            { conversationState: { not: ConversationState.CLOSED } },
+            { unreadCount: { gt: 0 } },
+          ],
+        },
+      }),
     ]);
     return {
       data: rows.map(presentConversation),
@@ -6065,6 +6131,14 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         pageSize: query.pageSize,
         total,
         totalPages: Math.ceil(total / query.pageSize),
+      },
+      summary: {
+        total,
+        botActive,
+        attendantActive,
+        automationPaused: waitingForCustomer + sentToHuman,
+        unreadMessages: unreadTotals._sum.unreadCount ?? 0,
+        unreadConversations,
       },
     };
   }

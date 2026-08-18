@@ -1669,7 +1669,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     ]) {
       const response = await request(app.getHttpServer())
         .get('/api/v1/whatsapp/conversations')
-        .query({ department, state: 'sent-to-human', pageSize: 100 })
+        .query({ department, control: 'paused', pageSize: 100 })
         .set('authorization', `Bearer ${accessToken}`)
         .expect(200);
       expect(response.body.data).toHaveLength(1);
@@ -1677,6 +1677,20 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         id: queueConversationIds.get(department.toUpperCase()),
         department,
         conversationState: 'sent-to-human',
+      });
+      expect(response.body.meta).toMatchObject({
+        page: 1,
+        pageSize: 100,
+        total: 1,
+        totalPages: 1,
+      });
+      expect(response.body.summary).toMatchObject({
+        total: 1,
+        botActive: 0,
+        attendantActive: 0,
+        automationPaused: 1,
+        unreadMessages: 0,
+        unreadConversations: 0,
       });
     }
 
