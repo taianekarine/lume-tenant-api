@@ -12,6 +12,7 @@ const COMPANY_ID = '11111111-1111-4111-8111-111111111111';
 const BATCH_ID = '22222222-2222-4222-8222-222222222222';
 const MESSAGE_ID = '33333333-3333-4333-8333-333333333333';
 const CONVERSATION_ID = '44444444-4444-4444-8444-444444444444';
+const CHANNEL_ID = '99999999-9999-4999-8999-999999999999';
 const roots: string[] = [];
 
 afterEach(async () => {
@@ -35,6 +36,7 @@ async function setup(stored = false) {
     JSON.stringify({
       id: BATCH_ID,
       companyId: COMPANY_ID,
+      channelId: CHANNEL_ID,
       status: 'applied',
       androidBackup: { chunksCompleted: 1 },
     }),
@@ -134,6 +136,37 @@ describe('WhatsAppAndroidMediaImportService', () => {
     expect(storage.write).not.toHaveBeenCalled();
   });
 
+  it('searches pending media from earlier Android imports on the same channel', async () => {
+    const { mediaRoot, prisma, service } = await setup();
+
+    await service.attach({
+      companyId: COMPANY_ID,
+      batchId: BATCH_ID,
+      mediaRoot,
+    });
+
+    expect(prisma.whatsAppImportExternalRef.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          companyId: COMPANY_ID,
+          entityType: 'message',
+          sourceSystem: 'whatsapp-android-backup',
+        }),
+      }),
+    );
+    const referenceQuery =
+      prisma.whatsAppImportExternalRef.findMany.mock.calls[0]?.[0]?.where;
+    expect(referenceQuery).not.toHaveProperty('batchId');
+    expect(prisma.whatsAppMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          companyId: COMPANY_ID,
+          channelId: CHANNEL_ID,
+        }),
+      }),
+    );
+  });
+
   it('links media received in a ZIP uploaded by the administration screen', async () => {
     const { mediaRoot, prisma, storage, service } = await setup();
     const archivePath = join(mediaRoot, 'midias.zip');
@@ -161,6 +194,53 @@ describe('WhatsAppAndroidMediaImportService', () => {
     });
     expect(storage.write).toHaveBeenCalledOnce();
     expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledOnce();
+  });
+
+  it('previews stored, new and still missing media before applying the backup', async () => {
+    const { mediaRoot, service } = await setup();
+    const archivePath = join(mediaRoot, 'previa-midias.zip');
+    const zip = new JSZip();
+    zip.file(
+      'WhatsApp Business/Media/WhatsApp Images/nova.jpg',
+      Buffer.from('imagem-nova'),
+    );
+    const content = await zip.generateAsync({ type: 'nodebuffer' });
+    await writeFile(archivePath, content);
+
+    const result = await service.previewArchive(
+      {
+        archivePath,
+        originalName: 'previa-midias.zip',
+        sizeBytes: content.byteLength,
+      },
+      [
+        {
+          id: 'stored',
+          reference:
+            'whatsapp-android-media://Media%2FWhatsApp%20Images%2Farmazenada.jpg',
+          stored: true,
+        },
+        {
+          id: 'new',
+          reference:
+            'whatsapp-android-media://Media%2FWhatsApp%20Images%2Fnova.jpg',
+          stored: false,
+        },
+        {
+          id: 'missing',
+          reference:
+            'whatsapp-android-media://Media%2FWhatsApp%20Images%2Fausente.jpg',
+          stored: false,
+        },
+      ],
+    );
+
+    expect(result).toEqual({
+      filesTotal: 1,
+      mediaStored: 1,
+      mediaNew: 1,
+      mediaMissing: 1,
+    });
   });
 
   it('links every repeated reference and recovers pathless documents by content hash', async () => {

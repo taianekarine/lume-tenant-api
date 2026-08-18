@@ -25,7 +25,10 @@ import {
   readWhatsAppAndroidBackup,
   type WhatsAppAndroidBackupSummary,
 } from './whatsapp-android-backup';
-import { WhatsAppAndroidMediaImportService } from './whatsapp-android-media-import.service';
+import {
+  type PreviewWhatsAppAndroidMediaReference,
+  WhatsAppAndroidMediaImportService,
+} from './whatsapp-android-media-import.service';
 import { decryptWhatsAppCrypt15 } from './whatsapp-crypt15';
 import {
   DEFAULT_WHATSAPP_EXPORT_LIMITS,
@@ -43,6 +46,7 @@ import {
   type WhatsAppHistoryStateOption,
 } from './whatsapp-export-workbook';
 import { WhatsAppImportService } from './whatsapp-import.service';
+import { importPayloadHash } from './whatsapp-import-package';
 import { emptyImportCounts } from './whatsapp-import.types';
 
 const MANIFEST_VERSION = '1.0';
@@ -106,6 +110,17 @@ interface StoredAndroidBackup {
   conversationsProcessed: number;
   messagesProcessed: number;
   errorMessage: string | null;
+  comparison?: {
+    status: 'processing' | 'ready' | 'failed';
+    messagesExisting: number;
+    messagesNew: number;
+    messagesDivergent: number;
+    mediaStored: number;
+    mediaNew: number;
+    mediaMissing: number;
+    updatedAt: string;
+    errorMessage: string | null;
+  } | null;
   mediaImport?: {
     archivesProcessed: number;
     filesScanned: number;
@@ -345,6 +360,21 @@ function presentManifest(manifest: StoredManifest) {
           conversationsProcessed: android.conversationsProcessed,
           messagesProcessed: android.messagesProcessed,
           errorMessage: android.errorMessage,
+          comparison:
+            android.comparison ??
+            (manifest.status === 'draft'
+              ? {
+                  status: 'processing' as const,
+                  messagesExisting: 0,
+                  messagesNew: 0,
+                  messagesDivergent: 0,
+                  mediaStored: 0,
+                  mediaNew: 0,
+                  mediaMissing: android.summary.mediaReferences,
+                  updatedAt: manifest.updatedAt,
+                  errorMessage: null,
+                }
+              : null),
           mediaImport: android.mediaImport ?? null,
         }
       : null,
@@ -363,6 +393,7 @@ export class WhatsAppHistoryImportService {
   private readonly androidImportChunkMessages: number;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly androidJobs = new Set<string>();
+  private readonly androidPreviewJobs = new Set<string>();
   private readonly androidMediaJobs = new Set<string>();
   private readonly androidMediaJobResumeRequested = new Set<string>();
 
@@ -545,6 +576,7 @@ export class WhatsAppHistoryImportService {
 
   async detail(companyId: string, batchId: string) {
     const manifest = await this.readManifest(companyId, batchId);
+    this.resumeAndroidPreview(manifest);
     this.resumeAndroidMediaJob(manifest);
     return presentManifest(manifest);
   }
@@ -683,10 +715,22 @@ export class WhatsAppHistoryImportService {
           conversationsProcessed: 0,
           messagesProcessed: 0,
           errorMessage: null,
+          comparison: {
+            status: 'processing',
+            messagesExisting: 0,
+            messagesNew: 0,
+            messagesDivergent: 0,
+            mediaStored: 0,
+            mediaNew: 0,
+            mediaMissing: summary.mediaReferences,
+            updatedAt: new Date().toISOString(),
+            errorMessage: null,
+          },
           mediaImport: null,
         };
         manifest.updatedAt = new Date().toISOString();
         await this.writeManifest(manifest);
+        this.resumeAndroidPreview(manifest);
         return presentManifest(manifest);
       } finally {
         await rm(input.temporaryPath, { force: true });
@@ -736,6 +780,13 @@ export class WhatsAppHistoryImportService {
           processingAttached: result.attached,
           errorMessage: null,
         };
+        if (manifest.androidBackup.comparison) {
+          manifest.androidBackup.comparison.mediaStored = result.alreadyStored;
+          manifest.androidBackup.comparison.mediaNew = result.attached;
+          manifest.androidBackup.comparison.mediaMissing = result.missing;
+          manifest.androidBackup.comparison.updatedAt =
+            new Date().toISOString();
+        }
         manifest.updatedAt = new Date().toISOString();
         await this.writeManifest(manifest);
         return presentManifest(manifest);
@@ -1008,12 +1059,36 @@ export class WhatsAppHistoryImportService {
           return currentManifest;
         }
         const shouldStage = currentManifest.status !== 'applied';
+        let stagedMediaPreview:
+          | {
+              filesTotal: number;
+              mediaStored: number;
+              mediaNew: number;
+              mediaMissing: number;
+            }
+          | undefined;
         if (shouldStage) {
-          await this.androidMediaImporter.validateArchive({
-            archivePath: this.androidMediaArchivePath(uploadDirectory),
-            originalName: upload.originalName,
-            sizeBytes: upload.expectedBytes,
-          });
+          const mediaReferencesPath = resolve(
+            this.batchPath(companyId, batchId),
+            'android',
+            'media-preview-references.json',
+          );
+          assertInside(this.batchPath(companyId, batchId), mediaReferencesPath);
+          const references = JSON.parse(
+            await readFile(mediaReferencesPath, 'utf8').catch(() => {
+              throw validationError(
+                'Aguarde a comparação das mensagens antes de concluir o ZIP de mídias.',
+              );
+            }),
+          ) as PreviewWhatsAppAndroidMediaReference[];
+          stagedMediaPreview = await this.androidMediaImporter.previewArchive(
+            {
+              archivePath: this.androidMediaArchivePath(uploadDirectory),
+              originalName: upload.originalName,
+              sizeBytes: upload.expectedBytes,
+            },
+            references,
+          );
         }
         upload.status = shouldStage ? 'ready' : 'processing';
         upload.updatedAt = new Date().toISOString();
@@ -1036,11 +1111,20 @@ export class WhatsAppHistoryImportService {
           uploadBytesReceived: upload.receivedBytes,
           uploadBytesTotal: upload.expectedBytes,
           processingFilesScanned: 0,
-          processingFilesTotal: 0,
+          processingFilesTotal: stagedMediaPreview?.filesTotal ?? 0,
           processingFilesProcessed: 0,
           processingAttached: 0,
           errorMessage: null,
         };
+        if (stagedMediaPreview && currentManifest.androidBackup.comparison) {
+          currentManifest.androidBackup.comparison.mediaStored =
+            stagedMediaPreview.mediaStored;
+          currentManifest.androidBackup.comparison.mediaNew =
+            stagedMediaPreview.mediaNew;
+          currentManifest.androidBackup.comparison.mediaMissing =
+            stagedMediaPreview.mediaMissing;
+          currentManifest.androidBackup.comparison.updatedAt = upload.updatedAt;
+        }
         currentManifest.updatedAt = upload.updatedAt;
         await this.writeManifest(currentManifest);
         return currentManifest;
@@ -1114,6 +1198,23 @@ export class WhatsAppHistoryImportService {
       }
       if (manifest.androidBackup) {
         if (manifest.status === 'applied') return presentManifest(manifest);
+        const comparison = manifest.androidBackup.comparison;
+        if (!comparison || comparison.status === 'processing') {
+          throw validationError(
+            'Aguarde a comparação do backup com as mensagens já incorporadas.',
+          );
+        }
+        if (comparison.status === 'failed') {
+          throw validationError(
+            comparison.errorMessage ||
+              'Não foi possível comparar este backup com o histórico atual.',
+          );
+        }
+        if (comparison.messagesDivergent > 0) {
+          throw validationError(
+            'Existem mensagens com a mesma identificação e conteúdo diferente. Revise as divergências antes de importar.',
+          );
+        }
         if (
           manifest.androidBackup.summary.mediaReferences > 0 &&
           manifest.androidBackup.mediaImport?.status !== 'ready'
@@ -1224,6 +1325,292 @@ export class WhatsAppHistoryImportService {
     });
   }
 
+  private resumeAndroidPreview(manifest: StoredManifest): void {
+    const comparison = manifest.androidBackup?.comparison;
+    if (
+      manifest.status !== 'draft' ||
+      (comparison && comparison.status !== 'processing')
+    ) {
+      return;
+    }
+    const jobKey = `${manifest.companyId}:${manifest.id}`;
+    if (this.androidPreviewJobs.has(jobKey)) return;
+    this.androidPreviewJobs.add(jobKey);
+    setImmediate(() => {
+      void this.runAndroidPreview(manifest.companyId, manifest.id).finally(() =>
+        this.androidPreviewJobs.delete(jobKey),
+      );
+    });
+  }
+
+  private async runAndroidPreview(
+    companyId: string,
+    batchId: string,
+  ): Promise<void> {
+    try {
+      const manifest = await this.readManifest(companyId, batchId);
+      const android = manifest.androidBackup;
+      if (!android) return;
+      const databasePath = resolve(
+        this.batchPath(companyId, batchId),
+        'android',
+        'msgstore.db',
+      );
+      assertInside(this.batchPath(companyId, batchId), databasePath);
+      let chunkMessages = 0;
+      let exports: ParsedWhatsAppExport[] = [];
+      let messagesExisting = 0;
+      let messagesNew = 0;
+      let messagesDivergent = 0;
+      let mediaStored = 0;
+      let mediaReferences = 0;
+      const newMessageIds: string[] = [];
+      const mediaPreviewReferences: PreviewWhatsAppAndroidMediaReference[] = [];
+
+      const flush = async (): Promise<void> => {
+        if (exports.length === 0) return;
+        const chunkRows = exports.flatMap((item) => item.messages);
+        const externalIds = chunkRows.flatMap((message) =>
+          message.externalMessageId ? [message.externalMessageId] : [],
+        );
+        const existingReferences = await this.androidMessageReferences(
+          companyId,
+          externalIds,
+        );
+        const existingByExternalId = new Map(
+          existingReferences.map((reference) => [
+            reference.externalId,
+            reference,
+          ]),
+        );
+        for (const parsed of exports) {
+          for (const message of parsed.messages) {
+            const externalMessageId = message.externalMessageId;
+            if (!externalMessageId) continue;
+            const existing = existingByExternalId.get(externalMessageId);
+            if (!existing) {
+              messagesNew += 1;
+              newMessageIds.push(externalMessageId);
+            } else if (
+              existing.payloadHash ===
+              importPayloadHash({
+                externalConversationId: parsed.externalConversationId,
+                externalMessageId,
+                direction: message.outbound ? 'outbound' : 'inbound',
+                kind: message.kind,
+                occurredAt: message.occurredAt.toISOString(),
+                deliveryStatus: message.outbound ? 'sent' : 'received',
+                text: message.system
+                  ? `[Mensagem do sistema] ${message.text ?? ''}`.trim()
+                  : (message.text ?? null),
+                mediaReference: message.attachment
+                  ? (message.attachment.reference ??
+                    `whatsapp-export://${parsed.archiveId}/${encodeURIComponent(
+                      message.attachment.fileName,
+                    )}`)
+                  : null,
+                actorUsername: null,
+                providerMessageId: null,
+                correlationId: externalMessageId,
+              })
+            ) {
+              messagesExisting += 1;
+            } else {
+              messagesDivergent += 1;
+            }
+            if (message.attachment) mediaReferences += 1;
+          }
+        }
+        const attachmentRows = chunkRows.flatMap((message) => {
+          const reference = message.attachment?.reference;
+          const externalMessageId = message.externalMessageId;
+          if (!reference || !externalMessageId) return [];
+          const internalId = message.externalMessageId
+            ? existingByExternalId.get(message.externalMessageId)?.internalId
+            : undefined;
+          return [{ externalMessageId, internalId, reference }];
+        });
+        const mediaInternalIds = attachmentRows.flatMap((item) =>
+          item.internalId ? [item.internalId] : [],
+        );
+        const storedInternalIds = new Set<string>();
+        for (
+          let offset = 0;
+          offset < mediaInternalIds.length;
+          offset += EXTERNAL_REFERENCE_CHUNK_SIZE
+        ) {
+          const stored = await this.prisma.whatsAppMessage.findMany({
+            where: {
+              companyId,
+              channelId: manifest.channelId,
+              id: {
+                in: mediaInternalIds.slice(
+                  offset,
+                  offset + EXTERNAL_REFERENCE_CHUNK_SIZE,
+                ),
+              },
+              mediaStorageKey: { not: null },
+            },
+            select: { id: true },
+          });
+          stored.forEach((message) => storedInternalIds.add(message.id));
+        }
+        mediaStored += storedInternalIds.size;
+        mediaPreviewReferences.push(
+          ...attachmentRows.map((item) => ({
+            id: item.externalMessageId,
+            reference: item.reference,
+            stored: item.internalId
+              ? storedInternalIds.has(item.internalId)
+              : false,
+          })),
+        );
+        exports = [];
+        chunkMessages = 0;
+      };
+
+      for (const item of readWhatsAppAndroidBackup(databasePath, {
+        departmentCode: android.departmentCode,
+        state: android.state,
+        ownerUsername: android.ownerUsername,
+      })) {
+        for (
+          let offset = 0;
+          offset < item.parsed.messages.length;
+          offset += this.androidImportChunkMessages
+        ) {
+          const messages = item.parsed.messages.slice(
+            offset,
+            offset + this.androidImportChunkMessages,
+          );
+          if (
+            chunkMessages > 0 &&
+            chunkMessages + messages.length > this.androidImportChunkMessages
+          ) {
+            await flush();
+          }
+          exports.push({
+            ...item.parsed,
+            messages,
+            messageCount: messages.length,
+            attachmentCount: messages.filter((message) => message.attachment)
+              .length,
+            missingAttachmentCount: messages.filter(
+              (message) => message.attachment,
+            ).length,
+            startedAt: messages[0]?.occurredAt ?? null,
+            endedAt: messages.at(-1)?.occurredAt ?? null,
+          });
+          chunkMessages += messages.length;
+          if (
+            offset + this.androidImportChunkMessages <
+            item.parsed.messages.length
+          ) {
+            await flush();
+          }
+        }
+      }
+      await flush();
+      const newIdsPath = resolve(
+        this.batchPath(companyId, batchId),
+        'android',
+        'new-message-ids.json',
+      );
+      assertInside(this.batchPath(companyId, batchId), newIdsPath);
+      await writeFile(newIdsPath, JSON.stringify(newMessageIds), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      const mediaReferencesPath = resolve(
+        this.batchPath(companyId, batchId),
+        'android',
+        'media-preview-references.json',
+      );
+      assertInside(this.batchPath(companyId, batchId), mediaReferencesPath);
+      await writeFile(
+        mediaReferencesPath,
+        JSON.stringify(mediaPreviewReferences),
+        { encoding: 'utf8', mode: 0o600 },
+      );
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const current = await this.readManifest(companyId, batchId);
+        if (!current.androidBackup || current.status !== 'draft') return;
+        const now = new Date().toISOString();
+        current.androidBackup.comparison = {
+          status: 'ready',
+          messagesExisting,
+          messagesNew,
+          messagesDivergent,
+          mediaStored,
+          mediaNew: 0,
+          mediaMissing: Math.max(0, mediaReferences - mediaStored),
+          updatedAt: now,
+          errorMessage: null,
+        };
+        current.updatedAt = now;
+        await this.writeManifest(current);
+      });
+    } catch (error) {
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const manifest = await this.readManifest(companyId, batchId);
+        if (!manifest.androidBackup || manifest.status !== 'draft') return;
+        const now = new Date().toISOString();
+        manifest.androidBackup.comparison = {
+          status: 'failed',
+          messagesExisting: 0,
+          messagesNew: 0,
+          messagesDivergent: 0,
+          mediaStored: 0,
+          mediaNew: 0,
+          mediaMissing: manifest.androidBackup.summary.mediaReferences,
+          updatedAt: now,
+          errorMessage: (error instanceof Error
+            ? error.message
+            : 'Não foi possível comparar este backup.'
+          ).slice(0, 1_000),
+        };
+        manifest.updatedAt = now;
+        await this.writeManifest(manifest);
+      }).catch(() => undefined);
+    }
+  }
+
+  private async androidMessageReferences(
+    companyId: string,
+    externalIds: readonly string[],
+  ): Promise<
+    { externalId: string; internalId: string; payloadHash: string | null }[]
+  > {
+    const references: {
+      externalId: string;
+      internalId: string;
+      payloadHash: string | null;
+    }[] = [];
+    for (
+      let offset = 0;
+      offset < externalIds.length;
+      offset += EXTERNAL_REFERENCE_CHUNK_SIZE
+    ) {
+      references.push(
+        ...(await this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId,
+            entityType: 'message',
+            sourceSystem: 'whatsapp-android-backup',
+            externalId: {
+              in: externalIds.slice(
+                offset,
+                offset + EXTERNAL_REFERENCE_CHUNK_SIZE,
+              ),
+            },
+          },
+          select: { externalId: true, internalId: true, payloadHash: true },
+        })),
+      );
+    }
+    return references;
+  }
+
   private async runAndroidImport(
     companyId: string,
     batchId: string,
@@ -1242,8 +1629,18 @@ export class WhatsAppHistoryImportService {
       );
       assertInside(this.batchPath(companyId, batchId), databasePath);
       const importer = new WhatsAppImportService(this.prisma, this.root);
+      const newIdsPath = resolve(
+        this.batchPath(companyId, batchId),
+        'android',
+        'new-message-ids.json',
+      );
+      assertInside(this.batchPath(companyId, batchId), newIdsPath);
+      const newMessageIds = new Set(
+        JSON.parse(await readFile(newIdsPath, 'utf8')) as string[],
+      );
       let chunkIndex = 0;
       let chunkMessages = 0;
+      let examinedMessages = 0;
       let exports: ParsedWhatsAppExport[] = [];
       let mappings: WhatsAppHistoryConversationMapping[] = [];
       const processedPhones = new Set<string>();
@@ -1299,7 +1696,7 @@ export class WhatsAppHistoryImportService {
         }
         android.chunksCompleted = chunkIndex;
         android.conversationsProcessed = processedPhones.size;
-        android.messagesProcessed += generated.messageCount;
+        android.messagesProcessed = examinedMessages;
         manifest.updatedAt = new Date().toISOString();
         await this.writeManifest(manifest);
         exports = [];
@@ -1318,10 +1715,17 @@ export class WhatsAppHistoryImportService {
           offset < item.parsed.messages.length;
           offset += this.androidImportChunkMessages
         ) {
-          const messages = item.parsed.messages.slice(
+          const sourceMessages = item.parsed.messages.slice(
             offset,
             offset + this.androidImportChunkMessages,
           );
+          examinedMessages += sourceMessages.length;
+          const messages = sourceMessages.filter((message) =>
+            message.externalMessageId
+              ? newMessageIds.has(message.externalMessageId)
+              : false,
+          );
+          if (messages.length === 0) continue;
           if (
             chunkMessages > 0 &&
             chunkMessages + messages.length > this.androidImportChunkMessages
@@ -1352,7 +1756,8 @@ export class WhatsAppHistoryImportService {
         }
       }
       await flush();
-      if (chunkIndex < 1) {
+      android.messagesProcessed = android.summary.directMessages;
+      if (chunkIndex < 1 && newMessageIds.size > 0) {
         throw validationError(
           'Nenhuma mensagem anterior à data de corte foi encontrada.',
         );
@@ -1873,6 +2278,12 @@ export class WhatsAppHistoryImportService {
           processingAttached: result.attached,
           errorMessage: null,
         };
+        if (manifest.androidBackup.comparison) {
+          manifest.androidBackup.comparison.mediaStored = result.alreadyStored;
+          manifest.androidBackup.comparison.mediaNew = result.attached;
+          manifest.androidBackup.comparison.mediaMissing = result.missing;
+          manifest.androidBackup.comparison.updatedAt = now;
+        }
         manifest.updatedAt = now;
         await this.writeManifest(manifest);
       });

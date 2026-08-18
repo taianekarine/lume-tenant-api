@@ -371,6 +371,26 @@ function externalConversationId(phone: string): string {
     .slice(0, 40)}`;
 }
 
+function externalMessageId(row: AndroidMessageRow): string {
+  const keyId = row.keyId?.trim();
+  const identity = createHash('sha256');
+  if (keyId) {
+    identity.update('whatsapp-key-id');
+    identity.update('\0');
+    identity.update(keyId);
+  } else {
+    // Backups antigos podem não possuir key_id. Nesse caso, a identidade
+    // continua determinística, mas evita depender do id interno do chat, que
+    // pode mudar quando o WhatsApp recria o banco em um backup posterior.
+    identity.update('android-fallback');
+    identity.update('\0');
+    identity.update(normalizeWhatsAppPhone(row.phone));
+    identity.update('\0');
+    identity.update(String(row.messageId));
+  }
+  return `android-message-${identity.digest('hex').slice(0, 40)}`;
+}
+
 function toMessage(
   row: AndroidMessageRow,
   index: number,
@@ -394,12 +414,7 @@ function toMessage(
   const wallClockAt = wallClockInSaoPaulo(row.timestamp);
   return {
     index,
-    externalMessageId: `android-message-${createHash('sha256')
-      .update(String(row.chatId))
-      .update('\0')
-      .update(row.keyId ?? String(row.messageId))
-      .digest('hex')
-      .slice(0, 40)}`,
+    externalMessageId: externalMessageId(row),
     outbound: row.fromMe === 1,
     senderName: row.fromMe === 1 ? ANDROID_BACKUP_COMPANY_SENDER : row.phone,
     occurredAt: new Date(row.timestamp),

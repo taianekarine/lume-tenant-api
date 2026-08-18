@@ -20,8 +20,9 @@ const PAGE_SIZE = 2_000;
 interface AndroidManifest {
   id: string;
   companyId: string;
+  channelId: string;
   status: string;
-  androidBackup?: { chunksCompleted?: number } | null;
+  androidBackup?: object | null;
 }
 
 interface CandidateMessage {
@@ -75,6 +76,19 @@ export interface AttachWhatsAppAndroidMediaResult {
   skippedOversize: number;
 }
 
+export interface PreviewWhatsAppAndroidMediaReference {
+  id: string;
+  reference: string;
+  stored: boolean;
+}
+
+export interface PreviewWhatsAppAndroidMediaResult {
+  filesTotal: number;
+  mediaStored: number;
+  mediaNew: number;
+  mediaMissing: number;
+}
+
 function finiteConfig(
   config: ConfigService,
   key: string,
@@ -90,21 +104,6 @@ function assertUuid(value: string, label: string): void {
   if (!UUID_PATTERN.test(value)) {
     throw validationError(`${label} deve ser um UUID válido.`);
   }
-}
-
-function deterministicChildBatchId(
-  parentBatchId: string,
-  index: number,
-): string {
-  const value = createHash('sha256')
-    .update(
-      ['whatsapp-android-import', parentBatchId, String(index)].join('\0'),
-    )
-    .digest('hex');
-  return `${value.slice(0, 8)}-${value.slice(8, 12)}-4${value.slice(
-    13,
-    16,
-  )}-8${value.slice(17, 20)}-${value.slice(20, 32)}`;
 }
 
 function mediaReference(value: Prisma.JsonValue | null): string | null {
@@ -497,6 +496,70 @@ export class WhatsAppAndroidMediaImportService {
     }
   }
 
+  async previewArchive(
+    input: ValidateWhatsAppAndroidMediaArchiveInput,
+    references: readonly PreviewWhatsAppAndroidMediaReference[],
+  ): Promise<PreviewWhatsAppAndroidMediaResult> {
+    const { filesTotal } = await this.validateArchive(input);
+    const uniqueReferences = new Map(
+      references
+        .filter((item) =>
+          item.reference.startsWith('whatsapp-android-media://'),
+        )
+        .map((item) => [item.id, item]),
+    );
+    const pending = [...uniqueReferences.values()].filter(
+      (item) => !item.stored,
+    );
+    const byPath = new Map<string, PreviewWhatsAppAndroidMediaReference[]>();
+    const byBaseName = new Map<
+      string,
+      PreviewWhatsAppAndroidMediaReference[]
+    >();
+    for (const item of pending) {
+      const decoded = decodedReference(item.reference);
+      const path = canonicalMediaPath(decoded);
+      const name = basename(normalizedPath(decoded));
+      byPath.set(path, [...(byPath.get(path) ?? []), item]);
+      byBaseName.set(name, [...(byBaseName.get(name) ?? []), item]);
+    }
+
+    const matched = new Set<string>();
+    let archive: ZipFile | null = null;
+    try {
+      archive = await openZip(resolve(input.archivePath));
+      for await (const entry of zipEntries(archive)) {
+        if (entry.fileName.endsWith('/')) continue;
+        const exact = (
+          byPath.get(canonicalMediaPath(entry.fileName)) ?? []
+        ).filter((item) => !matched.has(item.id));
+        if (exact.length > 0) {
+          exact.forEach((item) => matched.add(item.id));
+          continue;
+        }
+        const fallback = (
+          byBaseName.get(basename(normalizedPath(entry.fileName))) ?? []
+        ).filter((item) => !matched.has(item.id));
+        if (fallback.length === 1) matched.add(fallback[0].id);
+      }
+    } finally {
+      archive?.close();
+    }
+
+    const mediaStored = [...uniqueReferences.values()].filter(
+      (item) => item.stored,
+    ).length;
+    return {
+      filesTotal,
+      mediaStored,
+      mediaNew: matched.size,
+      mediaMissing: Math.max(
+        0,
+        uniqueReferences.size - mediaStored - matched.size,
+      ),
+    };
+  }
+
   async attachArchive(
     input: AttachWhatsAppAndroidMediaArchiveInput,
   ): Promise<AttachWhatsAppAndroidMediaResult> {
@@ -741,17 +804,13 @@ export class WhatsAppAndroidMediaImportService {
       manifest.id !== batchId ||
       manifest.companyId !== companyId ||
       manifest.status !== 'applied' ||
-      !manifest.androidBackup?.chunksCompleted
+      !manifest.androidBackup
     ) {
       throw validationError(
         'O lote Android precisa estar aplicado antes de vincular mídias.',
       );
     }
 
-    const batchIds = Array.from(
-      { length: manifest.androidBackup.chunksCompleted },
-      (_, index) => deterministicChildBatchId(batchId, index + 1),
-    );
     const candidates: CandidateMessage[] = [];
     let cursor: string | undefined;
     let alreadyStored = 0;
@@ -759,7 +818,6 @@ export class WhatsAppAndroidMediaImportService {
       const references = await this.prisma.whatsAppImportExternalRef.findMany({
         where: {
           companyId,
-          batchId: { in: batchIds },
           entityType: 'message',
           sourceSystem: WHATSAPP_ANDROID_BACKUP_SOURCE_SYSTEM,
         },
@@ -773,6 +831,7 @@ export class WhatsAppAndroidMediaImportService {
       const messages = await this.prisma.whatsAppMessage.findMany({
         where: {
           companyId,
+          channelId: manifest.channelId,
           id: { in: references.map((reference) => reference.internalId) },
         },
         select: {
