@@ -59,14 +59,26 @@ mídias pendentes e itens excluídos. A situação final e o departamento são
 escolhidos explicitamente. A aplicação ocorre em segundo plano, em blocos
 determinísticos, e pode ser retomada sem duplicar mensagens.
 
+Por padrão, cada bloco contém até 10.000 mensagens e quatro conversas
+independentes são aplicadas em paralelo. Os valores podem ser ajustados por
+`WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES` e
+`WHATSAPP_IMPORT_APPLY_CONCURRENCY` (máximo 8), conforme a capacidade do banco
+de dados da instalação.
+
 O banco guarda referências de mídia, mas não fotos, áudios, vídeos e documentos
 reproduzíveis. Enquanto a pasta `Media` não for carregada, essas mensagens são
 visíveis no histórico com mídia indisponível; a vinculação dos arquivos é uma
 etapa independente e idempotente.
 
-Para dezenas de milhares de arquivos, copie a pasta para um volume privado da
-VPS com `rsync` ou ferramenta equivalente. Depois execute, dentro do diretório
-da Tenant API:
+A tela apresenta a etapa **Vincular mídias** após concluir as mensagens. Nela é
+possível selecionar um ou vários ZIPs contendo `WhatsApp/Media` ou
+`WhatsApp Business/Media`. Os arquivos são enviados e processados um por vez;
+interrupções podem ser retomadas sem regravar mídias já vinculadas.
+
+`Backups.zip` não é um arquivo de mídias: ele contém bancos auxiliares
+criptografados do Android. Para dezenas de milhares de arquivos, também é
+possível copiar a pasta `Media` para um volume privado da VPS com `rsync` e
+executar, dentro do diretório da Tenant API:
 
 ```bash
 npm run whatsapp:android-media:attach:prod -- \

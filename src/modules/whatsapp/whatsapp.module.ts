@@ -21,6 +21,7 @@ import { WhatsAppAutomationEventStore } from '../../infra/integrations/whatsapp/
 import { OpenAiCompatibleWhatsAppConversationAgent } from '../../infra/integrations/whatsapp-ai/openai-compatible-whatsapp-conversation-agent';
 import { WhatsAppRetentionService } from '../../infra/retention/whatsapp-retention.service';
 import { WhatsAppHistoryImportService } from '../../infra/imports/whatsapp-history-import.service';
+import { WhatsAppAndroidMediaImportService } from '../../infra/imports/whatsapp-android-media-import.service';
 import { FileSystemWhatsAppMediaStorage } from '../../infra/storage/file-system-whatsapp-media.storage';
 import { EvolutionWebhookController } from './evolution-webhook.controller';
 import { NotificationsController } from './notifications.controller';
@@ -53,6 +54,7 @@ import { WhatsAppHistoryImportController } from './whatsapp-history-import.contr
     WhatsAppAutomationEventStore,
     WhatsAppAutomationDispatcher,
     WhatsAppRetentionService,
+    WhatsAppAndroidMediaImportService,
     WhatsAppHistoryImportService,
     {
       provide: EnsureWhatsAppConversationUseCase,

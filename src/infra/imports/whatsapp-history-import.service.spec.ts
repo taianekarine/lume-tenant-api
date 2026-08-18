@@ -48,6 +48,9 @@ async function setup() {
     read: vi.fn(),
     delete: vi.fn(),
   };
+  const androidMediaImporter = {
+    attachArchive: vi.fn(),
+  };
   return {
     root,
     prisma,
@@ -55,6 +58,7 @@ async function setup() {
     service: new WhatsAppHistoryImportService(
       prisma as never,
       mediaStorage,
+      androidMediaImporter as never,
       config as never,
     ),
   };

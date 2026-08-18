@@ -55,6 +55,7 @@ const UUID_PATTERN =
 const IMPORT_BATCH_LEASE_MS = 5 * 60 * 1_000;
 const IMPORT_TRANSACTION_MAX_WAIT_MS = 10_000;
 const IMPORT_TRANSACTION_TIMEOUT_MS = 120_000;
+const IMPORT_CREATE_MANY_CHUNK_SIZE = 500;
 
 const DEPARTMENT_TO_PRISMA: Record<string, DepartmentCode> = {
   commercial: DepartmentCode.COMMERCIAL,
@@ -187,6 +188,58 @@ interface AppliedConversationResult {
   contactId: string;
   messageCount: number;
   documentCount: number;
+}
+
+function groupByConversation<T extends { externalConversationId: string }>(
+  rows: readonly T[],
+): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const current = grouped.get(row.externalConversationId);
+    if (current) current.push(row);
+    else grouped.set(row.externalConversationId, [row]);
+  }
+  return grouped;
+}
+
+function chunks<T>(rows: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let offset = 0; offset < rows.length; offset += size) {
+    result.push(rows.slice(offset, offset + size));
+  }
+  return result;
+}
+
+async function mapWithConcurrency<T, R>(
+  rows: readonly T[],
+  concurrency: number,
+  handler: (row: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(rows.length);
+  let nextIndex = 0;
+  let firstError: unknown;
+  const workers = Array.from(
+    { length: Math.min(concurrency, Math.max(1, rows.length)) },
+    async () => {
+      while (firstError === undefined) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= rows.length) return;
+        try {
+          results[index] = await handler(rows[index], index);
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  if (firstError !== undefined) {
+    throw firstError instanceof Error
+      ? firstError
+      : new Error('Falha desconhecida ao aplicar uma conversa.');
+  }
+  return results;
 }
 
 function normalizeUsername(value: string): string {
@@ -467,6 +520,17 @@ function sameDistribution(
 }
 
 export class WhatsAppImportService {
+  private readonly applyConcurrency = Math.min(
+    8,
+    Math.max(
+      1,
+      Number.parseInt(
+        process.env.WHATSAPP_IMPORT_APPLY_CONCURRENCY ?? '4',
+        10,
+      ) || 4,
+    ),
+  );
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly importsRoot = resolve(
@@ -2091,7 +2155,16 @@ export class WhatsAppImportService {
     }
     const prepared = await this.prepare(input);
     if (!prepared.report.valid) {
-      const error = new Error('O dry-run encontrou erros; apply bloqueado.');
+      const details = prepared.report.issues
+        .filter((issue) => issue.severity === 'error')
+        .slice(0, 3)
+        .map((issue) => issue.message.trim())
+        .filter(Boolean)
+        .join(' ');
+      const error = new Error(
+        details ||
+          'A validação encontrou dados inválidos; importação bloqueada.',
+      );
       Object.assign(error, { report: prepared.report });
       throw error;
     }
@@ -2231,64 +2304,88 @@ export class WhatsAppImportService {
       );
       incrementImportCount(appliedCounts.byRequestStatus, row.requestStatus);
     }
+    const messagesByConversation = groupByConversation(
+      prepared.package.messages,
+    );
+    for (const messages of messagesByConversation.values()) {
+      messages.sort(
+        (left, right) => left.occurredAt.getTime() - right.occurredAt.getTime(),
+      );
+    }
+    const documentsByConversation = groupByConversation(
+      prepared.package.documents,
+    );
     try {
-      for (const row of upserts) {
-        const renewed = await this.prisma.whatsAppImportBatch.updateMany({
-          where: {
-            id: input.batchId,
-            status: WhatsAppImportBatchStatus.APPLYING,
-            claimId,
-          },
-          data: {
-            leaseUntil: new Date(Date.now() + IMPORT_BATCH_LEASE_MS),
-          },
-        });
-        if (renewed.count !== 1) {
-          throw new Error('O lease do lote foi perdido para outra execução.');
-        }
-        const existingRecord =
-          await this.prisma.whatsAppImportRecord.findUnique({
-            where: {
-              batchId_sourceSystem_externalConversationId: {
-                batchId: input.batchId,
-                sourceSystem: row.sourceSystem,
-                externalConversationId: row.externalConversationId,
+      let leaseRenewedAt = Date.now();
+      let renewalPromise: Promise<void> | null = null;
+      const renewLeaseIfNeeded = async () => {
+        if (Date.now() - leaseRenewedAt < 60_000) return;
+        if (!renewalPromise) {
+          renewalPromise = (async () => {
+            const renewed = await this.prisma.whatsAppImportBatch.updateMany({
+              where: {
+                id: input.batchId,
+                status: WhatsAppImportBatchStatus.APPLYING,
+                claimId,
               },
-            },
+              data: {
+                leaseUntil: new Date(Date.now() + IMPORT_BATCH_LEASE_MS),
+              },
+            });
+            if (renewed.count !== 1) {
+              throw new Error(
+                'O lease do lote foi perdido para outra execução.',
+              );
+            }
+            leaseRenewedAt = Date.now();
+          })().finally(() => {
+            renewalPromise = null;
           });
-        if (existingRecord?.status === WhatsAppImportRecordStatus.APPLIED) {
-          continue;
         }
-        const messages = prepared.package.messages
-          .filter(
-            (message) =>
-              message.externalConversationId === row.externalConversationId,
-          )
-          .sort(
-            (left, right) =>
-              left.occurredAt.getTime() - right.occurredAt.getTime(),
+        await renewalPromise;
+      };
+      const results = await mapWithConcurrency(
+        upserts,
+        this.applyConcurrency,
+        async (row): Promise<AppliedConversationResult | null> => {
+          await renewLeaseIfNeeded();
+          const existingRecord =
+            await this.prisma.whatsAppImportRecord.findUnique({
+              where: {
+                batchId_sourceSystem_externalConversationId: {
+                  batchId: input.batchId,
+                  sourceSystem: row.sourceSystem,
+                  externalConversationId: row.externalConversationId,
+                },
+              },
+            });
+          if (existingRecord?.status === WhatsAppImportRecordStatus.APPLIED) {
+            return null;
+          }
+          const messages =
+            messagesByConversation.get(row.externalConversationId) ?? [];
+          const documents =
+            documentsByConversation.get(row.externalConversationId) ?? [];
+          return this.prisma.$transaction(
+            (transaction) =>
+              this.applyConversation(
+                transaction,
+                input,
+                actor.id,
+                row,
+                messages,
+                documents,
+              ),
+            {
+              isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+              maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+              timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
+            },
           );
-        const documents = prepared.package.documents.filter(
-          (document) =>
-            document.externalConversationId === row.externalConversationId,
-        );
-        const result = await this.prisma.$transaction(
-          (transaction) =>
-            this.applyConversation(
-              transaction,
-              input,
-              actor.id,
-              claimId,
-              row,
-              messages,
-              documents,
-            ),
-          {
-            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-            maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
-            timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
-          },
-        );
+        },
+      );
+      for (const result of results) {
+        if (!result) continue;
         if (result.created) {
           appliedCounts.conversationsToCreate += 1;
         } else {
@@ -2513,24 +2610,10 @@ export class WhatsAppImportService {
     transaction: Transaction,
     input: WhatsAppImportApplyInput,
     actorUserId: string,
-    claimId: string,
     row: ConversationImportRow,
     messages: MessageImportRow[],
     documents: DocumentImportRow[],
   ): Promise<AppliedConversationResult> {
-    const lease = await transaction.whatsAppImportBatch.updateMany({
-      where: {
-        id: input.batchId,
-        status: WhatsAppImportBatchStatus.APPLYING,
-        claimId,
-      },
-      data: {
-        leaseUntil: new Date(Date.now() + IMPORT_BATCH_LEASE_MS),
-      },
-    });
-    if (lease.count !== 1) {
-      throw new Error('O lease do lote foi perdido antes da transação.');
-    }
     const created: CreatedResourceIds = {
       messageIds: [],
       documentIds: [],
@@ -2835,35 +2918,87 @@ export class WhatsAppImportService {
       }
     }
 
-    let messageCount = 0;
-    for (const message of messages) {
-      const payloadHash = this.messagePayloadHash(message);
-      const existingMessageRef =
-        await transaction.whatsAppImportExternalRef.findUnique({
-          where: {
-            companyId_entityType_sourceSystem_externalId: {
+    const externalMessageIds = messages.map(
+      (message) => message.externalMessageId,
+    );
+    const existingMessageRefs =
+      externalMessageIds.length === 0
+        ? []
+        : await transaction.whatsAppImportExternalRef.findMany({
+            where: {
               companyId: input.companyId,
               entityType: 'message',
               sourceSystem: row.sourceSystem,
-              externalId: message.externalMessageId,
+              externalId: { in: externalMessageIds },
             },
-          },
-        });
+            select: {
+              id: true,
+              externalId: true,
+              internalId: true,
+              payloadHash: true,
+            },
+          });
+    const existingMessageRefByExternalId = new Map(
+      existingMessageRefs.map((reference) => [reference.externalId, reference]),
+    );
+    const referencedMessages =
+      existingMessageRefs.length === 0
+        ? []
+        : await transaction.whatsAppMessage.findMany({
+            where: {
+              companyId: input.companyId,
+              id: {
+                in: existingMessageRefs.map(
+                  (reference) => reference.internalId,
+                ),
+              },
+            },
+            select: { id: true, conversationId: true },
+          });
+    const referencedMessageById = new Map(
+      referencedMessages.map((message) => [message.id, message]),
+    );
+    const actorUsernames = Array.from(
+      new Set(
+        messages
+          .map((message) => message.actorUsername)
+          .filter((value): value is string => Boolean(value))
+          .map(normalizeUsername),
+      ),
+    );
+    const messageActors =
+      actorUsernames.length === 0
+        ? []
+        : await transaction.user.findMany({
+            where: {
+              companyId: input.companyId,
+              usernameNormalized: { in: actorUsernames },
+              isActive: true,
+              status: UserAccountStatus.ACTIVE,
+            },
+            select: { id: true, usernameNormalized: true },
+          });
+    const messageActorByUsername = new Map(
+      messageActors.map((actor) => [actor.usernameNormalized, actor.id]),
+    );
+    const messagesToCreate: Prisma.WhatsAppMessageCreateManyInput[] = [];
+    const messageReferencesToCreate: Prisma.WhatsAppImportExternalRefCreateManyInput[] =
+      [];
+
+    for (const message of messages) {
+      const payloadHash = this.messagePayloadHash(message);
+      const existingMessageRef = existingMessageRefByExternalId.get(
+        message.externalMessageId,
+      );
       if (existingMessageRef) {
         if (existingMessageRef.payloadHash !== payloadHash) {
           throw new Error(
             `Mensagem ${message.externalMessageId} diverge da carga anterior.`,
           );
         }
-        const referencedMessage = await transaction.whatsAppMessage.findUnique({
-          where: {
-            id_companyId: {
-              id: existingMessageRef.internalId,
-              companyId: input.companyId,
-            },
-          },
-          select: { conversationId: true },
-        });
+        const referencedMessage = referencedMessageById.get(
+          existingMessageRef.internalId,
+        );
         if (
           !referencedMessage ||
           referencedMessage.conversationId !== conversation.id
@@ -2874,56 +3009,67 @@ export class WhatsAppImportService {
         }
         continue;
       }
-      const messageActor = message.actorUsername
-        ? await transaction.user.findFirstOrThrow({
-            where: {
-              companyId: input.companyId,
-              usernameNormalized: normalizeUsername(message.actorUsername),
-              isActive: true,
-              status: UserAccountStatus.ACTIVE,
-            },
-            select: { id: true },
-          })
+      const actorUserId = message.actorUsername
+        ? messageActorByUsername.get(normalizeUsername(message.actorUsername))
         : undefined;
+      if (message.actorUsername && !actorUserId) {
+        throw new Error(
+          `O usuário ${message.actorUsername} não está disponível para a mensagem importada.`,
+        );
+      }
+      const messageId = randomUUID();
+      const referenceId = randomUUID();
       const mediaMetadata = importedMediaMetadata(
         message.mediaReference,
         message.correlationId,
       );
-      const persisted = await transaction.whatsAppMessage.create({
-        data: {
-          companyId: input.companyId,
-          conversationId: conversation.id,
-          channelId: input.channelId,
-          contactId: contact.id,
-          actorUserId: messageActor?.id,
-          providerMessageId: message.providerMessageId,
-          direction: DIRECTION_TO_PRISMA[message.direction],
-          deliveryStatus: DELIVERY_TO_PRISMA[message.deliveryStatus],
-          kind: KIND_TO_PRISMA[message.kind],
-          text: message.text,
-          ...(mediaMetadata !== undefined ? { media: mediaMetadata } : {}),
-          correlationId: deterministicCorrelation(
-            row.sourceSystem,
-            message.externalMessageId,
-          ),
-          occurredAt: message.occurredAt,
-        },
+      messagesToCreate.push({
+        id: messageId,
+        companyId: input.companyId,
+        conversationId: conversation.id,
+        channelId: input.channelId,
+        contactId: contact.id,
+        actorUserId,
+        providerMessageId: message.providerMessageId,
+        direction: DIRECTION_TO_PRISMA[message.direction],
+        deliveryStatus: DELIVERY_TO_PRISMA[message.deliveryStatus],
+        kind: KIND_TO_PRISMA[message.kind],
+        text: message.text,
+        ...(mediaMetadata !== undefined ? { media: mediaMetadata } : {}),
+        correlationId: deterministicCorrelation(
+          row.sourceSystem,
+          message.externalMessageId,
+        ),
+        occurredAt: message.occurredAt,
       });
-      const reference = await transaction.whatsAppImportExternalRef.create({
-        data: {
-          batchId: input.batchId,
-          companyId: input.companyId,
-          entityType: 'message',
-          sourceSystem: row.sourceSystem,
-          externalId: message.externalMessageId,
-          internalId: persisted.id,
-          payloadHash,
-        },
+      messageReferencesToCreate.push({
+        id: referenceId,
+        batchId: input.batchId,
+        companyId: input.companyId,
+        entityType: 'message',
+        sourceSystem: row.sourceSystem,
+        externalId: message.externalMessageId,
+        internalId: messageId,
+        payloadHash,
       });
-      created.messageIds.push(persisted.id);
-      created.externalRefIds.push(reference.id);
-      messageCount += 1;
+      created.messageIds.push(messageId);
+      created.externalRefIds.push(referenceId);
     }
+    for (const messageChunk of chunks(
+      messagesToCreate,
+      IMPORT_CREATE_MANY_CHUNK_SIZE,
+    )) {
+      await transaction.whatsAppMessage.createMany({ data: messageChunk });
+    }
+    for (const referenceChunk of chunks(
+      messageReferencesToCreate,
+      IMPORT_CREATE_MANY_CHUNK_SIZE,
+    )) {
+      await transaction.whatsAppImportExternalRef.createMany({
+        data: referenceChunk,
+      });
+    }
+    const messageCount = messagesToCreate.length;
 
     let documentCount = 0;
     for (const document of documents) {
