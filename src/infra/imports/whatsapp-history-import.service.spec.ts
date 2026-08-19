@@ -7,7 +7,10 @@ import JSZip from 'jszip';
 
 import { parseWhatsAppExportArchive } from './whatsapp-export-parser';
 import { identifyWhatsAppExportMessages } from './whatsapp-export-workbook';
-import { WhatsAppHistoryImportService } from './whatsapp-history-import.service';
+import {
+  ensureImportWorkbookArtifact,
+  WhatsAppHistoryImportService,
+} from './whatsapp-history-import.service';
 
 const COMPANY_ID = '11111111-1111-4111-8111-111111111111';
 const ACTOR_ID = '22222222-2222-4222-8222-222222222222';
@@ -82,6 +85,22 @@ async function setup() {
 }
 
 describe('WhatsAppHistoryImportService.create', () => {
+  it('preserva o artefato do bloco em uma retomada da importação', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lume-whatsapp-chunk-'));
+    roots.push(root);
+    const workbookPath = join(root, 'chunk.xlsx');
+    const generate = vi
+      .fn<() => Promise<Buffer>>()
+      .mockResolvedValueOnce(Buffer.from('primeira-versao'))
+      .mockResolvedValueOnce(Buffer.from('segunda-versao'));
+
+    await ensureImportWorkbookArtifact(workbookPath, generate);
+    await ensureImportWorkbookArtifact(workbookPath, generate);
+
+    expect(await readFile(workbookPath, 'utf8')).toBe('primeira-versao');
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
   it('cria um manifesto privado e reutiliza o mesmo comando de forma idempotente', async () => {
     const { root, service } = await setup();
     const input = {
@@ -411,6 +430,15 @@ describe('WhatsAppHistoryImportService media retention', () => {
         status: 'failed',
         errorMessage: 'falha transitória',
       });
+    });
+    await vi.waitFor(() => {
+      expect(
+        (
+          service as unknown as {
+            androidMediaJobs: ReadonlySet<string>;
+          }
+        ).androidMediaJobs.size,
+      ).toBe(0);
     });
 
     const retry = await service.createAndroidMediaUpload(

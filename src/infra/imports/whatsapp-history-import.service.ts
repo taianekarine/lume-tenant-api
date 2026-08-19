@@ -66,6 +66,18 @@ const IMPORT_DEPARTMENTS = new Set([
 ]);
 const EXTERNAL_REFERENCE_CHUNK_SIZE = 250;
 
+export async function ensureImportWorkbookArtifact(
+  workbookPath: string,
+  generate: () => Promise<Buffer>,
+): Promise<void> {
+  try {
+    if ((await stat(workbookPath)).isFile()) return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  await writeFile(workbookPath, await generate(), { mode: 0o600 });
+}
+
 const MESSAGE_KIND_BY_EXPORT = {
   text: MessageKind.TEXT,
   image: MessageKind.IMAGE,
@@ -1654,11 +1666,6 @@ export class WhatsAppHistoryImportService {
 
       const flush = async (): Promise<void> => {
         if (exports.length === 0) return;
-        const generated = await createWhatsAppImportWorkbook(
-          exports,
-          mappings,
-          manifest.channelPhoneE164,
-        );
         chunkIndex += 1;
         const packagePath = resolve(
           this.batchPath(companyId, batchId),
@@ -1668,11 +1675,18 @@ export class WhatsAppHistoryImportService {
         );
         assertInside(this.batchPath(companyId, batchId), packagePath);
         await mkdir(packagePath, { recursive: true });
-        await writeFile(
-          resolve(packagePath, 'modelo-importacao-atendimentos-whatsapp.xlsx'),
-          generated.content,
-          { mode: 0o600 },
+        const workbookPath = resolve(
+          packagePath,
+          'modelo-importacao-atendimentos-whatsapp.xlsx',
         );
+        await ensureImportWorkbookArtifact(workbookPath, async () => {
+          const generated = await createWhatsAppImportWorkbook(
+            exports,
+            mappings,
+            manifest.channelPhoneE164,
+          );
+          return generated.content;
+        });
         const childBatchId = deterministicUuid(
           'whatsapp-android-import',
           batchId,

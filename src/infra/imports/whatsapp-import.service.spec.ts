@@ -538,4 +538,48 @@ describe('WhatsAppImportService.apply', () => {
       timeout: 120_000,
     });
   });
+
+  it('repete conflitos transitórios antes de marcar o lote como falho', async () => {
+    const fixture = await packageWithRows({
+      conversations: [conversationRow('legacy-write-conflict')],
+    });
+    const prisma = readOnlyPrisma(vi.fn());
+    const transactionError = Object.assign(new Error('conflito transitório'), {
+      cause: { kind: 'TransactionWriteConflict' },
+    });
+    const transaction = vi.fn().mockRejectedValue(transactionError);
+    Object.assign(prisma.user, {
+      findFirstOrThrow: vi.fn().mockResolvedValue({ id: 'actor' }),
+    });
+    Object.assign(prisma.integrationOutbox, {
+      count: vi.fn().mockResolvedValue(0),
+    });
+    Object.assign(prisma, {
+      whatsAppImportBatch: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      whatsAppImportRecord: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+      $transaction: transaction,
+    });
+    const service = new WhatsAppImportService(prisma, fixture.root);
+
+    await expect(
+      service.apply({
+        companyId: testCompanyId,
+        channelId: testChannelId,
+        actorUsername: 'admin',
+        batchName: 'batch-write-conflict',
+        batchId: '00000000-0000-4000-8000-000000000005',
+        packagePath: fixture.packagePath,
+        cutoffAt: new Date('2026-07-30T00:00:00.000Z'),
+        confirmation: 'APPLY:00000000-0000-4000-8000-000000000005',
+      }),
+    ).rejects.toBe(transactionError);
+
+    expect(transaction).toHaveBeenCalledTimes(5);
+  });
 });

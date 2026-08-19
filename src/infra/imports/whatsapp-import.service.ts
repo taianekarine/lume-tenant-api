@@ -57,6 +57,8 @@ const UUID_PATTERN =
 const IMPORT_BATCH_LEASE_MS = 5 * 60 * 1_000;
 const IMPORT_TRANSACTION_MAX_WAIT_MS = 10_000;
 const IMPORT_TRANSACTION_TIMEOUT_MS = 120_000;
+const IMPORT_TRANSACTION_MAX_ATTEMPTS = 5;
+const IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS = 25;
 const IMPORT_CREATE_MANY_CHUNK_SIZE = 500;
 
 const DEPARTMENT_TO_PRISMA: Record<string, DepartmentCode> = {
@@ -242,6 +244,42 @@ async function mapWithConcurrency<T, R>(
       : new Error('Falha desconhecida ao aplicar uma conversa.');
   }
   return results;
+}
+
+function isTransactionWriteConflict(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  if ('code' in error && error.code === 'P2034') return true;
+  if (!('cause' in error)) return false;
+  const cause = error.cause;
+  return (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'kind' in cause &&
+    cause.kind === 'TransactionWriteConflict'
+  );
+}
+
+async function retryTransactionWriteConflict<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        !isTransactionWriteConflict(error) ||
+        attempt >= IMPORT_TRANSACTION_MAX_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+        ),
+      );
+    }
+  }
 }
 
 function normalizeUsername(value: string): string {
@@ -2198,7 +2236,7 @@ export class WhatsAppImportService {
         existingBatch.cutoffAt.getTime() !== input.cutoffAt.getTime()
       ) {
         throw new Error(
-          'O batchId já existe com tenant, canal, nome, corte ou planilha diferente.',
+          'Esta tentativa foi retomada com conteúdo diferente do processamento anterior. Reinicie a importação para preservar a integridade dos dados.',
         );
       }
       if (existingBatch.status === WhatsAppImportBatchStatus.ROLLED_BACK) {
@@ -2368,21 +2406,23 @@ export class WhatsAppImportService {
             messagesByConversation.get(row.externalConversationId) ?? [];
           const documents =
             documentsByConversation.get(row.externalConversationId) ?? [];
-          return this.prisma.$transaction(
-            (transaction) =>
-              this.applyConversation(
-                transaction,
-                input,
-                actor.id,
-                row,
-                messages,
-                documents,
-              ),
-            {
-              isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-              maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
-              timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
-            },
+          return retryTransactionWriteConflict(() =>
+            this.prisma.$transaction(
+              (transaction) =>
+                this.applyConversation(
+                  transaction,
+                  input,
+                  actor.id,
+                  row,
+                  messages,
+                  documents,
+                ),
+              {
+                isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+                maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+                timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
+              },
+            ),
           );
         },
       );
