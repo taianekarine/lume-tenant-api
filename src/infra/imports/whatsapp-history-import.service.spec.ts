@@ -28,6 +28,8 @@ afterEach(async () => {
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'lume-whatsapp-history-'));
   roots.push(root);
+  const durableStates = new Map<string, Record<string, unknown>>();
+  const uploadSessions = new Map<string, Record<string, unknown>>();
   const prisma = {
     whatsAppChannel: {
       findFirst: vi.fn().mockResolvedValue({
@@ -44,6 +46,92 @@ async function setup() {
     whatsAppMessage: {
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    whatsAppHistoryImportState: {
+      count: vi.fn(async () => durableStates.size),
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string } }) =>
+          durableStates.get(where.id) ?? null,
+      ),
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) => {
+          const rows = [...durableStates.values()].filter((row) => {
+            if (where.id && row.id !== where.id) return false;
+            if (where.companyId && row.companyId !== where.companyId)
+              return false;
+            if (where.actorUserId && row.actorUserId !== where.actorUserId)
+              return false;
+            return true;
+          });
+          return rows.at(-1) ?? null;
+        },
+      ),
+      findMany: vi.fn(
+        async ({ where }: { where?: Record<string, unknown> } = {}) =>
+          [...durableStates.values()].filter(
+            (row) => !where?.companyId || row.companyId === where.companyId,
+          ),
+      ),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        }) => {
+          const current = durableStates.get(where.id);
+          const next = current ? { ...current, ...update } : { ...create };
+          durableStates.set(where.id, next);
+          return next;
+        },
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          const row =
+            typeof where.id === 'string'
+              ? durableStates.get(where.id)
+              : undefined;
+          if (!row) return { count: 0 };
+          durableStates.set(where.id as string, { ...row, ...data });
+          return { count: 1 };
+        },
+      ),
+    },
+    whatsAppHistoryUploadSession: {
+      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        where.id ? (uploadSessions.get(where.id) ?? null) : null,
+      ),
+      findMany: vi.fn().mockResolvedValue([]),
+      aggregate: vi.fn().mockResolvedValue({ _sum: { expectedBytes: 0n } }),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        }) => {
+          const current = uploadSessions.get(where.id);
+          const next = current ? { ...current, ...update } : { ...create };
+          uploadSessions.set(where.id, next);
+          return next;
+        },
+      ),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    whatsAppHistoryImportAuditEvent: {
+      create: vi.fn().mockResolvedValue({}),
     },
   };
   const config = {
@@ -86,6 +174,8 @@ async function setup() {
       config as never,
     ),
     androidMediaImporter,
+    durableStates,
+    uploadSessions,
   };
 }
 
@@ -203,7 +293,7 @@ describe('WhatsAppHistoryImportService.create', () => {
   });
 
   it('lista somente backups Android concluídos do tenant', async () => {
-    const { root, service } = await setup();
+    const { root, service, durableStates } = await setup();
     const input = {
       companyId: COMPANY_ID,
       actorUserId: ACTOR_ID,
@@ -255,6 +345,8 @@ describe('WhatsAppHistoryImportService.create', () => {
       mediaImport: null,
     };
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
 
     const result = await service.appliedAndroidBackups(COMPANY_ID);
 
@@ -275,7 +367,7 @@ describe('WhatsAppHistoryImportService.create', () => {
 
 describe('WhatsAppHistoryImportService divergence review', () => {
   it('lista as diferenças e registra a decisão humana antes de aplicar', async () => {
-    const { root, service } = await setup();
+    const { root, service, durableStates } = await setup();
     await service.create({
       companyId: COMPANY_ID,
       actorUserId: ACTOR_ID,
@@ -331,6 +423,8 @@ describe('WhatsAppHistoryImportService divergence review', () => {
       mediaImport: null,
     };
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
     const androidPath = join(batchPath, 'android');
     await mkdir(androidPath, { recursive: true });
     const message = (externalMessageId: string) => ({
@@ -505,6 +599,104 @@ describe('WhatsAppHistoryImportService divergence review', () => {
 });
 
 describe('WhatsAppHistoryImportService media retention', () => {
+  it('rejeita um bloco corrompido antes de alterar o arquivo temporário', async () => {
+    const { root, service } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const started = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        originalName: 'msgstore.db.crypt15',
+        sizeBytes: 64,
+        fingerprint: 'a'.repeat(64),
+      },
+    );
+
+    await expect(
+      service.addAndroidDatabaseUploadChunk(COMPANY_ID, COMMAND_ID, {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: Buffer.alloc(32, 1),
+        checksumSha256: '0'.repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    const stored = await readFile(
+      join(
+        root,
+        'history-batches',
+        COMPANY_ID,
+        COMMAND_ID,
+        'android-database-uploads',
+        started.uploadId,
+        'database.crypt15',
+      ),
+    );
+    expect(stored).toHaveLength(0);
+  });
+
+  it('cancela o lote e remove os arquivos temporários sem permitir retomada', async () => {
+    const { root, service, durableStates } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const started = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        originalName: 'msgstore.db.crypt15',
+        sizeBytes: 64,
+        fingerprint: 'b'.repeat(64),
+      },
+    );
+    await service.addAndroidDatabaseUploadChunk(COMPANY_ID, COMMAND_ID, {
+      uploadId: started.uploadId,
+      offsetBytes: 0,
+      content: Buffer.alloc(32, 1),
+    });
+
+    const cancelled = await service.cancel(
+      COMPANY_ID,
+      COMMAND_ID,
+      ACTOR_ID,
+      'admin',
+    );
+
+    expect(cancelled).toMatchObject({ status: 'cancelled' });
+    expect(durableStates.get(COMMAND_ID)).toMatchObject({
+      status: 'cancelled',
+    });
+    await expect(
+      readFile(
+        join(
+          root,
+          'history-batches',
+          COMPANY_ID,
+          COMMAND_ID,
+          'android-database-uploads',
+          started.uploadId,
+          'database.crypt15',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      service.createAndroidDatabaseUpload(COMPANY_ID, COMMAND_ID, {
+        originalName: 'msgstore.db.crypt15',
+        sizeBytes: 64,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
   it('recebe o banco Android em blocos idempotentes e retoma do último byte confirmado', async () => {
     const { root, service } = await setup();
     await service.create({
@@ -577,7 +769,8 @@ describe('WhatsAppHistoryImportService media retention', () => {
   });
 
   it('prepara o ZIP de mídias antes de liberar a aplicação do backup Android', async () => {
-    const { root, service, androidMediaImporter } = await setup();
+    const { root, service, androidMediaImporter, durableStates } =
+      await setup();
     await service.create({
       companyId: COMPANY_ID,
       actorUserId: ACTOR_ID,
@@ -637,6 +830,8 @@ describe('WhatsAppHistoryImportService media retention', () => {
       mediaImport: null,
     };
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
     const androidPath = join(
       root,
       'history-batches',
@@ -691,7 +886,8 @@ describe('WhatsAppHistoryImportService media retention', () => {
   });
 
   it('recebe um ZIP grande em blocos retomáveis e processa em segundo plano', async () => {
-    const { root, service, androidMediaImporter } = await setup();
+    const { root, service, androidMediaImporter, durableStates } =
+      await setup();
     await service.create({
       companyId: COMPANY_ID,
       actorUserId: ACTOR_ID,
@@ -742,6 +938,8 @@ describe('WhatsAppHistoryImportService media retention', () => {
       mediaImport: null,
     };
     await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
 
     const started = await service.createAndroidMediaUpload(
       COMPANY_ID,

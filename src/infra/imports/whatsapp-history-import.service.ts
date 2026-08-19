@@ -1,24 +1,32 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { Dirent } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import {
   appendFile,
   mkdir,
   open,
   readFile,
-  readdir,
   rename,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import JSZip from 'jszip';
 
 import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
-import { notFound, validationError } from '../../core/errors/app-error';
+import {
+  conflict,
+  notFound,
+  validationError,
+} from '../../core/errors/app-error';
 import {
   DeliveryStatus,
   MessageDirection,
@@ -246,6 +254,8 @@ interface StoredAndroidMediaUpload {
   status: 'uploading' | 'ready' | 'processing' | 'completed' | 'failed';
   createdAt: string;
   updatedAt: string;
+  fingerprint?: string;
+  checksumSha256?: string | null;
 }
 
 interface StoredAndroidDatabaseUpload {
@@ -260,6 +270,15 @@ interface StoredAndroidDatabaseUpload {
   createdAt: string;
   updatedAt: string;
   errorMessage: string | null;
+  fingerprint?: string;
+  checksumSha256?: string | null;
+}
+
+export interface StoredImportError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  occurredAt: string;
 }
 
 interface StoredManifest {
@@ -271,7 +290,12 @@ interface StoredManifest {
   channelPhoneE164: string;
   actorUserId: string;
   actorUsername: string;
-  status: 'draft' | 'applying' | 'applied' | 'failed';
+  status: 'draft' | 'applying' | 'applied' | 'failed' | 'cancelled' | 'expired';
+  phase?: string | null;
+  heartbeatAt?: string | null;
+  attempts?: number;
+  lastError?: StoredImportError | null;
+  cancelledAt?: string | null;
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
@@ -312,12 +336,15 @@ export interface AddWhatsAppAndroidBackupInput {
 export interface CreateWhatsAppAndroidDatabaseUploadInput {
   originalName: string;
   sizeBytes: number;
+  fingerprint?: string;
+  checksumSha256?: string | null;
 }
 
 export interface AddWhatsAppAndroidDatabaseChunkInput {
   uploadId: string;
   offsetBytes: number;
   content: Buffer;
+  checksumSha256?: string | null;
 }
 
 export interface AddWhatsAppAndroidMediaArchiveInput {
@@ -329,12 +356,15 @@ export interface AddWhatsAppAndroidMediaArchiveInput {
 export interface CreateWhatsAppAndroidMediaUploadInput {
   originalName: string;
   sizeBytes: number;
+  fingerprint?: string;
+  checksumSha256?: string | null;
 }
 
 export interface AddWhatsAppAndroidMediaChunkInput {
   uploadId: string;
   offsetBytes: number;
   content: Buffer;
+  checksumSha256?: string | null;
 }
 
 function presentAndroidMediaUpload(upload: StoredAndroidMediaUpload) {
@@ -345,6 +375,8 @@ function presentAndroidMediaUpload(upload: StoredAndroidMediaUpload) {
     totalBytes: upload.expectedBytes,
     uploadedBytes: upload.receivedBytes,
     status: upload.status,
+    fingerprint: upload.fingerprint ?? null,
+    checksumSha256: upload.checksumSha256 ?? null,
   };
 }
 
@@ -356,6 +388,97 @@ function presentAndroidDatabaseUpload(upload: StoredAndroidDatabaseUpload) {
     totalBytes: upload.expectedBytes,
     uploadedBytes: upload.receivedBytes,
     status: upload.status,
+    fingerprint: upload.fingerprint ?? null,
+    checksumSha256: upload.checksumSha256 ?? null,
+  };
+}
+
+function normalizedSha256(value: string | null | undefined): string | null {
+  if (value == null || value.trim() === '') return null;
+  const normalized = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalized)) {
+    throw validationError('O checksum SHA-256 informado é inválido.');
+  }
+  return normalized;
+}
+
+function uploadFingerprint(
+  kind: 'android-database' | 'android-media',
+  fileName: string,
+  sizeBytes: number,
+  supplied?: string,
+): string {
+  const normalized = supplied?.trim().toLowerCase();
+  if (normalized && /^[0-9a-f]{64}$/.test(normalized)) return normalized;
+  if (normalized)
+    throw validationError('A identificação do arquivo é inválida.');
+  return createHash('sha256')
+    .update(`${kind}\0${fileName}\0${sizeBytes}`)
+    .digest('hex');
+}
+
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest('hex');
+}
+
+function importPhase(manifest: StoredManifest): string {
+  if (manifest.status === 'cancelled' || manifest.status === 'expired') {
+    return manifest.status;
+  }
+  if (manifest.androidDatabaseUpload?.status === 'uploading') {
+    return 'uploading-database';
+  }
+  if (manifest.androidDatabaseUpload?.status === 'processing') {
+    return 'validating-database';
+  }
+  const media = manifest.androidBackup?.mediaImport;
+  if (media?.status === 'uploading') return 'uploading-media';
+  if (media?.status === 'processing')
+    return `processing-media:${media.phase ?? 'scanning'}`;
+  if (manifest.status === 'applying') return 'applying-messages';
+  if (manifest.androidBackup?.comparison?.status === 'processing') {
+    return 'comparing-messages';
+  }
+  if ((manifest.androidBackup?.comparison?.messagesDivergentPending ?? 0) > 0) {
+    return 'awaiting-divergence-resolution';
+  }
+  if (manifest.status === 'draft' && manifest.androidBackup) return 'ready';
+  return manifest.status;
+}
+
+function importProgress(manifest: StoredManifest): {
+  total: number;
+  processed: number;
+  failed: number;
+} {
+  const android = manifest.androidBackup;
+  if (!android) {
+    return {
+      total: manifest.archives.length,
+      processed: manifest.archives.length,
+      failed: 0,
+    };
+  }
+  if (android.mediaImport?.status === 'processing') {
+    return {
+      total:
+        android.mediaImport.processingFilesTotal ??
+        android.summary.mediaReferences,
+      processed: android.mediaImport.processingFilesProcessed ?? 0,
+      failed: android.mediaImport.skippedOversize,
+    };
+  }
+  return {
+    total: android.summary.directMessages,
+    processed: Math.min(
+      android.messagesProcessed,
+      android.summary.directMessages,
+    ),
+    failed: 0,
   };
 }
 
@@ -545,6 +668,7 @@ function presentAndroidDivergence(item: StoredAndroidDivergence) {
 }
 
 function presentManifest(manifest: StoredManifest) {
+  const progress = importProgress(manifest);
   const archives = manifest.archives.map((archive) => {
     const issues = mappingIssues(archive, archive.mapping);
     return {
@@ -581,6 +705,16 @@ function presentManifest(manifest: StoredManifest) {
     updatedAt: manifest.updatedAt,
     expiresAt: manifest.expiresAt,
     appliedAt: manifest.appliedAt,
+    operation: {
+      phase: manifest.phase ?? importPhase(manifest),
+      heartbeatAt: manifest.heartbeatAt ?? manifest.updatedAt,
+      attempts: manifest.attempts ?? 0,
+      total: progress.total,
+      processed: progress.processed,
+      failed: progress.failed,
+      lastError: manifest.lastError ?? null,
+      cancelledAt: manifest.cancelledAt ?? null,
+    },
     totals: {
       archives: android ? android.summary.directConversations : archives.length,
       ready: android
@@ -645,7 +779,9 @@ function presentManifest(manifest: StoredManifest) {
 }
 
 @Injectable()
-export class WhatsAppHistoryImportService {
+export class WhatsAppHistoryImportService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(WhatsAppHistoryImportService.name);
   private readonly root: string;
   private readonly limits: WhatsAppExportParserLimits;
@@ -656,11 +792,18 @@ export class WhatsAppHistoryImportService {
   private readonly androidDatabaseUploadChunkBytes: number;
   private readonly androidMediaUploadChunkBytes: number;
   private readonly androidImportChunkMessages: number;
+  private readonly instanceId = randomUUID();
+  private readonly leaseMs: number;
+  private readonly cleanupIntervalMs: number;
+  private readonly maximumActiveBatchesPerTenant: number;
+  private readonly maximumTemporaryBytesPerTenant: number;
+  private cleanupTimer: NodeJS.Timeout | null = null;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly androidJobs = new Set<string>();
   private readonly androidPreviewJobs = new Set<string>();
   private readonly androidMediaJobs = new Set<string>();
   private readonly androidMediaJobResumeRequested = new Set<string>();
+  private readonly cancelledBatches = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -721,6 +864,27 @@ export class WhatsAppHistoryImportService {
         finiteConfig(config, 'WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES', 25_000),
       ),
     );
+    this.leaseMs =
+      finiteConfig(config, 'WHATSAPP_HISTORY_IMPORT_LEASE_SECONDS', 900) *
+      1_000;
+    this.cleanupIntervalMs =
+      finiteConfig(
+        config,
+        'WHATSAPP_HISTORY_IMPORT_CLEANUP_INTERVAL_MINUTES',
+        15,
+      ) *
+      60 *
+      1_000;
+    this.maximumActiveBatchesPerTenant = finiteConfig(
+      config,
+      'WHATSAPP_HISTORY_IMPORT_MAX_ACTIVE_BATCHES_PER_TENANT',
+      2,
+    );
+    this.maximumTemporaryBytesPerTenant = finiteConfig(
+      config,
+      'WHATSAPP_HISTORY_IMPORT_MAX_TEMPORARY_BYTES_PER_TENANT',
+      16 * 1_073_741_824,
+    );
     this.limits = {
       maximumArchiveBytes: finiteConfig(
         config,
@@ -745,6 +909,39 @@ export class WhatsAppHistoryImportService {
     };
   }
 
+  onModuleInit(): void {
+    setImmediate(() => {
+      void this.runLifecycleTask('recovery', () => this.recoverDurableJobs());
+      void this.runLifecycleTask('cleanup', () => this.cleanupExpiredImports());
+    });
+    this.cleanupTimer = setInterval(() => {
+      void this.runLifecycleTask('cleanup', () => this.cleanupExpiredImports());
+    }, this.cleanupIntervalMs);
+    this.cleanupTimer.unref();
+  }
+
+  onModuleDestroy(): void {
+    if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    this.cleanupTimer = null;
+  }
+
+  private async runLifecycleTask(
+    task: 'recovery' | 'cleanup',
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await operation();
+    } catch (error) {
+      this.logger.error(
+        JSON.stringify({
+          event: 'whatsapp_history_import_lifecycle_failed',
+          task,
+          error: error instanceof Error ? error.message : 'Erro desconhecido',
+        }),
+      );
+    }
+  }
+
   async channels(companyId: string) {
     return this.prisma.whatsAppChannel.findMany({
       where: { companyId, enabled: true },
@@ -755,27 +952,13 @@ export class WhatsAppHistoryImportService {
 
   async appliedAndroidBackups(companyId: string) {
     assertUuid(companyId, 'companyId');
-    const companyDirectory = resolve(this.root, 'history-batches', companyId);
-    assertInside(this.root, companyDirectory);
-
-    let entries: Dirent<string>[];
-    try {
-      entries = await readdir(companyDirectory, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-      throw error;
-    }
-
-    const manifests = await Promise.all(
-      entries
-        .filter((entry) => entry.isDirectory() && UUID_PATTERN.test(entry.name))
-        .map(async (entry) => {
-          try {
-            return await this.readManifest(companyId, entry.name);
-          } catch {
-            return null;
-          }
-        }),
+    const durable = await this.prisma.whatsAppHistoryImportState.findMany({
+      where: { companyId, status: { in: ['completed', 'processing-media'] } },
+      orderBy: { updatedAt: 'desc' },
+      select: { manifest: true },
+    });
+    const manifests = durable.map(
+      (row) => row.manifest as unknown as StoredManifest,
     );
 
     const applied = manifests
@@ -794,12 +977,93 @@ export class WhatsAppHistoryImportService {
     return applied.map(presentManifest);
   }
 
+  async active(companyId: string, actorUserId: string) {
+    assertUuid(companyId, 'companyId');
+    assertUuid(actorUserId, 'actorUserId');
+    const row = await this.prisma.whatsAppHistoryImportState.findFirst({
+      where: {
+        companyId,
+        actorUserId,
+        status: {
+          notIn: ['completed', 'cancelled', 'expired'],
+        },
+        expiresAt: { gt: new Date() },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { manifest: true },
+    });
+    if (!row) return null;
+    const manifest = row.manifest as unknown as StoredManifest;
+    this.resumeAndroidPreview(manifest);
+    this.resumeAndroidImport(manifest);
+    this.resumeAndroidMediaJob(manifest);
+    return presentManifest(manifest);
+  }
+
+  async uploadStatus(companyId: string, batchId: string, uploadId: string) {
+    assertUuid(companyId, 'companyId');
+    assertUuid(batchId, 'batchId');
+    assertUuid(uploadId, 'uploadId');
+    const upload = await this.prisma.whatsAppHistoryUploadSession.findFirst({
+      where: { id: uploadId, batchId, companyId },
+    });
+    if (!upload) throw notFound('Envio');
+    return {
+      schemaVersion: '1.0',
+      uploadId: upload.id,
+      kind: upload.kind,
+      fileName: upload.fileName,
+      totalBytes: Number(upload.expectedBytes),
+      uploadedBytes: Number(upload.uploadedBytes),
+      fingerprint: upload.fingerprint,
+      checksumSha256: upload.checksumSha256,
+      status: upload.status,
+      errorCode: upload.errorCode,
+      errorMessage: upload.errorMessage,
+      updatedAt: upload.updatedAt.toISOString(),
+      expiresAt: upload.expiresAt.toISOString(),
+    };
+  }
+
   async create(input: CreateWhatsAppHistoryImportInput) {
     assertUuid(input.commandId, 'commandId');
     assertUuid(input.channelId, 'channelId');
     return this.withBatchLock(
       `${input.companyId}:${input.commandId}`,
       async () => {
+        const recoverable =
+          await this.prisma.whatsAppHistoryImportState.findFirst({
+            where: {
+              companyId: input.companyId,
+              actorUserId: input.actorUserId,
+              status: { notIn: ['completed', 'cancelled', 'expired'] },
+              expiresAt: { gt: new Date() },
+            },
+            orderBy: { updatedAt: 'desc' },
+            select: { id: true, channelId: true, manifest: true },
+          });
+        if (recoverable && recoverable.id !== input.commandId) {
+          if (recoverable.channelId === input.channelId) {
+            return presentManifest(
+              recoverable.manifest as unknown as StoredManifest,
+            );
+          }
+          throw conflict(
+            'Já existe uma importação recuperável. Retome ou cancele o lote atual antes de iniciar outro.',
+          );
+        }
+        const activeCount = await this.prisma.whatsAppHistoryImportState.count({
+          where: {
+            companyId: input.companyId,
+            status: { notIn: ['completed', 'cancelled', 'expired'] },
+            expiresAt: { gt: new Date() },
+          },
+        });
+        if (activeCount >= this.maximumActiveBatchesPerTenant) {
+          throw conflict(
+            'O limite de importações simultâneas desta empresa foi atingido.',
+          );
+        }
         const channel = await this.prisma.whatsAppChannel.findFirst({
           where: {
             id: input.channelId,
@@ -837,6 +1101,11 @@ export class WhatsAppHistoryImportService {
           actorUserId: input.actorUserId,
           actorUsername: input.actorUsername,
           status: 'draft',
+          phase: 'draft',
+          heartbeatAt: now.toISOString(),
+          attempts: 0,
+          lastError: null,
+          cancelledAt: null,
           createdAt: now.toISOString(),
           updatedAt: now.toISOString(),
           expiresAt: new Date(now.getTime() + this.retentionMs).toISOString(),
@@ -1122,12 +1391,23 @@ export class WhatsAppHistoryImportService {
       ) {
         throw validationError('O arquivo msgstore possui tamanho inválido.');
       }
+      const fingerprint = uploadFingerprint(
+        'android-database',
+        originalName,
+        input.sizeBytes,
+        input.fingerprint,
+      );
+      const checksumSha256 = normalizedSha256(input.checksumSha256);
 
       const current = manifest.androidDatabaseUpload;
       if (
         current &&
-        current.originalName === originalName &&
-        current.expectedBytes === input.sizeBytes &&
+        (current.fingerprint ??
+          uploadFingerprint(
+            'android-database',
+            current.originalName,
+            current.expectedBytes,
+          )) === fingerprint &&
         ['uploading', 'failed'].includes(current.status)
       ) {
         const uploadDirectory = this.androidDatabaseUploadPath(
@@ -1162,6 +1442,7 @@ export class WhatsAppHistoryImportService {
           'Já existe um backup Android sendo enviado ou processado neste lote.',
         );
       }
+      await this.assertTemporaryQuota(companyId, input.sizeBytes);
       if (current) {
         await rm(
           this.androidDatabaseUploadPath(companyId, batchId, current.uploadId),
@@ -1183,6 +1464,8 @@ export class WhatsAppHistoryImportService {
         createdAt: now,
         updatedAt: now,
         errorMessage: null,
+        fingerprint,
+        checksumSha256,
       };
       const uploadDirectory = this.androidDatabaseUploadPath(
         companyId,
@@ -1221,6 +1504,16 @@ export class WhatsAppHistoryImportService {
       ) {
         throw validationError(
           'O bloco enviado possui tamanho ou posição inválida.',
+        );
+      }
+      const chunkChecksum = normalizedSha256(input.checksumSha256);
+      if (
+        chunkChecksum &&
+        createHash('sha256').update(input.content).digest('hex') !==
+          chunkChecksum
+      ) {
+        throw validationError(
+          'O bloco recebido não corresponde ao checksum informado.',
         );
       }
       const manifest = await this.readManifest(companyId, batchId);
@@ -1366,6 +1659,13 @@ export class WhatsAppHistoryImportService {
             `O backup ainda não foi enviado por completo: ${stored.receivedBytes} de ${stored.expectedBytes} bytes.`,
           );
         }
+        const actualChecksum = await sha256File(archivePath);
+        if (stored.checksumSha256 && stored.checksumSha256 !== actualChecksum) {
+          throw validationError(
+            'O arquivo recebido não corresponde ao checksum informado.',
+          );
+        }
+        stored.checksumSha256 = actualChecksum;
         stored.status = 'processing';
         stored.errorMessage = null;
         stored.updatedAt = new Date().toISOString();
@@ -1504,6 +1804,13 @@ export class WhatsAppHistoryImportService {
         );
       }
       const originalName = input.originalName.trim().slice(0, 255);
+      const fingerprint = uploadFingerprint(
+        'android-media',
+        originalName,
+        input.sizeBytes,
+        input.fingerprint,
+      );
+      const checksumSha256 = normalizedSha256(input.checksumSha256);
       if (!originalName.toLocaleLowerCase('pt-BR').endsWith('.zip')) {
         throw validationError('Selecione um arquivo ZIP da pasta Media.');
       }
@@ -1522,7 +1829,6 @@ export class WhatsAppHistoryImportService {
       if (
         current?.status === 'uploading' &&
         current.uploadId &&
-        current.lastArchiveName === originalName &&
         current.uploadBytesTotal === input.sizeBytes
       ) {
         const existingDirectory = this.androidMediaUploadPath(
@@ -1531,15 +1837,16 @@ export class WhatsAppHistoryImportService {
           current.uploadId,
         );
         const existing = await this.readAndroidMediaUpload(existingDirectory);
-        return {
-          ...presentAndroidMediaUpload(existing),
-          chunkSizeBytes: this.androidMediaUploadChunkBytes,
-        };
+        if (existing.fingerprint === fingerprint) {
+          return {
+            ...presentAndroidMediaUpload(existing),
+            chunkSizeBytes: this.androidMediaUploadChunkBytes,
+          };
+        }
       }
       if (
         current?.status === 'failed' &&
         current.uploadId &&
-        current.lastArchiveName === originalName &&
         current.uploadBytesTotal === input.sizeBytes
       ) {
         const existingDirectory = this.androidMediaUploadPath(
@@ -1548,7 +1855,10 @@ export class WhatsAppHistoryImportService {
           current.uploadId,
         );
         const existing = await this.readAndroidMediaUpload(existingDirectory);
-        if (existing.receivedBytes < existing.expectedBytes) {
+        if (
+          existing.fingerprint === fingerprint &&
+          existing.receivedBytes < existing.expectedBytes
+        ) {
           existing.status = 'uploading';
           existing.updatedAt = new Date().toISOString();
           await this.writeAndroidMediaUpload(existingDirectory, existing);
@@ -1559,16 +1869,20 @@ export class WhatsAppHistoryImportService {
           manifest.updatedAt = existing.updatedAt;
           await this.writeManifest(manifest);
         }
-        return {
-          ...presentAndroidMediaUpload(existing),
-          chunkSizeBytes: this.androidMediaUploadChunkBytes,
-        };
+        if (existing.fingerprint === fingerprint) {
+          return {
+            ...presentAndroidMediaUpload(existing),
+            chunkSizeBytes: this.androidMediaUploadChunkBytes,
+          };
+        }
       }
       if (current?.status === 'uploading' || current?.status === 'processing') {
         throw validationError(
           'Já existe um ZIP de mídias sendo enviado ou processado para este backup.',
         );
       }
+
+      await this.assertTemporaryQuota(companyId, input.sizeBytes);
 
       if (
         (current?.status === 'failed' || current?.status === 'ready') &&
@@ -1593,6 +1907,8 @@ export class WhatsAppHistoryImportService {
         status: 'uploading',
         createdAt: now,
         updatedAt: now,
+        fingerprint,
+        checksumSha256,
       };
       const uploadDirectory = this.androidMediaUploadPath(
         companyId,
@@ -1654,6 +1970,16 @@ export class WhatsAppHistoryImportService {
       ) {
         throw validationError(
           'O bloco enviado possui tamanho ou posição inválida.',
+        );
+      }
+      const chunkChecksum = normalizedSha256(input.checksumSha256);
+      if (
+        chunkChecksum &&
+        createHash('sha256').update(input.content).digest('hex') !==
+          chunkChecksum
+      ) {
+        throw validationError(
+          'O bloco recebido não corresponde ao checksum informado.',
         );
       }
       const manifest = await this.readManifest(companyId, batchId);
@@ -1779,6 +2105,14 @@ export class WhatsAppHistoryImportService {
             `O ZIP ainda não foi enviado por completo: ${upload.receivedBytes} de ${upload.expectedBytes} bytes.`,
           );
         }
+        const archivePath = this.androidMediaArchivePath(uploadDirectory);
+        const actualChecksum = await sha256File(archivePath);
+        if (upload.checksumSha256 && upload.checksumSha256 !== actualChecksum) {
+          throw validationError(
+            'O ZIP recebido não corresponde ao checksum informado.',
+          );
+        }
+        upload.checksumSha256 = actualChecksum;
         if (upload.status === 'completed' || upload.status === 'ready') {
           return currentManifest;
         }
@@ -2061,9 +2395,9 @@ export class WhatsAppHistoryImportService {
     if (this.androidPreviewJobs.has(jobKey)) return;
     this.androidPreviewJobs.add(jobKey);
     setImmediate(() => {
-      void this.runAndroidPreview(manifest.companyId, manifest.id).finally(() =>
-        this.androidPreviewJobs.delete(jobKey),
-      );
+      void this.runClaimedJob(manifest.companyId, manifest.id, 'preview', () =>
+        this.runAndroidPreview(manifest.companyId, manifest.id),
+      ).finally(() => this.androidPreviewJobs.delete(jobKey));
     });
   }
 
@@ -2075,9 +2409,9 @@ export class WhatsAppHistoryImportService {
     if (this.androidJobs.has(jobKey)) return;
     this.androidJobs.add(jobKey);
     setImmediate(() => {
-      void this.runAndroidImport(manifest.companyId, manifest.id).finally(() =>
-        this.androidJobs.delete(jobKey),
-      );
+      void this.runClaimedJob(manifest.companyId, manifest.id, 'import', () =>
+        this.runAndroidImport(manifest.companyId, manifest.id),
+      ).finally(() => this.androidJobs.delete(jobKey));
     });
   }
 
@@ -3098,6 +3432,11 @@ export class WhatsAppHistoryImportService {
       mode: 0o600,
     });
     await rename(temporary, destination);
+    await this.persistUploadSession(
+      'android-database',
+      upload,
+      this.androidDatabaseArchivePath(uploadDirectory),
+    );
   }
 
   private androidMediaArchivePath(uploadDirectory: string): string {
@@ -3147,6 +3486,79 @@ export class WhatsAppHistoryImportService {
       mode: 0o600,
     });
     await rename(temporary, destination);
+    await this.persistUploadSession(
+      'android-media',
+      upload,
+      this.androidMediaArchivePath(uploadDirectory),
+    );
+  }
+
+  private async persistUploadSession(
+    kind: 'android-database' | 'android-media',
+    upload: StoredAndroidDatabaseUpload | StoredAndroidMediaUpload,
+    temporaryPath: string,
+  ): Promise<void> {
+    const fingerprint =
+      upload.fingerprint ??
+      uploadFingerprint(kind, upload.originalName, upload.expectedBytes);
+    upload.fingerprint = fingerprint;
+    const completed = upload.status === 'completed';
+    const failed = upload.status === 'failed';
+    await this.prisma.whatsAppHistoryUploadSession.upsert({
+      where: { id: upload.uploadId },
+      create: {
+        id: upload.uploadId,
+        batchId: upload.batchId,
+        companyId: upload.companyId,
+        kind,
+        fileName: upload.originalName,
+        mimeType:
+          kind === 'android-media'
+            ? 'application/zip'
+            : 'application/octet-stream',
+        expectedBytes: BigInt(upload.expectedBytes),
+        uploadedBytes: BigInt(upload.receivedBytes),
+        fingerprint,
+        checksumSha256: upload.checksumSha256 ?? null,
+        temporaryPath,
+        status: upload.status,
+        errorMessage: 'errorMessage' in upload ? upload.errorMessage : null,
+        expiresAt: new Date(Date.now() + this.retentionMs),
+        completedAt: completed ? new Date() : null,
+      },
+      update: {
+        uploadedBytes: BigInt(upload.receivedBytes),
+        checksumSha256: upload.checksumSha256 ?? null,
+        status: upload.status,
+        errorCode: failed ? 'UPLOAD_FAILED' : null,
+        errorMessage: 'errorMessage' in upload ? upload.errorMessage : null,
+        expiresAt: new Date(Date.now() + this.retentionMs),
+        ...(completed ? { completedAt: new Date() } : {}),
+      },
+    });
+  }
+
+  private async assertTemporaryQuota(
+    companyId: string,
+    additionalBytes: number,
+  ): Promise<void> {
+    const usage = await this.prisma.whatsAppHistoryUploadSession.aggregate({
+      where: {
+        companyId,
+        status: { in: ['uploading', 'ready', 'processing', 'failed'] },
+        expiresAt: { gt: new Date() },
+      },
+      _sum: { expectedBytes: true },
+    });
+    const current = usage._sum.expectedBytes ?? 0n;
+    if (
+      current + BigInt(additionalBytes) >
+      BigInt(this.maximumTemporaryBytesPerTenant)
+    ) {
+      throw conflict(
+        'O limite temporário de arquivos desta empresa foi atingido. Cancele uma importação antiga ou tente novamente mais tarde.',
+      );
+    }
   }
 
   private resumeAndroidMediaJob(
@@ -3174,10 +3586,12 @@ export class WhatsAppHistoryImportService {
     }
     this.androidMediaJobs.add(jobKey);
     setImmediate(() => {
-      void this.runAndroidMediaJob(
-        manifest.companyId,
-        manifest.id,
-        mediaImport.uploadId as string,
+      void this.runClaimedJob(manifest.companyId, manifest.id, 'media', () =>
+        this.runAndroidMediaJob(
+          manifest.companyId,
+          manifest.id,
+          mediaImport.uploadId as string,
+        ),
       ).finally(() => {
         this.androidMediaJobs.delete(jobKey);
         if (!this.androidMediaJobResumeRequested.delete(jobKey)) return;
@@ -3376,20 +3790,28 @@ export class WhatsAppHistoryImportService {
     companyId: string,
     batchId: string,
   ): Promise<StoredManifest> {
-    let content: string;
-    try {
-      content = await readFile(this.manifestPath(companyId, batchId), 'utf8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw notFound('Lote de importação');
-      }
-      throw error;
-    }
     let manifest: StoredManifest;
-    try {
-      manifest = JSON.parse(content) as StoredManifest;
-    } catch {
-      throw validationError('O lote de importação está corrompido.');
+    const durable = await this.prisma.whatsAppHistoryImportState.findFirst({
+      where: { id: batchId, companyId },
+      select: { manifest: true },
+    });
+    if (durable) {
+      manifest = durable.manifest as unknown as StoredManifest;
+    } else {
+      let content: string;
+      try {
+        content = await readFile(this.manifestPath(companyId, batchId), 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw notFound('Lote de importação');
+        }
+        throw error;
+      }
+      try {
+        manifest = JSON.parse(content) as StoredManifest;
+      } catch {
+        throw validationError('O lote de importação está corrompido.');
+      }
     }
     if (
       manifest.schemaVersion !== MANIFEST_VERSION ||
@@ -3401,16 +3823,46 @@ export class WhatsAppHistoryImportService {
     }
     manifest.androidBackup ??= null;
     manifest.androidDatabaseUpload ??= null;
+    manifest.phase ??= importPhase(manifest);
+    manifest.heartbeatAt ??= manifest.updatedAt;
+    manifest.attempts ??= 0;
+    manifest.lastError ??= null;
+    manifest.cancelledAt ??= null;
     if (
       new Date(manifest.expiresAt) < new Date() &&
       manifest.status === 'draft'
     ) {
+      manifest.status = 'expired';
+      manifest.phase = 'expired';
+      manifest.updatedAt = new Date().toISOString();
+      await this.persistDurableManifest(manifest);
+      await rm(this.batchPath(companyId, batchId), {
+        recursive: true,
+        force: true,
+      });
       throw validationError('Este lote expirou. Inicie uma nova importação.');
     }
+    if (!durable) await this.persistDurableManifest(manifest);
     return manifest;
   }
 
   private async writeManifest(manifest: StoredManifest): Promise<void> {
+    const cancellationKey = `${manifest.companyId}:${manifest.id}`;
+    const durableState =
+      manifest.status === 'cancelled'
+        ? null
+        : await this.prisma.whatsAppHistoryImportState.findUnique({
+            where: { id: manifest.id },
+            select: { companyId: true, status: true },
+          });
+    if (
+      manifest.status !== 'cancelled' &&
+      (this.cancelledBatches.has(cancellationKey) ||
+        (durableState?.companyId === manifest.companyId &&
+          durableState.status === 'cancelled'))
+    ) {
+      throw conflict('Esta importação foi cancelada.');
+    }
     const directory = this.batchPath(manifest.companyId, manifest.id);
     await mkdir(directory, { recursive: true });
     const destination = this.manifestPath(manifest.companyId, manifest.id);
@@ -3424,6 +3876,434 @@ export class WhatsAppHistoryImportService {
       mode: 0o600,
     });
     await rename(temporary, destination);
+    await this.persistDurableManifest(manifest);
+  }
+
+  private durableStatus(manifest: StoredManifest): string {
+    if (manifest.status === 'applied') {
+      return manifest.androidBackup?.mediaImport?.status === 'processing'
+        ? 'processing-media'
+        : 'completed';
+    }
+    if (manifest.status === 'applying') return 'applying';
+    if (manifest.status === 'failed') return 'failed';
+    if (manifest.status === 'cancelled') return 'cancelled';
+    if (manifest.status === 'expired') return 'expired';
+    const phase = importPhase(manifest);
+    if (phase.startsWith('uploading')) return 'uploading';
+    if (phase.startsWith('validating')) return 'validating';
+    if (phase.startsWith('comparing')) return 'processing';
+    if (phase === 'awaiting-divergence-resolution') return phase;
+    if (phase === 'ready') return 'ready';
+    return 'draft';
+  }
+
+  private async persistDurableManifest(
+    manifest: StoredManifest,
+  ): Promise<void> {
+    const now = new Date();
+    const progress = importProgress(manifest);
+    const phase = importPhase(manifest);
+    manifest.phase = phase;
+    manifest.heartbeatAt = now.toISOString();
+    const durableStatus = this.durableStatus(manifest);
+    const error = manifest.lastError;
+    const finished = ['completed', 'cancelled', 'expired'].includes(
+      durableStatus,
+    );
+    await this.prisma.whatsAppHistoryImportState.upsert({
+      where: { id: manifest.id },
+      create: {
+        id: manifest.id,
+        companyId: manifest.companyId,
+        channelId: manifest.channelId,
+        actorUserId: manifest.actorUserId,
+        status: durableStatus,
+        phase,
+        manifest: manifest as unknown as Prisma.InputJsonValue,
+        total: progress.total,
+        processed: progress.processed,
+        failed: progress.failed,
+        attempts: manifest.attempts ?? 0,
+        heartbeatAt: now,
+        errorCode: error?.code ?? null,
+        errorMessage: error?.message ?? null,
+        errorRetryable: error?.retryable ?? null,
+        errorOccurredAt: error ? new Date(error.occurredAt) : null,
+        expiresAt: new Date(manifest.expiresAt),
+        cancelledAt: manifest.cancelledAt
+          ? new Date(manifest.cancelledAt)
+          : null,
+        finishedAt: finished ? now : null,
+        createdAt: new Date(manifest.createdAt),
+      },
+      update: {
+        channelId: manifest.channelId,
+        actorUserId: manifest.actorUserId,
+        status: durableStatus,
+        phase,
+        manifest: manifest as unknown as Prisma.InputJsonValue,
+        total: progress.total,
+        processed: progress.processed,
+        failed: progress.failed,
+        attempts: manifest.attempts ?? 0,
+        heartbeatAt: now,
+        errorCode: error?.code ?? null,
+        errorMessage: error?.message ?? null,
+        errorRetryable: error?.retryable ?? null,
+        errorOccurredAt: error ? new Date(error.occurredAt) : null,
+        expiresAt: new Date(manifest.expiresAt),
+        cancelledAt: manifest.cancelledAt
+          ? new Date(manifest.cancelledAt)
+          : null,
+        ...(finished ? { finishedAt: now } : {}),
+      },
+    });
+    await this.prisma.whatsAppHistoryImportState.updateMany({
+      where: { id: manifest.id, leaseOwner: this.instanceId },
+      data: {
+        heartbeatAt: now,
+        leaseExpiresAt: new Date(now.getTime() + this.leaseMs),
+      },
+    });
+  }
+
+  private async claimBatch(
+    companyId: string,
+    batchId: string,
+  ): Promise<boolean> {
+    const now = new Date();
+    const claimed = await this.prisma.whatsAppHistoryImportState.updateMany({
+      where: {
+        id: batchId,
+        companyId,
+        status: {
+          notIn: ['completed', 'cancelled', 'expired'],
+        },
+        OR: [
+          { leaseOwner: null },
+          { leaseExpiresAt: null },
+          { leaseExpiresAt: { lt: now } },
+        ],
+      },
+      data: {
+        leaseOwner: this.instanceId,
+        leaseExpiresAt: new Date(now.getTime() + this.leaseMs),
+        heartbeatAt: now,
+        attempts: { increment: 1 },
+      },
+    });
+    return claimed.count === 1;
+  }
+
+  private async releaseBatch(
+    companyId: string,
+    batchId: string,
+  ): Promise<void> {
+    await this.prisma.whatsAppHistoryImportState.updateMany({
+      where: { id: batchId, companyId, leaseOwner: this.instanceId },
+      data: { leaseOwner: null, leaseExpiresAt: null },
+    });
+  }
+
+  private async runClaimedJob(
+    companyId: string,
+    batchId: string,
+    phase: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    if (!(await this.claimBatch(companyId, batchId))) return;
+    const startedAt = Date.now();
+    const heartbeatTimer = setInterval(
+      () => {
+        const now = new Date();
+        void this.prisma.whatsAppHistoryImportState
+          .updateMany({
+            where: { id: batchId, companyId, leaseOwner: this.instanceId },
+            data: {
+              heartbeatAt: now,
+              leaseExpiresAt: new Date(now.getTime() + this.leaseMs),
+            },
+          })
+          .catch(() => undefined);
+      },
+      Math.max(5_000, Math.floor(this.leaseMs / 3)),
+    );
+    heartbeatTimer.unref();
+    this.logger.log(
+      JSON.stringify({
+        event: 'whatsapp_history_import_job_started',
+        companyId,
+        batchId,
+        phase,
+      }),
+    );
+    try {
+      await operation();
+    } finally {
+      clearInterval(heartbeatTimer);
+      await this.releaseBatch(companyId, batchId).catch(() => undefined);
+      const memory = process.memoryUsage();
+      this.logger.log(
+        JSON.stringify({
+          event: 'whatsapp_history_import_job_finished',
+          companyId,
+          batchId,
+          phase,
+          durationMs: Date.now() - startedAt,
+          heapUsedBytes: memory.heapUsed,
+          rssBytes: memory.rss,
+        }),
+      );
+      const current = await this.readManifest(companyId, batchId).catch(
+        () => null,
+      );
+      if (current) {
+        this.resumeAndroidPreview(current);
+        this.resumeAndroidImport(current);
+        this.resumeAndroidMediaJob(current);
+      }
+    }
+  }
+
+  private async recoverDurableJobs(): Promise<void> {
+    const now = new Date();
+    const rows = await this.prisma.whatsAppHistoryImportState.findMany({
+      where: {
+        status: {
+          in: ['validating', 'processing', 'applying', 'processing-media'],
+        },
+        OR: [
+          { leaseOwner: null },
+          { leaseExpiresAt: null },
+          { leaseExpiresAt: { lt: now } },
+        ],
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: 100,
+      select: { manifest: true },
+    });
+    for (const row of rows) {
+      const manifest = row.manifest as unknown as StoredManifest;
+      this.resumeAndroidPreview(manifest);
+      this.resumeAndroidImport(manifest);
+      this.resumeAndroidMediaJob(manifest);
+    }
+    if (rows.length > 0) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'whatsapp_history_import_recovery_scheduled',
+          jobs: rows.length,
+        }),
+      );
+    }
+  }
+
+  private async cleanupExpiredImports(): Promise<void> {
+    const now = new Date();
+    const expired = await this.prisma.whatsAppHistoryImportState.findMany({
+      where: {
+        expiresAt: { lt: now },
+        status: { in: ['draft', 'uploading', 'validating', 'ready', 'failed'] },
+      },
+      take: 100,
+      select: { id: true, companyId: true, manifest: true },
+    });
+    for (const row of expired) {
+      const manifest = row.manifest as unknown as StoredManifest;
+      manifest.status = 'expired';
+      manifest.phase = 'expired';
+      manifest.updatedAt = new Date().toISOString();
+      await this.persistDurableManifest(manifest);
+      await this.prisma.whatsAppHistoryUploadSession.updateMany({
+        where: { companyId: row.companyId, batchId: row.id },
+        data: { status: 'expired' },
+      });
+      await rm(this.batchPath(row.companyId, row.id), {
+        recursive: true,
+        force: true,
+      });
+      await this.audit({
+        companyId: row.companyId,
+        batchId: row.id,
+        action: 'batch.expired',
+        phase: 'retention',
+      });
+    }
+
+    const expiredUploads =
+      await this.prisma.whatsAppHistoryUploadSession.findMany({
+        where: {
+          expiresAt: { lt: now },
+          status: { notIn: ['cancelled', 'expired'] },
+        },
+        take: 200,
+        select: {
+          id: true,
+          batchId: true,
+          companyId: true,
+          temporaryPath: true,
+        },
+      });
+    for (const upload of expiredUploads) {
+      const batchDirectory = this.batchPath(upload.companyId, upload.batchId);
+      const uploadDirectory = dirname(upload.temporaryPath);
+      assertInside(batchDirectory, uploadDirectory);
+      await rm(uploadDirectory, { recursive: true, force: true });
+      await this.prisma.whatsAppHistoryUploadSession.updateMany({
+        where: { id: upload.id, companyId: upload.companyId },
+        data: { status: 'expired' },
+      });
+      await this.audit({
+        companyId: upload.companyId,
+        batchId: upload.batchId,
+        uploadId: upload.id,
+        action: 'upload.expired',
+        phase: 'retention',
+      });
+    }
+  }
+
+  private async audit(input: {
+    companyId: string;
+    batchId: string;
+    action: string;
+    phase?: string | null;
+    uploadId?: string | null;
+    actorUserId?: string | null;
+    actorUsername?: string | null;
+    oldValue?: Prisma.InputJsonValue;
+    newValue?: Prisma.InputJsonValue;
+    metadata?: Prisma.InputJsonValue;
+  }): Promise<void> {
+    await this.prisma.whatsAppHistoryImportAuditEvent.create({
+      data: {
+        companyId: input.companyId,
+        batchId: input.batchId,
+        action: input.action,
+        phase: input.phase ?? null,
+        uploadId: input.uploadId ?? null,
+        actorUserId: input.actorUserId ?? null,
+        actorUsername: input.actorUsername ?? null,
+        ...(input.oldValue === undefined ? {} : { oldValue: input.oldValue }),
+        ...(input.newValue === undefined ? {} : { newValue: input.newValue }),
+        ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+      },
+    });
+  }
+
+  async cancel(
+    companyId: string,
+    batchId: string,
+    actorUserId: string,
+    actorUsername: string,
+  ) {
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      const manifest = await this.readManifest(companyId, batchId);
+      if (manifest.status === 'applied') {
+        throw conflict('Uma importação concluída não pode ser cancelada.');
+      }
+      if (manifest.status === 'cancelled') return presentManifest(manifest);
+      const now = new Date().toISOString();
+      this.cancelledBatches.add(`${companyId}:${batchId}`);
+      manifest.status = 'cancelled';
+      manifest.phase = 'cancelled';
+      manifest.cancelledAt = now;
+      manifest.updatedAt = now;
+      await this.writeManifest(manifest);
+      await this.prisma.whatsAppHistoryImportState.updateMany({
+        where: { id: batchId, companyId },
+        data: { leaseOwner: null, leaseExpiresAt: null },
+      });
+      await this.prisma.whatsAppHistoryUploadSession.updateMany({
+        where: {
+          batchId,
+          companyId,
+          status: { notIn: ['completed', 'cancelled'] },
+        },
+        data: { status: 'cancelled', cancelledAt: new Date() },
+      });
+      await this.audit({
+        companyId,
+        batchId,
+        actorUserId,
+        actorUsername,
+        action: 'batch.cancelled',
+        phase: 'cancelled',
+      });
+      await rm(this.batchPath(companyId, batchId), {
+        recursive: true,
+        force: true,
+      });
+      return presentManifest(manifest);
+    });
+  }
+
+  async cancelUpload(
+    companyId: string,
+    batchId: string,
+    uploadId: string,
+    actorUserId: string,
+    actorUsername: string,
+  ) {
+    assertUuid(uploadId, 'uploadId');
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      const upload = await this.prisma.whatsAppHistoryUploadSession.findFirst({
+        where: { id: uploadId, batchId, companyId },
+      });
+      if (!upload) throw notFound('Envio');
+      if (upload.status === 'completed') {
+        throw conflict('Um envio concluído não pode ser cancelado.');
+      }
+      if (upload.status !== 'cancelled') {
+        await this.prisma.whatsAppHistoryUploadSession.updateMany({
+          where: { id: uploadId, batchId, companyId },
+          data: {
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            errorCode: null,
+            errorMessage: null,
+          },
+        });
+      }
+
+      const manifest = await this.readManifest(companyId, batchId);
+      if (manifest.androidDatabaseUpload?.uploadId === uploadId) {
+        manifest.androidDatabaseUpload = null;
+      }
+      const mediaImport = manifest.androidBackup?.mediaImport;
+      if (mediaImport?.uploadId === uploadId) {
+        mediaImport.status = 'failed';
+        mediaImport.phase = null;
+        mediaImport.uploadId = null;
+        mediaImport.uploadBytesReceived = 0;
+        mediaImport.uploadBytesTotal = 0;
+        mediaImport.errorMessage = 'Envio cancelado.';
+        mediaImport.updatedAt = new Date().toISOString();
+      }
+      manifest.updatedAt = new Date().toISOString();
+      await this.writeManifest(manifest);
+
+      const batchDirectory = this.batchPath(companyId, batchId);
+      const uploadDirectory = resolve(upload.temporaryPath, '..');
+      assertInside(batchDirectory, uploadDirectory);
+      await rm(uploadDirectory, { recursive: true, force: true });
+      await this.audit({
+        companyId,
+        batchId,
+        uploadId,
+        actorUserId,
+        actorUsername,
+        action: 'upload.cancelled',
+        phase: upload.kind,
+        metadata: {
+          fileName: upload.fileName,
+          uploadedBytes: upload.uploadedBytes.toString(),
+          expectedBytes: upload.expectedBytes.toString(),
+        },
+      });
+      return { uploadId, status: 'cancelled' as const };
+    });
   }
 
   private async withBatchLock<T>(

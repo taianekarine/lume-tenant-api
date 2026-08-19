@@ -119,6 +119,20 @@ export class CreateWhatsAppAndroidDatabaseUploadDto {
   @Min(64)
   @Max(2_147_483_647)
   sizeBytes!: number;
+
+  @ApiPropertyOptional({
+    description: 'Identificação SHA-256 estável calculada pelo navegador.',
+    minLength: 64,
+    maxLength: 64,
+  })
+  @IsOptional()
+  @Matches(/^[0-9a-fA-F]{64}$/)
+  fingerprint?: string;
+
+  @ApiPropertyOptional({ minLength: 64, maxLength: 64 })
+  @IsOptional()
+  @Matches(/^[0-9a-fA-F]{64}$/)
+  checksumSha256?: string;
 }
 
 export class CreateWhatsAppAndroidMediaUploadDto {
@@ -133,6 +147,20 @@ export class CreateWhatsAppAndroidMediaUploadDto {
   @Min(22)
   @Max(8_589_934_592)
   sizeBytes!: number;
+
+  @ApiPropertyOptional({
+    description: 'Identificação SHA-256 estável calculada pelo navegador.',
+    minLength: 64,
+    maxLength: 64,
+  })
+  @IsOptional()
+  @Matches(/^[0-9a-fA-F]{64}$/)
+  fingerprint?: string;
+
+  @ApiPropertyOptional({ minLength: 64, maxLength: 64 })
+  @IsOptional()
+  @Matches(/^[0-9a-fA-F]{64}$/)
+  checksumSha256?: string;
 }
 
 export class AddWhatsAppAndroidMediaChunkDto {
@@ -143,4 +171,9 @@ export class AddWhatsAppAndroidMediaChunkDto {
   @IsInt()
   @Min(0)
   offsetBytes!: number;
+
+  @ApiPropertyOptional({ minLength: 64, maxLength: 64 })
+  @IsOptional()
+  @Matches(/^[0-9a-fA-F]{64}$/)
+  checksumSha256?: string;
 }

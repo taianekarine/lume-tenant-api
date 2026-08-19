@@ -2090,6 +2090,84 @@ model WhatsAppImportExternalRef {
   @@map("whatsapp_import_external_refs")
 }
 
+model WhatsAppHistoryImportState {
+  id             String   @id @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  channelId      String   @map("channel_id") @db.Uuid
+  actorUserId    String   @map("actor_user_id") @db.Uuid
+  status         String   @db.VarChar(40)
+  phase          String?  @db.VarChar(60)
+  manifest       Json     @db.JsonB
+  total          Int      @default(0)
+  processed      Int      @default(0)
+  failed         Int      @default(0)
+  attempts       Int      @default(0)
+  leaseOwner     String?  @map("lease_owner") @db.Uuid
+  leaseExpiresAt DateTime? @map("lease_expires_at") @db.Timestamptz(3)
+  heartbeatAt    DateTime? @map("heartbeat_at") @db.Timestamptz(3)
+  errorCode      String?  @map("error_code") @db.VarChar(80)
+  errorMessage   String?  @map("error_message") @db.VarChar(1000)
+  errorRetryable Boolean? @map("error_retryable")
+  errorOccurredAt DateTime? @map("error_occurred_at") @db.Timestamptz(3)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(3)
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([id, companyId])
+  @@index([companyId, status, updatedAt])
+  @@index([status, leaseExpiresAt])
+  @@index([expiresAt])
+  @@map("whatsapp_history_import_states")
+}
+
+model WhatsAppHistoryUploadSession {
+  id             String   @id @db.Uuid
+  batchId        String   @map("batch_id") @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  kind           String   @db.VarChar(30)
+  fileName       String   @map("file_name") @db.VarChar(255)
+  mimeType       String?  @map("mime_type") @db.VarChar(160)
+  expectedBytes  BigInt   @map("expected_bytes")
+  uploadedBytes  BigInt   @default(0) @map("uploaded_bytes")
+  fingerprint    String   @db.Char(64)
+  checksumSha256 String?  @map("checksum_sha256") @db.Char(64)
+  temporaryPath  String   @map("temporary_path") @db.VarChar(1000)
+  status         String   @db.VarChar(30)
+  errorCode      String?  @map("error_code") @db.VarChar(80)
+  errorMessage   String?  @map("error_message") @db.VarChar(1000)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(3)
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([companyId, batchId, kind, fingerprint])
+  @@index([companyId, batchId, status])
+  @@index([status, expiresAt])
+  @@map("whatsapp_history_upload_sessions")
+}
+
+model WhatsAppHistoryImportAuditEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  batchId       String   @map("batch_id") @db.Uuid
+  uploadId      String?  @map("upload_id") @db.Uuid
+  actorUserId   String?  @map("actor_user_id") @db.Uuid
+  actorUsername String?  @map("actor_username") @db.VarChar(80)
+  action        String   @db.VarChar(80)
+  phase         String?  @db.VarChar(60)
+  oldValue      Json?    @map("old_value") @db.JsonB
+  newValue      Json?    @map("new_value") @db.JsonB
+  metadata      Json?    @db.JsonB
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([companyId, batchId, createdAt])
+  @@index([uploadId, createdAt])
+  @@map("whatsapp_history_import_audit_events")
+}
+
 model OutboxEvent {
   id            String       @id @default(uuid()) @db.Uuid
   aggregateType String       @map("aggregate_type") @db.VarChar(60)

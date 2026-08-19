@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   Param,
@@ -98,6 +99,12 @@ export class WhatsAppHistoryImportController {
     return this.imports.appliedAndroidBackups(current.companyId);
   }
 
+  @Get('active')
+  @ApiOkResponse({ description: 'Lote recuperável do usuário atual.' })
+  active(@CurrentUser() current: AuthenticatedPrincipal) {
+    return this.imports.active(current.companyId, current.id);
+  }
+
   @Post()
   @ApiCreatedResponse({ description: 'Lote de importação criado.' })
   create(
@@ -119,6 +126,43 @@ export class WhatsAppHistoryImportController {
     @Param('batchId', new ParseUUIDPipe()) batchId: string,
   ) {
     return this.imports.detail(current.companyId, batchId);
+  }
+
+  @Delete(':batchId')
+  cancel(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+  ) {
+    return this.imports.cancel(
+      current.companyId,
+      batchId,
+      current.id,
+      current.username,
+    );
+  }
+
+  @Get(':batchId/uploads/:uploadId')
+  uploadStatus(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+  ) {
+    return this.imports.uploadStatus(current.companyId, batchId, uploadId);
+  }
+
+  @Delete(':batchId/uploads/:uploadId')
+  cancelUpload(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+  ) {
+    return this.imports.cancelUpload(
+      current.companyId,
+      batchId,
+      uploadId,
+      current.id,
+      current.username,
+    );
   }
 
   @Get(':batchId/android-divergences')
@@ -244,6 +288,8 @@ export class WhatsAppHistoryImportController {
       {
         originalName: body.fileName,
         sizeBytes: body.sizeBytes,
+        fingerprint: body.fingerprint,
+        checksumSha256: body.checksumSha256,
       },
     );
   }
@@ -283,6 +329,7 @@ export class WhatsAppHistoryImportController {
         uploadId,
         offsetBytes: body.offsetBytes,
         content: file.buffer,
+        checksumSha256: body.checksumSha256,
       },
     );
   }
@@ -356,6 +403,8 @@ export class WhatsAppHistoryImportController {
     return this.imports.createAndroidMediaUpload(current.companyId, batchId, {
       originalName: body.fileName,
       sizeBytes: body.sizeBytes,
+      fingerprint: body.fingerprint,
+      checksumSha256: body.checksumSha256,
     });
   }
 
@@ -391,6 +440,7 @@ export class WhatsAppHistoryImportController {
       uploadId,
       offsetBytes: body.offsetBytes,
       content: file.buffer,
+      checksumSha256: body.checksumSha256,
     });
   }
 
