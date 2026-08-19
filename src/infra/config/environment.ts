@@ -567,6 +567,16 @@ export function validateEnvironment(config: RawEnvironment): RawEnvironment {
     ...config,
     NODE_ENV: nodeEnv,
     DATABASE_URL: databaseUrl,
+    DATABASE_TRANSACTION_MAX_WAIT_MS: positiveInteger(
+      config,
+      'DATABASE_TRANSACTION_MAX_WAIT_MS',
+      15_000,
+    ),
+    DATABASE_TRANSACTION_TIMEOUT_MS: positiveInteger(
+      config,
+      'DATABASE_TRANSACTION_TIMEOUT_MS',
+      60_000,
+    ),
     PORT: positiveInteger(config, 'PORT', 3333),
     JWT_ACCESS_SECRET: jwtSecret,
     JWT_ACCESS_TTL_SECONDS: positiveInteger(

@@ -584,6 +584,8 @@ export class WhatsAppAndroidMediaImportService {
       archive = await openZip(archivePath);
       let filesTotal = 0;
       let declaredUncompressedBytes = 0;
+      const archivePaths = new Set<string>();
+      const archiveBaseNames = new Set<string>();
       for await (const entry of zipEntries(archive)) {
         if (entry.fileName.endsWith('/')) continue;
         filesTotal += 1;
@@ -607,6 +609,8 @@ export class WhatsAppAndroidMediaImportService {
         if (unsafeZipEntry(entry)) {
           throw validationError('O ZIP contém um caminho de arquivo inseguro.');
         }
+        archivePaths.add(canonicalMediaPath(entry.fileName));
+        archiveBaseNames.add(basename(normalizedPath(entry.fileName)));
       }
       if (filesTotal < 1) {
         throw validationError('O ZIP deve conter pelo menos um arquivo.');
@@ -643,6 +647,16 @@ export class WhatsAppAndroidMediaImportService {
           ]);
         }
       }
+      const hashFallbackCandidateIds = new Set(
+        loaded.candidates
+          .filter(
+            (candidate) =>
+              candidate.contentSha256 &&
+              !archivePaths.has(candidate.canonicalPath) &&
+              !archiveBaseNames.has(candidate.baseName),
+          )
+          .map((candidate) => candidate.id),
+      );
       const reservedIds = new Set<string>();
       let ambiguous = 0;
       let skippedOversize = 0;
@@ -729,6 +743,21 @@ export class WhatsAppAndroidMediaImportService {
           skippedOversize += 1;
           continue;
         }
+        const entryPath = canonicalMediaPath(entry.fileName);
+        const entryBaseName = basename(normalizedPath(entry.fileName));
+        const hasPathCandidate = (byPath.get(entryPath) ?? []).some(
+          (candidate) => !reservedIds.has(candidate.id),
+        );
+        const hasNameCandidate = (byBaseName.get(entryBaseName) ?? []).some(
+          (candidate) => !reservedIds.has(candidate.id),
+        );
+        if (
+          !hasPathCandidate &&
+          !hasNameCandidate &&
+          hashFallbackCandidateIds.size === 0
+        ) {
+          continue;
+        }
         const content = await readEntry(
           processingArchive,
           entry,
@@ -748,6 +777,9 @@ export class WhatsAppAndroidMediaImportService {
         if (matched.candidates.length === 0) continue;
         matched.candidates.forEach((candidate) =>
           reservedIds.add(candidate.id),
+        );
+        matched.candidates.forEach((candidate) =>
+          hashFallbackCandidateIds.delete(candidate.id),
         );
         if (
           batch.length > 0 &&

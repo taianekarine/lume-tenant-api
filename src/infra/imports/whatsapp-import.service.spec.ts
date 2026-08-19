@@ -533,7 +533,7 @@ describe('WhatsAppImportService.apply', () => {
     ).rejects.toBe(transactionError);
 
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
       maxWait: 10_000,
       timeout: 120_000,
     });
@@ -580,6 +580,6 @@ describe('WhatsAppImportService.apply', () => {
       }),
     ).rejects.toBe(transactionError);
 
-    expect(transaction).toHaveBeenCalledTimes(5);
+    expect(transaction).toHaveBeenCalledTimes(8);
   });
 });

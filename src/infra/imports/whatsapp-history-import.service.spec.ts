@@ -640,6 +640,16 @@ describe('WhatsAppHistoryImportService media retention', () => {
       },
     );
     expect(partial.uploadedBytes).toBe(20);
+    const replayed = await service.addAndroidMediaUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: Buffer.alloc(20, 1),
+      },
+    );
+    expect(replayed.uploadedBytes).toBe(20);
     await service.addAndroidMediaUploadChunk(COMPANY_ID, COMMAND_ID, {
       uploadId: started.uploadId,
       offsetBytes: 20,
@@ -663,7 +673,8 @@ describe('WhatsAppHistoryImportService media retention', () => {
       const failed = await service.detail(COMPANY_ID, COMMAND_ID);
       expect(failed.androidBackup?.mediaImport).toMatchObject({
         status: 'failed',
-        errorMessage: 'falha transitória',
+        errorMessage:
+          'Não foi possível processar o ZIP de mídias. Tente novamente; os arquivos já armazenados serão preservados.',
       });
     });
     await vi.waitFor(() => {

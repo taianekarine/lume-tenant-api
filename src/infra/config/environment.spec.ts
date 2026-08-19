@@ -47,6 +47,8 @@ describe('validateEnvironment', () => {
     expect(validateEnvironment(validEnvironment)).toMatchObject({
       NODE_ENV: 'test',
       PORT: 3333,
+      DATABASE_TRANSACTION_MAX_WAIT_MS: 15_000,
+      DATABASE_TRANSACTION_TIMEOUT_MS: 60_000,
       JWT_ACCESS_TTL_SECONDS: 900,
       JWT_REFRESH_TTL_DAYS: 7,
       JWT_REFRESH_REMEMBER_TTL_DAYS: 30,
@@ -89,6 +91,22 @@ describe('validateEnvironment', () => {
         DATABASE_URL: 'mysql://localhost/database',
       }),
     ).toThrow('PostgreSQL');
+  });
+
+  it('rejects invalid database transaction limits', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        DATABASE_TRANSACTION_MAX_WAIT_MS: '0',
+      }),
+    ).toThrow('DATABASE_TRANSACTION_MAX_WAIT_MS');
+
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        DATABASE_TRANSACTION_TIMEOUT_MS: '-1',
+      }),
+    ).toThrow('DATABASE_TRANSACTION_TIMEOUT_MS');
   });
 
   it('requires the local installation identity and signed license', () => {
