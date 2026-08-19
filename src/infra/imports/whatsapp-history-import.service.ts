@@ -18,7 +18,12 @@ import JSZip from 'jszip';
 
 import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
 import { notFound, validationError } from '../../core/errors/app-error';
-import { MessageKind, Prisma } from '../database/prisma/generated/client';
+import {
+  DeliveryStatus,
+  MessageDirection,
+  MessageKind,
+  Prisma,
+} from '../database/prisma/generated/client';
 import { PrismaService } from '../database/prisma/prisma.service';
 import {
   inspectWhatsAppAndroidBackup,
@@ -36,6 +41,8 @@ import {
   parseWhatsAppExportArchive,
   WHATSAPP_EXPORT_SOURCE_SYSTEM,
   type ParsedWhatsAppExport,
+  type WhatsAppExportMessage,
+  type WhatsAppExportMessageKind,
   type WhatsAppExportParserLimits,
 } from './whatsapp-export-parser';
 import {
@@ -45,12 +52,16 @@ import {
   type WhatsAppHistoryConversationMapping,
   type WhatsAppHistoryStateOption,
 } from './whatsapp-export-workbook';
-import { WhatsAppImportService } from './whatsapp-import.service';
+import {
+  importedMediaMetadata,
+  WhatsAppImportService,
+} from './whatsapp-import.service';
 import { importPayloadHash } from './whatsapp-import-package';
 import { emptyImportCounts } from './whatsapp-import.types';
 
 const MANIFEST_VERSION = '1.0';
 const MANIFEST_FILE = 'manifest.json';
+const ANDROID_DIVERGENCES_FILE = 'message-divergences.json';
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const IMPORT_DEPARTMENTS = new Set([
@@ -90,6 +101,72 @@ const MESSAGE_KIND_BY_EXPORT = {
   unknown: MessageKind.UNKNOWN,
 } as const;
 
+const MESSAGE_DIRECTION_BY_IMPORT = {
+  inbound: MessageDirection.INBOUND,
+  outbound: MessageDirection.OUTBOUND,
+} as const;
+
+const DELIVERY_STATUS_BY_IMPORT = {
+  received: DeliveryStatus.RECEIVED,
+  pending: DeliveryStatus.PENDING,
+  sent: DeliveryStatus.SENT,
+  delivered: DeliveryStatus.DELIVERED,
+  read: DeliveryStatus.READ,
+  failed: DeliveryStatus.FAILED,
+} as const;
+
+const MESSAGE_KIND_TO_EXPORT: Record<MessageKind, WhatsAppExportMessageKind> = {
+  [MessageKind.TEXT]: 'text',
+  [MessageKind.IMAGE]: 'image',
+  [MessageKind.DOCUMENT]: 'document',
+  [MessageKind.AUDIO]: 'audio',
+  [MessageKind.VIDEO]: 'video',
+  [MessageKind.STICKER]: 'sticker',
+  [MessageKind.LOCATION]: 'location',
+  [MessageKind.CONTACT]: 'contact',
+  [MessageKind.UNKNOWN]: 'unknown',
+};
+
+const DELIVERY_STATUS_TO_IMPORT: Record<
+  DeliveryStatus,
+  StoredAndroidDivergenceMessage['deliveryStatus']
+> = {
+  [DeliveryStatus.RECEIVED]: 'received',
+  [DeliveryStatus.PENDING]: 'pending',
+  [DeliveryStatus.SENT]: 'sent',
+  [DeliveryStatus.DELIVERED]: 'delivered',
+  [DeliveryStatus.READ]: 'read',
+  [DeliveryStatus.FAILED]: 'failed',
+};
+
+type AndroidDivergenceResolution = 'keep-existing' | 'use-backup';
+
+interface StoredAndroidDivergenceMessage {
+  direction: 'inbound' | 'outbound';
+  deliveryStatus:
+    'received' | 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+  kind: WhatsAppExportMessageKind;
+  text: string | null;
+  occurredAt: string;
+  mediaReference: string | null;
+  payloadHash: string;
+}
+
+interface StoredAndroidDivergence {
+  externalMessageId: string;
+  internalMessageId: string;
+  externalConversationId: string;
+  contactName: string | null;
+  phoneE164: string | null;
+  senderName: string | null;
+  existing: StoredAndroidDivergenceMessage;
+  backup: StoredAndroidDivergenceMessage;
+  resolution: AndroidDivergenceResolution | null;
+  decidedByUserId: string | null;
+  decidedByUsername: string | null;
+  decidedAt: string | null;
+}
+
 interface StoredArchive {
   archiveId: string;
   archiveName: string;
@@ -127,6 +204,7 @@ interface StoredAndroidBackup {
     messagesExisting: number;
     messagesNew: number;
     messagesDivergent: number;
+    messagesDivergentPending?: number;
     mediaStored: number;
     mediaNew: number;
     mediaMissing: number;
@@ -299,6 +377,94 @@ function mappingIssues(
   return issues;
 }
 
+function importMediaReference(media: Prisma.JsonValue | null): string | null {
+  if (!media || Array.isArray(media) || typeof media !== 'object') return null;
+  const reference = (media as Record<string, Prisma.JsonValue>)[
+    'legacyReference'
+  ];
+  return typeof reference === 'string' ? reference : null;
+}
+
+function acceptedPayloadHashes(
+  value: Prisma.JsonValue | null | undefined,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string =>
+      typeof item === 'string' && /^[0-9a-f]{64}$/i.test(item),
+  );
+}
+
+function androidBackupMessage(
+  parsed: ParsedWhatsAppExport,
+  message: WhatsAppExportMessage,
+): StoredAndroidDivergenceMessage | null {
+  const externalMessageId = message.externalMessageId;
+  if (!externalMessageId) return null;
+  const mediaReference = message.attachment
+    ? (message.attachment.reference ??
+      `whatsapp-export://${parsed.archiveId}/${encodeURIComponent(
+        message.attachment.fileName,
+      )}`)
+    : null;
+  const value = {
+    externalConversationId: parsed.externalConversationId,
+    externalMessageId,
+    direction: message.outbound ? ('outbound' as const) : ('inbound' as const),
+    kind: message.kind,
+    occurredAt: message.occurredAt.toISOString(),
+    deliveryStatus: message.outbound
+      ? ('sent' as const)
+      : ('received' as const),
+    text: message.system
+      ? `[Mensagem do sistema] ${message.text ?? ''}`.trim()
+      : (message.text ?? null),
+    mediaReference,
+    actorUsername: null,
+    providerMessageId: null,
+    correlationId: externalMessageId,
+  };
+  return {
+    direction: value.direction,
+    deliveryStatus: value.deliveryStatus,
+    kind: value.kind,
+    text: value.text,
+    occurredAt: value.occurredAt,
+    mediaReference,
+    payloadHash: importPayloadHash(value),
+  };
+}
+
+function presentAndroidDivergence(item: StoredAndroidDivergence) {
+  return {
+    externalMessageId: item.externalMessageId,
+    externalConversationId: item.externalConversationId,
+    contactName: item.contactName,
+    phoneE164: item.phoneE164,
+    senderName: item.senderName,
+    occurredAt: item.backup.occurredAt,
+    existing: {
+      direction: item.existing.direction,
+      deliveryStatus: item.existing.deliveryStatus,
+      kind: item.existing.kind,
+      text: item.existing.text,
+      occurredAt: item.existing.occurredAt,
+      hasMedia: Boolean(item.existing.mediaReference),
+    },
+    backup: {
+      direction: item.backup.direction,
+      deliveryStatus: item.backup.deliveryStatus,
+      kind: item.backup.kind,
+      text: item.backup.text,
+      occurredAt: item.backup.occurredAt,
+      hasMedia: Boolean(item.backup.mediaReference),
+    },
+    resolution: item.resolution,
+    decidedByUsername: item.decidedByUsername,
+    decidedAt: item.decidedAt,
+  };
+}
+
 function presentManifest(manifest: StoredManifest) {
   const archives = manifest.archives.map((archive) => {
     const issues = mappingIssues(archive, archive.mapping);
@@ -372,21 +538,27 @@ function presentManifest(manifest: StoredManifest) {
           conversationsProcessed: android.conversationsProcessed,
           messagesProcessed: android.messagesProcessed,
           errorMessage: android.errorMessage,
-          comparison:
-            android.comparison ??
-            (manifest.status === 'draft'
+          comparison: android.comparison
+            ? {
+                ...android.comparison,
+                messagesDivergentPending:
+                  android.comparison.messagesDivergentPending ??
+                  android.comparison.messagesDivergent,
+              }
+            : manifest.status === 'draft'
               ? {
                   status: 'processing' as const,
                   messagesExisting: 0,
                   messagesNew: 0,
                   messagesDivergent: 0,
+                  messagesDivergentPending: 0,
                   mediaStored: 0,
                   mediaNew: 0,
                   mediaMissing: android.summary.mediaReferences,
                   updatedAt: manifest.updatedAt,
                   errorMessage: null,
                 }
-              : null),
+              : null,
           mediaImport: android.mediaImport ?? null,
         }
       : null,
@@ -593,6 +765,77 @@ export class WhatsAppHistoryImportService {
     return presentManifest(manifest);
   }
 
+  async androidDivergences(companyId: string, batchId: string) {
+    const manifest = await this.readManifest(companyId, batchId);
+    const comparison = manifest.androidBackup?.comparison;
+    if (!manifest.androidBackup) {
+      throw validationError('Este lote não contém um backup Android.');
+    }
+    if (!comparison || comparison.status === 'processing') {
+      throw validationError('Aguarde a comparação do backup.');
+    }
+    const divergences = await this.readAndroidDivergences(
+      companyId,
+      batchId,
+      comparison.messagesDivergent > 0,
+    );
+    return {
+      items: divergences.map(presentAndroidDivergence),
+      total: divergences.length,
+      pending: divergences.filter((item) => item.resolution === null).length,
+    };
+  }
+
+  async resolveAndroidDivergence(
+    companyId: string,
+    batchId: string,
+    externalMessageId: string,
+    resolution: AndroidDivergenceResolution,
+    actorUserId: string,
+    actorUsername: string,
+  ) {
+    if (!externalMessageId || externalMessageId.length > 160) {
+      throw validationError('A identificação da mensagem é inválida.');
+    }
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      const manifest = await this.readManifest(companyId, batchId);
+      if (manifest.status !== 'draft' || !manifest.androidBackup) {
+        throw validationError(
+          'Somente uma importação em revisão pode ser corrigida.',
+        );
+      }
+      const comparison = manifest.androidBackup.comparison;
+      if (!comparison || comparison.status !== 'ready') {
+        throw validationError('Aguarde a comparação do backup.');
+      }
+      const divergences = await this.readAndroidDivergences(
+        companyId,
+        batchId,
+        true,
+      );
+      const divergence = divergences.find(
+        (item) => item.externalMessageId === externalMessageId,
+      );
+      if (!divergence) throw notFound('Mensagem divergente');
+      const now = new Date().toISOString();
+      divergence.resolution = resolution;
+      divergence.decidedByUserId = actorUserId;
+      divergence.decidedByUsername = actorUsername;
+      divergence.decidedAt = now;
+      await this.writeAndroidDivergences(companyId, batchId, divergences);
+      comparison.messagesDivergentPending = divergences.filter(
+        (item) => item.resolution === null,
+      ).length;
+      comparison.updatedAt = now;
+      manifest.updatedAt = now;
+      await this.writeManifest(manifest);
+      return {
+        divergence: presentAndroidDivergence(divergence),
+        pending: comparison.messagesDivergentPending,
+      };
+    });
+  }
+
   async addArchive(
     companyId: string,
     batchId: string,
@@ -732,6 +975,7 @@ export class WhatsAppHistoryImportService {
             messagesExisting: 0,
             messagesNew: 0,
             messagesDivergent: 0,
+            messagesDivergentPending: 0,
             mediaStored: 0,
             mediaNew: 0,
             mediaMissing: summary.mediaReferences,
@@ -1222,9 +1466,17 @@ export class WhatsAppHistoryImportService {
               'Não foi possível comparar este backup com o histórico atual.',
           );
         }
-        if (comparison.messagesDivergent > 0) {
+        const divergences = await this.readAndroidDivergences(
+          companyId,
+          batchId,
+          comparison.messagesDivergent > 0,
+        );
+        const unresolvedDivergences = divergences.filter(
+          (item) => item.resolution === null,
+        ).length;
+        if (unresolvedDivergences > 0) {
           throw validationError(
-            'Existem mensagens com a mesma identificação e conteúdo diferente. Revise as divergências antes de importar.',
+            'Corrija todas as mensagens divergentes antes de importar.',
           );
         }
         if (
@@ -1377,6 +1629,7 @@ export class WhatsAppHistoryImportService {
       let mediaStored = 0;
       let mediaReferences = 0;
       const newMessageIds: string[] = [];
+      const divergences: StoredAndroidDivergence[] = [];
       const mediaPreviewReferences: PreviewWhatsAppAndroidMediaReference[] = [];
 
       const flush = async (): Promise<void> => {
@@ -1395,40 +1648,89 @@ export class WhatsAppHistoryImportService {
             reference,
           ]),
         );
+        const existingMessageIds = existingReferences.map(
+          (reference) => reference.internalId,
+        );
+        const existingMessages =
+          existingMessageIds.length > 0
+            ? await this.prisma.whatsAppMessage.findMany({
+                where: {
+                  companyId,
+                  channelId: manifest.channelId,
+                  id: { in: existingMessageIds },
+                },
+                select: {
+                  id: true,
+                  direction: true,
+                  deliveryStatus: true,
+                  kind: true,
+                  text: true,
+                  occurredAt: true,
+                  media: true,
+                  contact: {
+                    select: {
+                      displayName: true,
+                      phoneNormalized: true,
+                    },
+                  },
+                },
+              })
+            : [];
+        const existingMessageById = new Map(
+          existingMessages.map((message) => [message.id, message]),
+        );
         for (const parsed of exports) {
           for (const message of parsed.messages) {
             const externalMessageId = message.externalMessageId;
             if (!externalMessageId) continue;
             const existing = existingByExternalId.get(externalMessageId);
+            const backup = androidBackupMessage(parsed, message);
+            if (!backup) continue;
             if (!existing) {
               messagesNew += 1;
               newMessageIds.push(externalMessageId);
             } else if (
-              existing.payloadHash ===
-              importPayloadHash({
-                externalConversationId: parsed.externalConversationId,
-                externalMessageId,
-                direction: message.outbound ? 'outbound' : 'inbound',
-                kind: message.kind,
-                occurredAt: message.occurredAt.toISOString(),
-                deliveryStatus: message.outbound ? 'sent' : 'received',
-                text: message.system
-                  ? `[Mensagem do sistema] ${message.text ?? ''}`.trim()
-                  : (message.text ?? null),
-                mediaReference: message.attachment
-                  ? (message.attachment.reference ??
-                    `whatsapp-export://${parsed.archiveId}/${encodeURIComponent(
-                      message.attachment.fileName,
-                    )}`)
-                  : null,
-                actorUsername: null,
-                providerMessageId: null,
-                correlationId: externalMessageId,
-              })
+              existing.payloadHash === backup.payloadHash ||
+              existing.acceptedPayloadHashes.includes(backup.payloadHash)
             ) {
               messagesExisting += 1;
             } else {
               messagesDivergent += 1;
+              const current = existingMessageById.get(existing.internalId);
+              if (!current) {
+                throw validationError(
+                  'Uma mensagem divergente não está mais disponível no histórico atual.',
+                );
+              }
+              divergences.push({
+                externalMessageId,
+                internalMessageId: current.id,
+                externalConversationId:
+                  parsed.externalConversationId ?? parsed.archiveId,
+                contactName:
+                  current.contact.displayName ?? parsed.suggestedContactName,
+                phoneE164:
+                  current.contact.phoneNormalized ?? parsed.suggestedPhoneE164,
+                senderName: message.senderName,
+                existing: {
+                  direction:
+                    current.direction === MessageDirection.OUTBOUND
+                      ? 'outbound'
+                      : 'inbound',
+                  deliveryStatus:
+                    DELIVERY_STATUS_TO_IMPORT[current.deliveryStatus],
+                  kind: MESSAGE_KIND_TO_EXPORT[current.kind],
+                  text: current.text,
+                  occurredAt: current.occurredAt.toISOString(),
+                  mediaReference: importMediaReference(current.media),
+                  payloadHash: existing.payloadHash ?? '',
+                },
+                backup,
+                resolution: null,
+                decidedByUserId: null,
+                decidedByUsername: null,
+                decidedAt: null,
+              });
             }
             if (message.attachment) mediaReferences += 1;
           }
@@ -1544,6 +1846,7 @@ export class WhatsAppHistoryImportService {
         JSON.stringify(mediaPreviewReferences),
         { encoding: 'utf8', mode: 0o600 },
       );
+      await this.writeAndroidDivergences(companyId, batchId, divergences);
       await this.withBatchLock(`${companyId}:${batchId}`, async () => {
         const current = await this.readManifest(companyId, batchId);
         if (!current.androidBackup || current.status !== 'draft') return;
@@ -1553,6 +1856,7 @@ export class WhatsAppHistoryImportService {
           messagesExisting,
           messagesNew,
           messagesDivergent,
+          messagesDivergentPending: divergences.length,
           mediaStored,
           mediaNew: 0,
           mediaMissing: Math.max(0, mediaReferences - mediaStored),
@@ -1572,6 +1876,7 @@ export class WhatsAppHistoryImportService {
           messagesExisting: 0,
           messagesNew: 0,
           messagesDivergent: 0,
+          messagesDivergentPending: 0,
           mediaStored: 0,
           mediaNew: 0,
           mediaMissing: manifest.androidBackup.summary.mediaReferences,
@@ -1591,12 +1896,18 @@ export class WhatsAppHistoryImportService {
     companyId: string,
     externalIds: readonly string[],
   ): Promise<
-    { externalId: string; internalId: string; payloadHash: string | null }[]
+    {
+      externalId: string;
+      internalId: string;
+      payloadHash: string | null;
+      acceptedPayloadHashes: string[];
+    }[]
   > {
     const references: {
       externalId: string;
       internalId: string;
       payloadHash: string | null;
+      acceptedPayloadHashes: string[];
     }[] = [];
     for (
       let offset = 0;
@@ -1604,23 +1915,125 @@ export class WhatsAppHistoryImportService {
       offset += EXTERNAL_REFERENCE_CHUNK_SIZE
     ) {
       references.push(
-        ...(await this.prisma.whatsAppImportExternalRef.findMany({
-          where: {
-            companyId,
-            entityType: 'message',
-            sourceSystem: 'whatsapp-android-backup',
-            externalId: {
-              in: externalIds.slice(
-                offset,
-                offset + EXTERNAL_REFERENCE_CHUNK_SIZE,
-              ),
+        ...(
+          await this.prisma.whatsAppImportExternalRef.findMany({
+            where: {
+              companyId,
+              entityType: 'message',
+              sourceSystem: 'whatsapp-android-backup',
+              externalId: {
+                in: externalIds.slice(
+                  offset,
+                  offset + EXTERNAL_REFERENCE_CHUNK_SIZE,
+                ),
+              },
             },
-          },
-          select: { externalId: true, internalId: true, payloadHash: true },
+            select: {
+              externalId: true,
+              internalId: true,
+              payloadHash: true,
+              acceptedPayloadHashes: true,
+            },
+          })
+        ).map((reference) => ({
+          ...reference,
+          acceptedPayloadHashes: acceptedPayloadHashes(
+            reference.acceptedPayloadHashes,
+          ),
         })),
       );
     }
     return references;
+  }
+
+  private async applyAndroidDivergenceResolutions(
+    companyId: string,
+    batchId: string,
+    divergences: readonly StoredAndroidDivergence[],
+  ): Promise<void> {
+    for (const divergence of divergences) {
+      if (!divergence.resolution) {
+        throw validationError(
+          'Corrija todas as mensagens divergentes antes de importar.',
+        );
+      }
+      const reference = await this.prisma.whatsAppImportExternalRef.findFirst({
+        where: {
+          companyId,
+          entityType: 'message',
+          sourceSystem: 'whatsapp-android-backup',
+          externalId: divergence.externalMessageId,
+          internalId: divergence.internalMessageId,
+        },
+        select: {
+          id: true,
+          payloadHash: true,
+          acceptedPayloadHashes: true,
+        },
+      });
+      if (!reference) {
+        throw validationError(
+          'A mensagem divergente não está mais disponível no histórico atual.',
+        );
+      }
+      if (divergence.resolution === 'keep-existing') {
+        const accepted = new Set(
+          acceptedPayloadHashes(reference.acceptedPayloadHashes),
+        );
+        accepted.add(divergence.backup.payloadHash);
+        await this.prisma.whatsAppImportExternalRef.updateMany({
+          where: { id: reference.id, companyId },
+          data: {
+            acceptedPayloadHashes: [...accepted],
+          },
+        });
+        continue;
+      }
+
+      const mediaMetadata = importedMediaMetadata(
+        divergence.backup.mediaReference,
+        divergence.externalMessageId,
+      );
+      const mediaChanged =
+        divergence.existing.mediaReference !== divergence.backup.mediaReference;
+      const updated = await this.prisma.whatsAppMessage.updateMany({
+        where: {
+          id: divergence.internalMessageId,
+          companyId,
+        },
+        data: {
+          direction: MESSAGE_DIRECTION_BY_IMPORT[divergence.backup.direction],
+          deliveryStatus:
+            DELIVERY_STATUS_BY_IMPORT[divergence.backup.deliveryStatus],
+          kind: MESSAGE_KIND_BY_EXPORT[divergence.backup.kind],
+          text: divergence.backup.text,
+          occurredAt: new Date(divergence.backup.occurredAt),
+          media: mediaMetadata ?? Prisma.DbNull,
+          ...(mediaChanged
+            ? {
+                mediaStorageKey: null,
+                mediaMimeType: null,
+                mediaSizeBytes: null,
+                mediaOriginalName: null,
+                mediaSha256: null,
+                mediaStoredAt: null,
+              }
+            : {}),
+        },
+      });
+      if (updated.count !== 1) {
+        throw validationError(
+          'A mensagem divergente não pôde ser atualizada com o conteúdo do backup.',
+        );
+      }
+      await this.prisma.whatsAppImportExternalRef.updateMany({
+        where: { id: reference.id, companyId },
+        data: {
+          payloadHash: divergence.backup.payloadHash,
+          acceptedPayloadHashes: Prisma.DbNull,
+        },
+      });
+    }
   }
 
   private async runAndroidImport(
@@ -1649,6 +2062,16 @@ export class WhatsAppHistoryImportService {
       assertInside(this.batchPath(companyId, batchId), newIdsPath);
       const newMessageIds = new Set(
         JSON.parse(await readFile(newIdsPath, 'utf8')) as string[],
+      );
+      const divergences = await this.readAndroidDivergences(
+        companyId,
+        batchId,
+        (android.comparison?.messagesDivergent ?? 0) > 0,
+      );
+      await this.applyAndroidDivergenceResolutions(
+        companyId,
+        batchId,
+        divergences,
       );
       let chunkIndex = 0;
       let chunkMessages = 0;
@@ -2344,6 +2767,55 @@ export class WhatsAppHistoryImportService {
 
   private manifestPath(companyId: string, batchId: string): string {
     return resolve(this.batchPath(companyId, batchId), MANIFEST_FILE);
+  }
+
+  private androidDivergencesPath(companyId: string, batchId: string): string {
+    const path = resolve(
+      this.batchPath(companyId, batchId),
+      'android',
+      ANDROID_DIVERGENCES_FILE,
+    );
+    assertInside(this.batchPath(companyId, batchId), path);
+    return path;
+  }
+
+  private async readAndroidDivergences(
+    companyId: string,
+    batchId: string,
+    required: boolean,
+  ): Promise<StoredAndroidDivergence[]> {
+    try {
+      const content = await readFile(
+        this.androidDivergencesPath(companyId, batchId),
+        'utf8',
+      );
+      const parsed = JSON.parse(content) as unknown;
+      if (!Array.isArray(parsed)) throw new Error('invalid');
+      return parsed as StoredAndroidDivergence[];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && !required) {
+        return [];
+      }
+      throw validationError(
+        'A comparação das mensagens divergentes precisa ser executada novamente.',
+      );
+    }
+  }
+
+  private async writeAndroidDivergences(
+    companyId: string,
+    batchId: string,
+    divergences: readonly StoredAndroidDivergence[],
+  ): Promise<void> {
+    const destination = this.androidDivergencesPath(companyId, batchId);
+    await mkdir(resolve(destination, '..'), { recursive: true });
+    const temporary = `${destination}.${randomUUID()}.tmp`;
+    assertInside(this.batchPath(companyId, batchId), temporary);
+    await writeFile(temporary, JSON.stringify(divergences), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await rename(temporary, destination);
   }
 
   private async tryReadManifest(

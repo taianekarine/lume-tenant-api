@@ -2078,6 +2078,7 @@ model WhatsAppImportExternalRef {
   externalId   String   @map("external_id") @db.VarChar(160)
   internalId   String   @map("internal_id") @db.Uuid
   payloadHash  String?  @map("payload_hash") @db.Char(64)
+  acceptedPayloadHashes Json? @map("accepted_payload_hashes") @db.JsonB
   createdAt    DateTime @default(now()) @map("created_at")
 
   batch   WhatsAppImportBatch @relation(fields: [batchId, companyId], references: [id, companyId], onDelete: Cascade)

@@ -70,6 +70,17 @@ export class ApplyWhatsAppHistoryImportDto {
   cutoffAt!: string;
 }
 
+export const WHATSAPP_IMPORT_DIVERGENCE_RESOLUTIONS = [
+  'keep-existing',
+  'use-backup',
+] as const;
+
+export class ResolveWhatsAppImportDivergenceDto {
+  @ApiProperty({ enum: WHATSAPP_IMPORT_DIVERGENCE_RESOLUTIONS })
+  @IsIn(WHATSAPP_IMPORT_DIVERGENCE_RESOLUTIONS)
+  resolution!: (typeof WHATSAPP_IMPORT_DIVERGENCE_RESOLUTIONS)[number];
+}
+
 export class AddWhatsAppAndroidBackupDto {
   @ApiProperty({
     description: 'Chave crypt15 hexadecimal. Nunca é persistida.',
