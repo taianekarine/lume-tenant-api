@@ -11,8 +11,8 @@ services:
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-lume} -d ${POSTGRES_DB:-lume_tenant}",
+          'CMD-SHELL',
+          'pg_isready -U ${POSTGRES_USER:-lume} -d ${POSTGRES_DB:-lume_tenant}',
         ]
       interval: 5s
       timeout: 5s
@@ -22,8 +22,8 @@ services:
     build:
       context: .
       target: build
-    command: ["npm", "run", "prisma:deploy"]
-    restart: "no"
+    command: ['npm', 'run', 'prisma:deploy']
+    restart: 'no'
     environment:
       DATABASE_URL: ${DATABASE_URL:?defina DATABASE_URL}
     depends_on:
@@ -37,11 +37,11 @@ services:
     user: '0:0'
     command:
       [
-        "sh",
-        "-ec",
-        "mkdir -p /app/var/whatsapp-media /app/var/imports/whatsapp && chown -R node:node /app/var/whatsapp-media /app/var/imports/whatsapp",
+        'sh',
+        '-ec',
+        'mkdir -p /app/var/whatsapp-media /app/var/imports/whatsapp && chown -R node:node /app/var/whatsapp-media /app/var/imports/whatsapp',
       ]
-    restart: "no"
+    restart: 'no'
     volumes:
       - lume_tenant_whatsapp_media:/app/var/whatsapp-media
       - lume_tenant_whatsapp_imports:/app/var/imports/whatsapp
@@ -97,13 +97,13 @@ services:
       WHATSAPP_IMPORT_ROOT: /app/var/imports/whatsapp
       WHATSAPP_IMPORT_UPLOAD_TEMP_ROOT: /app/var/imports/whatsapp/incoming
       WHATSAPP_ANDROID_BACKUP_MAX_DECRYPTED_BYTES: ${WHATSAPP_ANDROID_BACKUP_MAX_DECRYPTED_BYTES:-4294967296}
+      WHATSAPP_ANDROID_BACKUP_UPLOAD_CHUNK_BYTES: ${WHATSAPP_ANDROID_BACKUP_UPLOAD_CHUNK_BYTES:-16777216}
       WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES: ${WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES:-25000}
       WHATSAPP_IMPORT_APPLY_CONCURRENCY: ${WHATSAPP_IMPORT_APPLY_CONCURRENCY:-4}
       WHATSAPP_ANDROID_MEDIA_MAX_FILE_BYTES: ${WHATSAPP_ANDROID_MEDIA_MAX_FILE_BYTES:-536870912}
       WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_BYTES: ${WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_BYTES:-8589934592}
       WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_ENTRIES: ${WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_ENTRIES:-250000}
-      WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_UNCOMPRESSED_BYTES:
-        ${WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_UNCOMPRESSED_BYTES:-17179869184}
+      WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_UNCOMPRESSED_BYTES: ${WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_UNCOMPRESSED_BYTES:-17179869184}
       WHATSAPP_ANDROID_MEDIA_ARCHIVE_CONCURRENCY: ${WHATSAPP_ANDROID_MEDIA_ARCHIVE_CONCURRENCY:-4}
       WHATSAPP_ANDROID_MEDIA_UPLOAD_CHUNK_BYTES: ${WHATSAPP_ANDROID_MEDIA_UPLOAD_CHUNK_BYTES:-16777216}
       WHATSAPP_HISTORY_IMPORT_MAX_ARCHIVES: ${WHATSAPP_HISTORY_IMPORT_MAX_ARCHIVES:-5000}
@@ -161,7 +161,7 @@ services:
       TENANT_ADMIN_CPF: ${TENANT_ADMIN_CPF:-}
       TENANT_ADMIN_PASSWORD: ${TENANT_ADMIN_PASSWORD:-}
     ports:
-      - "${PORT:-3333}:3333"
+      - '${PORT:-3333}:3333'
     volumes:
       - lume_tenant_whatsapp_media:/app/var/whatsapp-media
       - lume_tenant_whatsapp_imports:/app/var/imports/whatsapp
@@ -173,12 +173,12 @@ services:
     healthcheck:
       test:
         [
-          "CMD",
-          "wget",
-          "--quiet",
-          "--tries=1",
-          "--spider",
-          "http://localhost:3333/api/v1/health/ready",
+          'CMD',
+          'wget',
+          '--quiet',
+          '--tries=1',
+          '--spider',
+          'http://localhost:3333/api/v1/health/ready',
         ]
       interval: 15s
       timeout: 5s

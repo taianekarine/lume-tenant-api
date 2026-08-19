@@ -26,8 +26,14 @@ privado por empresa e reutiliza o contrato do importador oficial. Todas as rotas
 - `POST /`: inicia um lote idempotente por `commandId`;
 - `GET /:batchId`: consulta totais, erros e revisões;
 - `POST /:batchId/archives`: valida um ZIP por vez;
-- `POST /:batchId/android-backup`: recebe o `msgstore.db.crypt15`, a chave
-  hexadecimal e a situação/departamento confirmados pelo operador;
+- `POST /:batchId/android-database-uploads`: inicia ou retoma o envio
+  fracionado do `msgstore.db.crypt15`;
+- `POST /:batchId/android-database-uploads/:uploadId/chunks`: recebe um bloco
+  idempotente e confirma o total armazenado;
+- `POST /:batchId/android-database-uploads/:uploadId/complete`: recebe a chave
+  hexadecimal e a situação/departamento somente após concluir o upload;
+- `POST /:batchId/android-backup`: compatibilidade com clientes antigos que
+  ainda enviam o banco em uma única requisição;
 - `PATCH /:batchId/archives/:archiveId`: confirma identidade e estado;
 - `GET /:batchId/workbook`: baixa a planilha consolidada;
 - `POST /:batchId/apply`: valida e aplica mensagens e mídias pelo importador
@@ -54,9 +60,8 @@ O `msgstore` não contém os binários das mídias: caminhos e hashes de imagens
 áudios, vídeos e documentos são preservados até que o ZIP selecionado forneça o
 conteúdo correspondente.
 
-Uploads grandes também precisam ser liberados no proxy reverso da VPS. Para um
-backup de 454 MB, configure o equivalente a `client_max_body_size 2g` e um
-timeout de leitura superior ao tempo do upload. O volume de importação deve ter
+O proxy reverso precisa aceitar cada bloco de até 32 MiB; não precisa manter uma
+única requisição aberta durante todo o envio do banco. O volume de importação deve ter
 espaço para o arquivo criptografado temporário, o SQLite descriptografado e os
 blocos XLSX; recomenda-se pelo menos três vezes o tamanho do banco aberto.
 

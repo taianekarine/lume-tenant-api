@@ -37,6 +37,7 @@ import {
   AddWhatsAppAndroidBackupDto,
   AddWhatsAppAndroidMediaChunkDto,
   ApplyWhatsAppHistoryImportDto,
+  CreateWhatsAppAndroidDatabaseUploadDto,
   CreateWhatsAppAndroidMediaUploadDto,
   CreateWhatsAppHistoryImportDto,
   ResolveWhatsAppImportDivergenceDto,
@@ -225,6 +226,87 @@ export class WhatsAppHistoryImportController {
       departmentCode: body.departmentCode,
       ownerUsername: body.ownerUsername,
     });
+  }
+
+  @Post(':batchId/android-database-uploads')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiCreatedResponse({
+    description: 'Envio fracionado do backup Android iniciado.',
+  })
+  createAndroidDatabaseUpload(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Body() body: CreateWhatsAppAndroidDatabaseUploadDto,
+  ) {
+    return this.imports.createAndroidDatabaseUpload(
+      current.companyId,
+      batchId,
+      {
+        originalName: body.fileName,
+        sizeBytes: body.sizeBytes,
+      },
+    );
+  }
+
+  @Post(':batchId/android-database-uploads/:uploadId/chunks')
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
+  @UseInterceptors(
+    FileInterceptor('chunk', {
+      limits: { files: 1, fileSize: 32 * 1024 * 1024 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['chunk', 'offsetBytes'],
+      properties: {
+        chunk: { type: 'string', format: 'binary' },
+        offsetBytes: { type: 'integer', minimum: 0 },
+      },
+    },
+  })
+  addAndroidDatabaseUploadChunk(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+    @UploadedFile() file: UploadedWhatsAppAndroidMediaChunk | undefined,
+    @Body() body: AddWhatsAppAndroidMediaChunkDto,
+  ) {
+    if (!file?.buffer?.byteLength) {
+      throw validationError('O bloco do backup Android está vazio.');
+    }
+    return this.imports.addAndroidDatabaseUploadChunk(
+      current.companyId,
+      batchId,
+      {
+        uploadId,
+        offsetBytes: body.offsetBytes,
+        content: file.buffer,
+      },
+    );
+  }
+
+  @Post(':batchId/android-database-uploads/:uploadId/complete')
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOkResponse({ description: 'Backup Android recebido e validado.' })
+  completeAndroidDatabaseUpload(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+    @Body() body: AddWhatsAppAndroidBackupDto,
+  ) {
+    return this.imports.completeAndroidDatabaseUpload(
+      current.companyId,
+      batchId,
+      uploadId,
+      {
+        rootKeyHex: body.rootKey,
+        state: body.state,
+        departmentCode: body.departmentCode,
+        ownerUsername: body.ownerUsername,
+      },
+    );
   }
 
   @Post(':batchId/android-media-archives')
