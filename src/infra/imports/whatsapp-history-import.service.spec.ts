@@ -8,6 +8,7 @@ import JSZip from 'jszip';
 import { parseWhatsAppExportArchive } from './whatsapp-export-parser';
 import { identifyWhatsAppExportMessages } from './whatsapp-export-workbook';
 import {
+  androidImportChunkBatchId,
   ensureImportWorkbookArtifact,
   WhatsAppHistoryImportService,
 } from './whatsapp-history-import.service';
@@ -89,6 +90,59 @@ async function setup() {
 }
 
 describe('WhatsAppHistoryImportService.create', () => {
+  it('gera outro lote filho quando a retomada contém outro conjunto de mensagens', () => {
+    const parsed = {
+      archiveId: 'chat-1',
+      sourceSystem: 'whatsapp-android-backup',
+      externalConversationId: 'android-chat-1',
+      archiveName: 'msgstore.db',
+      archiveSha256: 'sha256',
+      chatFileName: 'msgstore.db',
+      suggestedContactName: 'Contato',
+      suggestedPhoneE164: '5534999999999',
+      senders: [],
+      messages: [
+        {
+          index: 0,
+          externalMessageId: 'message-1',
+          outbound: false,
+          senderName: 'Contato',
+          occurredAt: new Date('2026-08-19T12:00:00.000Z'),
+          wallClockAt: new Date('2026-08-19T12:00:00.000Z'),
+          text: 'Primeira',
+          kind: 'text' as const,
+          attachment: null,
+          system: false,
+        },
+        {
+          index: 1,
+          externalMessageId: 'message-2',
+          outbound: false,
+          senderName: 'Contato',
+          occurredAt: new Date('2026-08-19T12:01:00.000Z'),
+          wallClockAt: new Date('2026-08-19T12:01:00.000Z'),
+          text: 'Segunda',
+          kind: 'text' as const,
+          attachment: null,
+          system: false,
+        },
+      ],
+      messageCount: 2,
+      attachmentCount: 0,
+      missingAttachmentCount: 0,
+      startedAt: new Date('2026-08-19T12:00:00.000Z'),
+      endedAt: new Date('2026-08-19T12:01:00.000Z'),
+    };
+    const full = androidImportChunkBatchId(COMMAND_ID, 1, [parsed]);
+    const repeated = androidImportChunkBatchId(COMMAND_ID, 1, [parsed]);
+    const resumed = androidImportChunkBatchId(COMMAND_ID, 1, [
+      { ...parsed, messages: parsed.messages.slice(1), messageCount: 1 },
+    ]);
+
+    expect(repeated).toBe(full);
+    expect(resumed).not.toBe(full);
+  });
+
   it('preserva o artefato do bloco em uma retomada da importação', async () => {
     const root = await mkdtemp(join(tmpdir(), 'lume-whatsapp-chunk-'));
     roots.push(root);
@@ -451,6 +505,77 @@ describe('WhatsAppHistoryImportService divergence review', () => {
 });
 
 describe('WhatsAppHistoryImportService media retention', () => {
+  it('recebe o banco Android em blocos idempotentes e retoma do último byte confirmado', async () => {
+    const { root, service } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+
+    const started = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'msgstore.db.crypt15', sizeBytes: 64 },
+    );
+    const firstChunk = Buffer.alloc(40, 1);
+    const partial = await service.addAndroidDatabaseUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: firstChunk,
+      },
+    );
+    const replayed = await service.addAndroidDatabaseUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: firstChunk,
+      },
+    );
+    const resumed = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'msgstore.db.crypt15', sizeBytes: 64 },
+    );
+    const completed = await service.addAndroidDatabaseUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 40,
+        content: Buffer.alloc(24, 2),
+      },
+    );
+    const stored = await readFile(
+      join(
+        root,
+        'history-batches',
+        COMPANY_ID,
+        COMMAND_ID,
+        'android-database-uploads',
+        started.uploadId,
+        'database.crypt15',
+      ),
+    );
+
+    expect(partial.uploadedBytes).toBe(40);
+    expect(replayed.uploadedBytes).toBe(40);
+    expect(resumed).toMatchObject({
+      uploadId: started.uploadId,
+      uploadedBytes: 40,
+      status: 'uploading',
+    });
+    expect(completed.uploadedBytes).toBe(64);
+    expect(stored).toEqual(Buffer.concat([firstChunk, Buffer.alloc(24, 2)]));
+  });
+
   it('prepara o ZIP de mídias antes de liberar a aplicação do backup Android', async () => {
     const { root, service, androidMediaImporter } = await setup();
     await service.create({

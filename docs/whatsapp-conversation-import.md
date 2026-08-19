@@ -53,11 +53,21 @@ conversas individuais. A chave deve possuir 64 caracteres hexadecimais, é usada
 somente para derivar a chave AES-GCM da requisição e nunca é escrita no
 manifesto, banco de dados, log ou Git.
 
+O arquivo criptografado é enviado em blocos retomáveis de 16 MiB. Cada bloco é
+confirmado pelo servidor e selecionar novamente o mesmo arquivo continua do
+último byte armazenado, sem repetir o conteúdo. A chave crypt15 não acompanha
+os blocos: ela é enviada somente na confirmação final, depois que 100% do
+arquivo já está no volume privado. O tamanho do bloco pode ser ajustado por
+`WHATSAPP_ANDROID_BACKUP_UPLOAD_CHUNK_BYTES`.
+
 Antes da confirmação, a API autentica o arquivo, descompacta com limite de
 bytes, executa `PRAGMA quick_check` e apresenta totais de conversas, mensagens,
 mídias pendentes e itens excluídos. A situação final e o departamento são
 escolhidos explicitamente. A aplicação ocorre em segundo plano, em blocos
-determinísticos, e pode ser retomada sem duplicar mensagens.
+determinísticos, e pode ser retomada sem duplicar mensagens. A identidade de
+cada bloco também considera o conjunto real de mensagens: uma retomada parcial
+reaproveita blocos idênticos e cria uma nova identidade quando o conteúdo
+restante mudou, evitando colisões com tentativas anteriores.
 
 A comparação incremental usa prioritariamente o `key_id` estável do WhatsApp,
 delimitado pelo telefone normalizado porque esse identificador pode se repetir

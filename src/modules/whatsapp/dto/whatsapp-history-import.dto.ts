@@ -107,6 +107,20 @@ export class AddWhatsAppAndroidBackupDto {
   ownerUsername?: string | null;
 }
 
+export class CreateWhatsAppAndroidDatabaseUploadDto {
+  @ApiProperty({ minLength: 1, maxLength: 255, example: 'msgstore.db.crypt15' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  fileName!: string;
+
+  @ApiProperty({ minimum: 64, maximum: 2_147_483_647 })
+  @IsInt()
+  @Min(64)
+  @Max(2_147_483_647)
+  sizeBytes!: number;
+}
+
 export class CreateWhatsAppAndroidMediaUploadDto {
   @ApiProperty({ minLength: 1, maxLength: 255, example: 'Media.zip' })
   @IsString()

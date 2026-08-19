@@ -248,6 +248,20 @@ interface StoredAndroidMediaUpload {
   updatedAt: string;
 }
 
+interface StoredAndroidDatabaseUpload {
+  schemaVersion: '1.0';
+  uploadId: string;
+  companyId: string;
+  batchId: string;
+  originalName: string;
+  expectedBytes: number;
+  receivedBytes: number;
+  status: 'uploading' | 'processing' | 'completed' | 'failed';
+  createdAt: string;
+  updatedAt: string;
+  errorMessage: string | null;
+}
+
 interface StoredManifest {
   schemaVersion: typeof MANIFEST_VERSION;
   id: string;
@@ -264,6 +278,7 @@ interface StoredManifest {
   appliedAt: string | null;
   archives: StoredArchive[];
   androidBackup: StoredAndroidBackup | null;
+  androidDatabaseUpload?: StoredAndroidDatabaseUpload | null;
 }
 
 export interface CreateWhatsAppHistoryImportInput {
@@ -291,6 +306,18 @@ export interface AddWhatsAppAndroidBackupInput {
   state: WhatsAppHistoryStateOption;
   departmentCode: string;
   ownerUsername?: string | null;
+  retainTemporaryOnFailure?: boolean;
+}
+
+export interface CreateWhatsAppAndroidDatabaseUploadInput {
+  originalName: string;
+  sizeBytes: number;
+}
+
+export interface AddWhatsAppAndroidDatabaseChunkInput {
+  uploadId: string;
+  offsetBytes: number;
+  content: Buffer;
 }
 
 export interface AddWhatsAppAndroidMediaArchiveInput {
@@ -311,6 +338,17 @@ export interface AddWhatsAppAndroidMediaChunkInput {
 }
 
 function presentAndroidMediaUpload(upload: StoredAndroidMediaUpload) {
+  return {
+    schemaVersion: upload.schemaVersion,
+    uploadId: upload.uploadId,
+    fileName: upload.originalName,
+    totalBytes: upload.expectedBytes,
+    uploadedBytes: upload.receivedBytes,
+    status: upload.status,
+  };
+}
+
+function presentAndroidDatabaseUpload(upload: StoredAndroidDatabaseUpload) {
   return {
     schemaVersion: upload.schemaVersion,
     uploadId: upload.uploadId,
@@ -367,6 +405,28 @@ function deterministicUuid(...parts: string[]): string {
     13,
     16,
   )}-8${value.slice(17, 20)}-${value.slice(20, 32)}`;
+}
+
+export function androidImportChunkBatchId(
+  parentBatchId: string,
+  chunkIndex: number,
+  exports: readonly ParsedWhatsAppExport[],
+): string {
+  const contentHash = createHash('sha256');
+  for (const item of exports) {
+    contentHash.update(item.externalConversationId ?? item.archiveId);
+    contentHash.update('\0');
+    for (const message of item.messages) {
+      contentHash.update(message.externalMessageId ?? '');
+      contentHash.update('\0');
+    }
+  }
+  return deterministicUuid(
+    'whatsapp-android-import',
+    parentBatchId,
+    String(chunkIndex),
+    contentHash.digest('hex'),
+  );
 }
 
 function mappingIssues(
@@ -593,6 +653,7 @@ export class WhatsAppHistoryImportService {
   private readonly retentionMs: number;
   private readonly maximumAndroidDatabaseBytes: number;
   private readonly maximumAndroidMediaArchiveBytes: number;
+  private readonly androidDatabaseUploadChunkBytes: number;
   private readonly androidMediaUploadChunkBytes: number;
   private readonly androidImportChunkMessages: number;
   private readonly locks = new Map<string, Promise<unknown>>();
@@ -630,6 +691,17 @@ export class WhatsAppHistoryImportService {
       config,
       'WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_BYTES',
       8_589_934_592,
+    );
+    this.androidDatabaseUploadChunkBytes = Math.min(
+      32 * 1024 * 1024,
+      Math.max(
+        1 * 1024 * 1024,
+        finiteConfig(
+          config,
+          'WHATSAPP_ANDROID_BACKUP_UPLOAD_CHUNK_BYTES',
+          16 * 1024 * 1024,
+        ),
+      ),
     );
     this.androidMediaUploadChunkBytes = Math.min(
       32 * 1024 * 1024,
@@ -771,6 +843,7 @@ export class WhatsAppHistoryImportService {
           appliedAt: null,
           archives: [],
           androidBackup: null,
+          androidDatabaseUpload: null,
         };
         await this.writeManifest(manifest);
         return presentManifest(manifest);
@@ -926,6 +999,7 @@ export class WhatsAppHistoryImportService {
     input: AddWhatsAppAndroidBackupInput,
   ) {
     return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      let accepted = false;
       try {
         const manifest = await this.readManifest(companyId, batchId);
         if (manifest.status !== 'draft') {
@@ -1005,14 +1079,355 @@ export class WhatsAppHistoryImportService {
           },
           mediaImport: null,
         };
+        if (manifest.androidDatabaseUpload?.status !== 'processing') {
+          manifest.androidDatabaseUpload = null;
+        }
         manifest.updatedAt = new Date().toISOString();
         await this.writeManifest(manifest);
+        accepted = true;
         this.resumeAndroidPreview(manifest);
         return presentManifest(manifest);
       } finally {
-        await rm(input.temporaryPath, { force: true });
+        if (!input.retainTemporaryOnFailure || accepted) {
+          await rm(input.temporaryPath, { force: true });
+        }
       }
     });
+  }
+
+  async createAndroidDatabaseUpload(
+    companyId: string,
+    batchId: string,
+    input: CreateWhatsAppAndroidDatabaseUploadInput,
+  ) {
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      const manifest = await this.readManifest(companyId, batchId);
+      if (
+        manifest.status !== 'draft' ||
+        manifest.androidBackup ||
+        manifest.archives.length > 0
+      ) {
+        throw validationError(
+          'Este lote não está disponível para receber outro backup Android.',
+        );
+      }
+      const originalName = input.originalName.trim().slice(0, 255);
+      if (!originalName.toLocaleLowerCase('pt-BR').endsWith('.crypt15')) {
+        throw validationError('Selecione o arquivo msgstore.db.crypt15.');
+      }
+      if (
+        !Number.isSafeInteger(input.sizeBytes) ||
+        input.sizeBytes < 64 ||
+        input.sizeBytes > 2_147_483_647
+      ) {
+        throw validationError('O arquivo msgstore possui tamanho inválido.');
+      }
+
+      const current = manifest.androidDatabaseUpload;
+      if (
+        current &&
+        current.originalName === originalName &&
+        current.expectedBytes === input.sizeBytes &&
+        ['uploading', 'failed'].includes(current.status)
+      ) {
+        const uploadDirectory = this.androidDatabaseUploadPath(
+          companyId,
+          batchId,
+          current.uploadId,
+        );
+        const upload = await this.readAndroidDatabaseUpload(uploadDirectory);
+        if (
+          upload.companyId !== companyId ||
+          upload.batchId !== batchId ||
+          upload.uploadId !== current.uploadId
+        ) {
+          throw validationError('Este envio de backup não está disponível.');
+        }
+        if (upload.status === 'failed') {
+          upload.status = 'uploading';
+          upload.errorMessage = null;
+          upload.updatedAt = new Date().toISOString();
+          await this.writeAndroidDatabaseUpload(uploadDirectory, upload);
+          manifest.androidDatabaseUpload = upload;
+          manifest.updatedAt = upload.updatedAt;
+          await this.writeManifest(manifest);
+        }
+        return {
+          ...presentAndroidDatabaseUpload(upload),
+          chunkSizeBytes: this.androidDatabaseUploadChunkBytes,
+        };
+      }
+      if (current?.status === 'uploading' || current?.status === 'processing') {
+        throw validationError(
+          'Já existe um backup Android sendo enviado ou processado neste lote.',
+        );
+      }
+      if (current) {
+        await rm(
+          this.androidDatabaseUploadPath(companyId, batchId, current.uploadId),
+          { recursive: true, force: true },
+        );
+      }
+
+      const uploadId = randomUUID();
+      const now = new Date().toISOString();
+      const upload: StoredAndroidDatabaseUpload = {
+        schemaVersion: '1.0',
+        uploadId,
+        companyId,
+        batchId,
+        originalName,
+        expectedBytes: input.sizeBytes,
+        receivedBytes: 0,
+        status: 'uploading',
+        createdAt: now,
+        updatedAt: now,
+        errorMessage: null,
+      };
+      const uploadDirectory = this.androidDatabaseUploadPath(
+        companyId,
+        batchId,
+        uploadId,
+      );
+      await mkdir(uploadDirectory, { recursive: true });
+      await writeFile(
+        this.androidDatabaseArchivePath(uploadDirectory),
+        Buffer.alloc(0),
+        { mode: 0o600 },
+      );
+      await this.writeAndroidDatabaseUpload(uploadDirectory, upload);
+      manifest.androidDatabaseUpload = upload;
+      manifest.updatedAt = now;
+      await this.writeManifest(manifest);
+      return {
+        ...presentAndroidDatabaseUpload(upload),
+        chunkSizeBytes: this.androidDatabaseUploadChunkBytes,
+      };
+    });
+  }
+
+  async addAndroidDatabaseUploadChunk(
+    companyId: string,
+    batchId: string,
+    input: AddWhatsAppAndroidDatabaseChunkInput,
+  ) {
+    assertUuid(input.uploadId, 'uploadId');
+    return this.withBatchLock(`${companyId}:${batchId}`, async () => {
+      if (
+        !Number.isSafeInteger(input.offsetBytes) ||
+        input.offsetBytes < 0 ||
+        input.content.byteLength < 1 ||
+        input.content.byteLength > this.androidDatabaseUploadChunkBytes
+      ) {
+        throw validationError(
+          'O bloco enviado possui tamanho ou posição inválida.',
+        );
+      }
+      const manifest = await this.readManifest(companyId, batchId);
+      const current = manifest.androidDatabaseUpload;
+      if (
+        manifest.status !== 'draft' ||
+        manifest.androidBackup ||
+        !current ||
+        current.uploadId !== input.uploadId
+      ) {
+        throw validationError('Este envio de backup não está disponível.');
+      }
+      const uploadDirectory = this.androidDatabaseUploadPath(
+        companyId,
+        batchId,
+        input.uploadId,
+      );
+      const upload = await this.readAndroidDatabaseUpload(uploadDirectory);
+      if (
+        upload.companyId !== companyId ||
+        upload.batchId !== batchId ||
+        upload.status !== 'uploading'
+      ) {
+        throw validationError('Este envio de backup não está disponível.');
+      }
+      const archivePath = this.androidDatabaseArchivePath(uploadDirectory);
+      const archiveStat = await stat(archivePath);
+      if (archiveStat.size !== upload.receivedBytes) {
+        throw validationError(
+          'O envio parcial não pôde ser retomado com segurança.',
+        );
+      }
+      if (input.offsetBytes < upload.receivedBytes) {
+        const replayEnd = input.offsetBytes + input.content.byteLength;
+        if (replayEnd > upload.receivedBytes) {
+          throw validationError(
+            `O envio deve continuar a partir de ${upload.receivedBytes} bytes.`,
+          );
+        }
+        const existing = Buffer.alloc(input.content.byteLength);
+        const handle = await open(archivePath, 'r');
+        try {
+          const { bytesRead } = await handle.read(
+            existing,
+            0,
+            existing.byteLength,
+            input.offsetBytes,
+          );
+          if (
+            bytesRead !== existing.byteLength ||
+            !existing.equals(input.content)
+          ) {
+            throw validationError(
+              'O bloco repetido não corresponde ao conteúdo já recebido.',
+            );
+          }
+        } finally {
+          await handle.close();
+        }
+        return {
+          ...presentAndroidDatabaseUpload(upload),
+          chunkSizeBytes: this.androidDatabaseUploadChunkBytes,
+        };
+      }
+      if (upload.receivedBytes !== input.offsetBytes) {
+        throw validationError(
+          `O envio deve continuar a partir de ${upload.receivedBytes} bytes.`,
+        );
+      }
+      if (
+        upload.receivedBytes + input.content.byteLength >
+        upload.expectedBytes
+      ) {
+        throw validationError('O bloco excede o tamanho declarado do backup.');
+      }
+      await appendFile(archivePath, input.content);
+      upload.receivedBytes += input.content.byteLength;
+      upload.updatedAt = new Date().toISOString();
+      await this.writeAndroidDatabaseUpload(uploadDirectory, upload);
+      manifest.androidDatabaseUpload = upload;
+      manifest.updatedAt = upload.updatedAt;
+      await this.writeManifest(manifest);
+      return {
+        ...presentAndroidDatabaseUpload(upload),
+        chunkSizeBytes: this.androidDatabaseUploadChunkBytes,
+      };
+    });
+  }
+
+  async completeAndroidDatabaseUpload(
+    companyId: string,
+    batchId: string,
+    uploadId: string,
+    input: Omit<
+      AddWhatsAppAndroidBackupInput,
+      | 'temporaryPath'
+      | 'sizeBytes'
+      | 'originalName'
+      | 'retainTemporaryOnFailure'
+    >,
+  ) {
+    assertUuid(uploadId, 'uploadId');
+    const preparation = await this.withBatchLock(
+      `${companyId}:${batchId}`,
+      async () => {
+        const manifest = await this.readManifest(companyId, batchId);
+        const current = manifest.androidDatabaseUpload;
+        if (
+          manifest.androidBackup &&
+          current?.uploadId === uploadId &&
+          current.status === 'completed'
+        ) {
+          return { result: presentManifest(manifest) } as const;
+        }
+        if (
+          manifest.status !== 'draft' ||
+          manifest.androidBackup ||
+          !current ||
+          current.uploadId !== uploadId
+        ) {
+          throw validationError('Este envio de backup não está disponível.');
+        }
+        const uploadDirectory = this.androidDatabaseUploadPath(
+          companyId,
+          batchId,
+          uploadId,
+        );
+        const stored = await this.readAndroidDatabaseUpload(uploadDirectory);
+        const archivePath = this.androidDatabaseArchivePath(uploadDirectory);
+        const archiveStat = await stat(archivePath);
+        if (
+          stored.companyId !== companyId ||
+          stored.batchId !== batchId ||
+          stored.uploadId !== uploadId ||
+          archiveStat.size !== stored.receivedBytes
+        ) {
+          throw validationError(
+            'O envio parcial não pôde ser retomado com segurança.',
+          );
+        }
+        if (stored.receivedBytes !== stored.expectedBytes) {
+          throw validationError(
+            `O backup ainda não foi enviado por completo: ${stored.receivedBytes} de ${stored.expectedBytes} bytes.`,
+          );
+        }
+        stored.status = 'processing';
+        stored.errorMessage = null;
+        stored.updatedAt = new Date().toISOString();
+        await this.writeAndroidDatabaseUpload(uploadDirectory, stored);
+        manifest.androidDatabaseUpload = stored;
+        manifest.updatedAt = stored.updatedAt;
+        await this.writeManifest(manifest);
+        return { upload: stored } as const;
+      },
+    );
+    if ('result' in preparation) return preparation.result;
+    const upload = preparation.upload;
+
+    const uploadDirectory = this.androidDatabaseUploadPath(
+      companyId,
+      batchId,
+      uploadId,
+    );
+    try {
+      const result = await this.addAndroidBackup(companyId, batchId, {
+        ...input,
+        originalName: upload.originalName,
+        sizeBytes: upload.expectedBytes,
+        temporaryPath: this.androidDatabaseArchivePath(uploadDirectory),
+        retainTemporaryOnFailure: true,
+      });
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const manifest = await this.readManifest(companyId, batchId);
+        const current = manifest.androidDatabaseUpload;
+        if (!current || current.uploadId !== uploadId) return;
+        current.status = 'completed';
+        current.errorMessage = null;
+        current.updatedAt = new Date().toISOString();
+        manifest.updatedAt = current.updatedAt;
+        await this.writeManifest(manifest);
+      });
+      await rm(uploadDirectory, { recursive: true, force: true });
+      return result;
+    } catch (error) {
+      const decryptedDatabasePath = resolve(
+        this.batchPath(companyId, batchId),
+        'android',
+        'msgstore.db',
+      );
+      assertInside(this.batchPath(companyId, batchId), decryptedDatabasePath);
+      await rm(decryptedDatabasePath, { force: true }).catch(() => undefined);
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const manifest = await this.readManifest(companyId, batchId);
+        const current = manifest.androidDatabaseUpload;
+        if (!current || current.uploadId !== uploadId) return;
+        current.status = 'failed';
+        current.errorMessage = publicImportError(
+          error,
+          'O backup não pôde ser validado. Tente novamente.',
+        );
+        current.updatedAt = new Date().toISOString();
+        manifest.updatedAt = current.updatedAt;
+        await this.writeAndroidDatabaseUpload(uploadDirectory, current);
+        await this.writeManifest(manifest);
+      }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async addAndroidMediaArchive(
@@ -2169,10 +2584,10 @@ export class WhatsAppHistoryImportService {
           );
           return generated.content;
         });
-        const childBatchId = deterministicUuid(
-          'whatsapp-android-import',
+        const childBatchId = androidImportChunkBatchId(
           batchId,
-          String(chunkIndex),
+          chunkIndex,
+          exports,
         );
         const importInput = {
           companyId,
@@ -2624,6 +3039,67 @@ export class WhatsAppHistoryImportService {
     return path;
   }
 
+  private androidDatabaseUploadPath(
+    companyId: string,
+    batchId: string,
+    uploadId: string,
+  ): string {
+    assertUuid(uploadId, 'uploadId');
+    const batchPath = this.batchPath(companyId, batchId);
+    const path = resolve(batchPath, 'android-database-uploads', uploadId);
+    assertInside(batchPath, path);
+    return path;
+  }
+
+  private androidDatabaseArchivePath(uploadDirectory: string): string {
+    const path = resolve(uploadDirectory, 'database.crypt15');
+    assertInside(uploadDirectory, path);
+    return path;
+  }
+
+  private async readAndroidDatabaseUpload(
+    uploadDirectory: string,
+  ): Promise<StoredAndroidDatabaseUpload> {
+    const path = resolve(uploadDirectory, 'upload.json');
+    assertInside(uploadDirectory, path);
+    let upload: StoredAndroidDatabaseUpload;
+    try {
+      upload = JSON.parse(
+        await readFile(path, 'utf8'),
+      ) as StoredAndroidDatabaseUpload;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw notFound('Envio do backup Android');
+      }
+      throw validationError('O envio do backup Android está corrompido.');
+    }
+    if (
+      upload.schemaVersion !== '1.0' ||
+      !UUID_PATTERN.test(upload.uploadId) ||
+      !Number.isSafeInteger(upload.expectedBytes) ||
+      !Number.isSafeInteger(upload.receivedBytes)
+    ) {
+      throw validationError('O envio do backup Android é inválido.');
+    }
+    return upload;
+  }
+
+  private async writeAndroidDatabaseUpload(
+    uploadDirectory: string,
+    upload: StoredAndroidDatabaseUpload,
+  ): Promise<void> {
+    await mkdir(uploadDirectory, { recursive: true });
+    const destination = resolve(uploadDirectory, 'upload.json');
+    const temporary = resolve(uploadDirectory, `upload.${randomUUID()}.tmp`);
+    assertInside(uploadDirectory, destination);
+    assertInside(uploadDirectory, temporary);
+    await writeFile(temporary, JSON.stringify(upload), {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await rename(temporary, destination);
+  }
+
   private androidMediaArchivePath(uploadDirectory: string): string {
     const path = resolve(uploadDirectory, 'archive.zip');
     assertInside(uploadDirectory, path);
@@ -2924,6 +3400,7 @@ export class WhatsAppHistoryImportService {
       throw validationError('O lote de importação é inválido.');
     }
     manifest.androidBackup ??= null;
+    manifest.androidDatabaseUpload ??= null;
     if (
       new Date(manifest.expiresAt) < new Date() &&
       manifest.status === 'draft'
