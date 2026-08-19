@@ -39,6 +39,7 @@ import {
   ApplyWhatsAppHistoryImportDto,
   CreateWhatsAppAndroidMediaUploadDto,
   CreateWhatsAppHistoryImportDto,
+  ResolveWhatsAppImportDivergenceDto,
   UpdateWhatsAppHistoryMappingDto,
 } from './dto/whatsapp-history-import.dto';
 
@@ -117,6 +118,34 @@ export class WhatsAppHistoryImportController {
     @Param('batchId', new ParseUUIDPipe()) batchId: string,
   ) {
     return this.imports.detail(current.companyId, batchId);
+  }
+
+  @Get(':batchId/android-divergences')
+  @ApiOkResponse({
+    description: 'Mensagens divergentes disponíveis para revisão humana.',
+  })
+  androidDivergences(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+  ) {
+    return this.imports.androidDivergences(current.companyId, batchId);
+  }
+
+  @Patch(':batchId/android-divergences/:externalMessageId')
+  resolveAndroidDivergence(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('batchId', new ParseUUIDPipe()) batchId: string,
+    @Param('externalMessageId') externalMessageId: string,
+    @Body() body: ResolveWhatsAppImportDivergenceDto,
+  ) {
+    return this.imports.resolveAndroidDivergence(
+      current.companyId,
+      batchId,
+      externalMessageId,
+      body.resolution,
+      current.id,
+      current.username,
+    );
   }
 
   @Post(':batchId/archives')

@@ -35,7 +35,11 @@ async function setup() {
         phoneNumber: '5534999999999',
       }),
     },
-    whatsAppImportExternalRef: { findMany: vi.fn().mockResolvedValue([]) },
+    whatsAppImportExternalRef: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
     whatsAppMessage: {
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -212,6 +216,237 @@ describe('WhatsAppHistoryImportService.create', () => {
     await expect(
       service.appliedAndroidBackups('77777777-7777-4777-8777-777777777777'),
     ).resolves.toEqual([]);
+  });
+});
+
+describe('WhatsAppHistoryImportService divergence review', () => {
+  it('lista as diferenças e registra a decisão humana antes de aplicar', async () => {
+    const { root, service } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const batchPath = join(root, 'history-batches', COMPANY_ID, COMMAND_ID);
+    const manifestPath = join(batchPath, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 0,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: null,
+      chunksCompleted: 0,
+      conversationsProcessed: 0,
+      messagesProcessed: 0,
+      errorMessage: null,
+      comparison: {
+        status: 'ready',
+        messagesExisting: 0,
+        messagesNew: 0,
+        messagesDivergent: 2,
+        messagesDivergentPending: 2,
+        mediaStored: 0,
+        mediaNew: 0,
+        mediaMissing: 0,
+        updatedAt: new Date().toISOString(),
+        errorMessage: null,
+      },
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const androidPath = join(batchPath, 'android');
+    await mkdir(androidPath, { recursive: true });
+    const message = (externalMessageId: string) => ({
+      externalMessageId,
+      internalMessageId: '55555555-5555-4555-8555-555555555555',
+      externalConversationId: 'conversation-1',
+      contactName: 'Contato',
+      phoneE164: '5534999999999',
+      senderName: 'Contato',
+      existing: {
+        direction: 'inbound',
+        deliveryStatus: 'received',
+        kind: 'text',
+        text: 'Mensagem atual',
+        occurredAt: '2026-08-19T12:00:00.000Z',
+        mediaReference: null,
+        payloadHash: 'a'.repeat(64),
+      },
+      backup: {
+        direction: 'inbound',
+        deliveryStatus: 'received',
+        kind: 'text',
+        text: 'Mensagem do backup',
+        occurredAt: '2026-08-19T12:00:00.000Z',
+        mediaReference: null,
+        payloadHash: 'b'.repeat(64),
+      },
+      resolution: null,
+      decidedByUserId: null,
+      decidedByUsername: null,
+      decidedAt: null,
+    });
+    await writeFile(
+      join(androidPath, 'message-divergences.json'),
+      JSON.stringify([message('message-1'), message('message-2')]),
+      'utf8',
+    );
+
+    await expect(
+      service.apply(COMPANY_ID, COMMAND_ID, new Date()),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    const listed = await service.androidDivergences(COMPANY_ID, COMMAND_ID);
+    expect(listed).toMatchObject({ total: 2, pending: 2 });
+
+    const resolved = await service.resolveAndroidDivergence(
+      COMPANY_ID,
+      COMMAND_ID,
+      'message-1',
+      'keep-existing',
+      ACTOR_ID,
+      'admin',
+    );
+
+    expect(resolved).toMatchObject({
+      pending: 1,
+      divergence: {
+        externalMessageId: 'message-1',
+        resolution: 'keep-existing',
+        decidedByUsername: 'admin',
+      },
+    });
+    await expect(
+      service.androidDivergences(COMPANY_ID, COMMAND_ID),
+    ).resolves.toMatchObject({ total: 2, pending: 1 });
+  });
+
+  it('memoriza a versão recusada para não pedir a mesma decisão em uma nova importação', async () => {
+    const { prisma, service } = await setup();
+    prisma.whatsAppImportExternalRef.findFirst.mockResolvedValue({
+      id: '66666666-6666-4666-8666-666666666666',
+      payloadHash: 'a'.repeat(64),
+      acceptedPayloadHashes: null,
+    });
+    const applyResolutions = service as unknown as {
+      applyAndroidDivergenceResolutions(
+        companyId: string,
+        batchId: string,
+        divergences: readonly Record<string, unknown>[],
+      ): Promise<void>;
+    };
+
+    await applyResolutions.applyAndroidDivergenceResolutions(
+      COMPANY_ID,
+      COMMAND_ID,
+      [
+        {
+          externalMessageId: 'message-1',
+          internalMessageId: '55555555-5555-4555-8555-555555555555',
+          existing: {
+            mediaReference: null,
+          },
+          backup: {
+            payloadHash: 'b'.repeat(64),
+          },
+          resolution: 'keep-existing',
+        },
+      ],
+    );
+
+    expect(prisma.whatsAppImportExternalRef.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: '66666666-6666-4666-8666-666666666666',
+        companyId: COMPANY_ID,
+      },
+      data: {
+        acceptedPayloadHashes: ['b'.repeat(64)],
+      },
+    });
+    expect(prisma.whatsAppMessage.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('substitui a mensagem quando a versão do backup é escolhida', async () => {
+    const { prisma, service } = await setup();
+    prisma.whatsAppImportExternalRef.findFirst.mockResolvedValue({
+      id: '66666666-6666-4666-8666-666666666666',
+      payloadHash: 'a'.repeat(64),
+      acceptedPayloadHashes: null,
+    });
+    prisma.whatsAppMessage.updateMany.mockResolvedValue({ count: 1 });
+    const applyResolutions = service as unknown as {
+      applyAndroidDivergenceResolutions(
+        companyId: string,
+        batchId: string,
+        divergences: readonly Record<string, unknown>[],
+      ): Promise<void>;
+    };
+
+    await applyResolutions.applyAndroidDivergenceResolutions(
+      COMPANY_ID,
+      COMMAND_ID,
+      [
+        {
+          externalMessageId: 'message-1',
+          internalMessageId: '55555555-5555-4555-8555-555555555555',
+          existing: {
+            mediaReference: null,
+          },
+          backup: {
+            direction: 'inbound',
+            deliveryStatus: 'received',
+            kind: 'text',
+            text: 'Mensagem do backup',
+            occurredAt: '2026-08-19T12:00:00.000Z',
+            mediaReference: null,
+            payloadHash: 'b'.repeat(64),
+          },
+          resolution: 'use-backup',
+        },
+      ],
+    );
+
+    expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: '55555555-5555-4555-8555-555555555555',
+          companyId: COMPANY_ID,
+        },
+        data: expect.objectContaining({
+          text: 'Mensagem do backup',
+          occurredAt: new Date('2026-08-19T12:00:00.000Z'),
+        }),
+      }),
+    );
+    expect(prisma.whatsAppImportExternalRef.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payloadHash: 'b'.repeat(64),
+        }),
+      }),
+    );
   });
 });
 
