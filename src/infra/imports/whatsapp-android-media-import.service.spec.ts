@@ -172,6 +172,10 @@ describe('WhatsAppAndroidMediaImportService', () => {
     const archivePath = join(mediaRoot, 'midias.zip');
     const zip = new JSZip();
     zip.file(
+      'WhatsApp Business/Media/WhatsApp Images/arquivo-sem-referencia.jpg',
+      Buffer.alloc(2 * 1024 * 1024, 1),
+    );
+    zip.file(
       'WhatsApp Business/Media/WhatsApp Images/foto.jpg',
       Buffer.from('imagem-historica'),
     );
@@ -188,7 +192,7 @@ describe('WhatsAppAndroidMediaImportService', () => {
 
     expect(result).toMatchObject({
       candidates: 1,
-      filesScanned: 1,
+      filesScanned: 2,
       attached: 1,
       missing: 0,
     });

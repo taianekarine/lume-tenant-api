@@ -57,9 +57,9 @@ const UUID_PATTERN =
 const IMPORT_BATCH_LEASE_MS = 5 * 60 * 1_000;
 const IMPORT_TRANSACTION_MAX_WAIT_MS = 10_000;
 const IMPORT_TRANSACTION_TIMEOUT_MS = 120_000;
-const IMPORT_TRANSACTION_MAX_ATTEMPTS = 5;
-const IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS = 25;
-const IMPORT_CREATE_MANY_CHUNK_SIZE = 500;
+const IMPORT_TRANSACTION_MAX_ATTEMPTS = 8;
+const IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS = 50;
+const IMPORT_CREATE_MANY_CHUNK_SIZE = 1_000;
 
 const DEPARTMENT_TO_PRISMA: Record<string, DepartmentCode> = {
   commercial: DepartmentCode.COMMERCIAL,
@@ -246,17 +246,25 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-function isTransactionWriteConflict(error: unknown): boolean {
+export function isTransactionWriteConflict(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
-  if ('code' in error && error.code === 'P2034') return true;
-  if (!('cause' in error)) return false;
-  const cause = error.cause;
-  return (
-    typeof cause === 'object' &&
-    cause !== null &&
-    'kind' in cause &&
-    cause.kind === 'TransactionWriteConflict'
-  );
+  if (
+    ('code' in error &&
+      ['P2034', '40001', '40P01'].includes(String(error.code))) ||
+    ('kind' in error && error.kind === 'TransactionWriteConflict')
+  ) {
+    return true;
+  }
+  if (
+    'message' in error &&
+    typeof error.message === 'string' &&
+    /write conflict|deadlock|serialization failure|transactionwriteconflict/i.test(
+      error.message,
+    )
+  ) {
+    return true;
+  }
+  return 'cause' in error && isTransactionWriteConflict(error.cause);
 }
 
 async function retryTransactionWriteConflict<T>(
@@ -275,7 +283,11 @@ async function retryTransactionWriteConflict<T>(
       await new Promise((resolve) =>
         setTimeout(
           resolve,
-          IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+          Math.min(
+            1_000,
+            IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+          ) +
+            Math.floor(Math.random() * IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS),
         ),
       );
     }
@@ -2418,7 +2430,11 @@ export class WhatsAppImportService {
                   documents,
                 ),
               {
-                isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+                // The batch lease guarantees one importer for this child batch.
+                // READ COMMITTED avoids PostgreSQL serialization failures while
+                // independent conversations are persisted in parallel; unique
+                // constraints remain the final idempotency guard.
+                isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
                 maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
                 timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
               },

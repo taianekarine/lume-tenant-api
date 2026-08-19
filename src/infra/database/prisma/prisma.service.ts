@@ -17,7 +17,13 @@ export class PrismaService
     const adapter = new PrismaPg({
       connectionString: config.getOrThrow<string>('DATABASE_URL'),
     });
-    super({ adapter });
+    super({
+      adapter,
+      transactionOptions: {
+        maxWait: config.get<number>('DATABASE_TRANSACTION_MAX_WAIT_MS', 15_000),
+        timeout: config.get<number>('DATABASE_TRANSACTION_TIMEOUT_MS', 60_000),
+      },
+    });
   }
 
   async onModuleInit(): Promise<void> {

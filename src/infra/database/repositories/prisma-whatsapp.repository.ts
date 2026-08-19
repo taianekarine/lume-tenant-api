@@ -6089,7 +6089,7 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       sentToHuman,
       unreadTotals,
       unreadConversations,
-    ] = await this.prisma.$transaction([
+    ] = await Promise.all([
       this.prisma.whatsAppConversation.findMany({
         where,
         include: conversationInclude,

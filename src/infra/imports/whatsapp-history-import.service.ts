@@ -3,6 +3,7 @@ import type { Dirent } from 'node:fs';
 import {
   appendFile,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -12,7 +13,7 @@ import {
 } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import JSZip from 'jszip';
 
@@ -54,6 +55,7 @@ import {
 } from './whatsapp-export-workbook';
 import {
   importedMediaMetadata,
+  isTransactionWriteConflict,
   WhatsAppImportService,
 } from './whatsapp-import.service';
 import { importPayloadHash } from './whatsapp-import-package';
@@ -75,7 +77,7 @@ const IMPORT_DEPARTMENTS = new Set([
   'monitoring',
   'operations',
 ]);
-const EXTERNAL_REFERENCE_CHUNK_SIZE = 250;
+const EXTERNAL_REFERENCE_CHUNK_SIZE = 1_000;
 
 export async function ensureImportWorkbookArtifact(
   workbookPath: string,
@@ -342,6 +344,23 @@ function assertInside(root: string, candidate: string): void {
   }
 }
 
+function publicImportError(error: unknown, fallback: string): string {
+  if (isTransactionWriteConflict(error)) {
+    return 'O banco estava ocupado durante a importação. O processamento pode ser retomado com segurança, sem duplicar mensagens.';
+  }
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'VALIDATION_ERROR' &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
+    return error.message.trim().slice(0, 1_000);
+  }
+  return fallback;
+}
+
 function deterministicUuid(...parts: string[]): string {
   const value = createHash('sha256').update(parts.join('\0')).digest('hex');
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-4${value.slice(
@@ -567,6 +586,7 @@ function presentManifest(manifest: StoredManifest) {
 
 @Injectable()
 export class WhatsAppHistoryImportService {
+  private readonly logger = new Logger(WhatsAppHistoryImportService.name);
   private readonly root: string;
   private readonly limits: WhatsAppExportParserLimits;
   private readonly maximumArchives: number;
@@ -626,7 +646,7 @@ export class WhatsAppHistoryImportService {
       50_000,
       Math.max(
         1_000,
-        finiteConfig(config, 'WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES', 10_000),
+        finiteConfig(config, 'WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES', 25_000),
       ),
     );
     this.limits = {
@@ -761,6 +781,7 @@ export class WhatsAppHistoryImportService {
   async detail(companyId: string, batchId: string) {
     const manifest = await this.readManifest(companyId, batchId);
     this.resumeAndroidPreview(manifest);
+    this.resumeAndroidImport(manifest);
     this.resumeAndroidMediaJob(manifest);
     return presentManifest(manifest);
   }
@@ -1242,6 +1263,45 @@ export class WhatsAppHistoryImportService {
       ) {
         throw validationError('Este envio de mídias não está disponível.');
       }
+      const archivePath = this.androidMediaArchivePath(uploadDirectory);
+      const archiveStat = await stat(archivePath);
+      if (archiveStat.size !== upload.receivedBytes) {
+        throw validationError(
+          'O envio parcial não pôde ser retomado com segurança.',
+        );
+      }
+      if (input.offsetBytes < upload.receivedBytes) {
+        const replayEnd = input.offsetBytes + input.content.byteLength;
+        if (replayEnd > upload.receivedBytes) {
+          throw validationError(
+            `O envio deve continuar a partir de ${upload.receivedBytes} bytes.`,
+          );
+        }
+        const existing = Buffer.alloc(input.content.byteLength);
+        const handle = await open(archivePath, 'r');
+        try {
+          const { bytesRead } = await handle.read(
+            existing,
+            0,
+            existing.byteLength,
+            input.offsetBytes,
+          );
+          if (
+            bytesRead !== existing.byteLength ||
+            !existing.equals(input.content)
+          ) {
+            throw validationError(
+              'O bloco repetido não corresponde ao conteúdo já recebido.',
+            );
+          }
+        } finally {
+          await handle.close();
+        }
+        return {
+          ...presentAndroidMediaUpload(upload),
+          chunkSizeBytes: this.androidMediaUploadChunkBytes,
+        };
+      }
       if (upload.receivedBytes !== input.offsetBytes) {
         throw validationError(
           `O envio deve continuar a partir de ${upload.receivedBytes} bytes.`,
@@ -1252,13 +1312,6 @@ export class WhatsAppHistoryImportService {
         upload.expectedBytes
       ) {
         throw validationError('O bloco excede o tamanho declarado do ZIP.');
-      }
-      const archivePath = this.androidMediaArchivePath(uploadDirectory);
-      const archiveStat = await stat(archivePath);
-      if (archiveStat.size !== upload.receivedBytes) {
-        throw validationError(
-          'O envio parcial não pôde ser retomado com segurança.',
-        );
       }
       await appendFile(archivePath, input.content);
       upload.receivedBytes += input.content.byteLength;
@@ -1501,15 +1554,7 @@ export class WhatsAppHistoryImportService {
         manifest.status = 'applying';
         manifest.updatedAt = new Date().toISOString();
         await this.writeManifest(manifest);
-        const jobKey = `${companyId}:${batchId}`;
-        if (!this.androidJobs.has(jobKey)) {
-          this.androidJobs.add(jobKey);
-          setImmediate(() => {
-            void this.runAndroidImport(companyId, batchId).finally(() =>
-              this.androidJobs.delete(jobKey),
-            );
-          });
-        }
+        this.resumeAndroidImport(manifest);
         return presentManifest(manifest);
       }
       const loaded = await this.loadExports(manifest);
@@ -1603,6 +1648,20 @@ export class WhatsAppHistoryImportService {
     setImmediate(() => {
       void this.runAndroidPreview(manifest.companyId, manifest.id).finally(() =>
         this.androidPreviewJobs.delete(jobKey),
+      );
+    });
+  }
+
+  private resumeAndroidImport(manifest: StoredManifest): void {
+    if (manifest.status !== 'applying' || !manifest.androidBackup?.cutoffAt) {
+      return;
+    }
+    const jobKey = `${manifest.companyId}:${manifest.id}`;
+    if (this.androidJobs.has(jobKey)) return;
+    this.androidJobs.add(jobKey);
+    setImmediate(() => {
+      void this.runAndroidImport(manifest.companyId, manifest.id).finally(() =>
+        this.androidJobs.delete(jobKey),
       );
     });
   }
@@ -1881,10 +1940,10 @@ export class WhatsAppHistoryImportService {
           mediaNew: 0,
           mediaMissing: manifest.androidBackup.summary.mediaReferences,
           updatedAt: now,
-          errorMessage: (error instanceof Error
-            ? error.message
-            : 'Não foi possível comparar este backup.'
-          ).slice(0, 1_000),
+          errorMessage: publicImportError(
+            error,
+            'Não foi possível comparar este backup. Tente novamente.',
+          ),
         };
         manifest.updatedAt = now;
         await this.writeManifest(manifest);
@@ -2234,14 +2293,17 @@ export class WhatsAppHistoryImportService {
       await this.writeManifest(manifest);
       this.resumeAndroidMediaJob(manifest, true);
     } catch (error) {
+      this.logger.error(
+        `Falha ao importar o backup Android ${batchId}.`,
+        error instanceof Error ? error.stack : String(error),
+      );
       const manifest = await this.readManifest(companyId, batchId);
       manifest.status = 'failed';
       if (manifest.androidBackup) {
-        manifest.androidBackup.errorMessage = (
-          error instanceof Error
-            ? error.message
-            : 'Falha desconhecida ao importar o backup Android.'
-        ).slice(0, 1_000);
+        manifest.androidBackup.errorMessage = publicImportError(
+          error,
+          'Não foi possível concluir a importação. Tente novamente; as mensagens já incorporadas não serão duplicadas.',
+        );
       }
       manifest.updatedAt = new Date().toISOString();
       await this.writeManifest(manifest);
@@ -2729,10 +2791,14 @@ export class WhatsAppHistoryImportService {
       await this.writeAndroidMediaUpload(uploadDirectory, upload);
       await rm(uploadDirectory, { recursive: true, force: true });
     } catch (error) {
-      const message =
-        error instanceof Error && error.message.trim()
-          ? error.message.trim().slice(0, 500)
-          : 'Não foi possível processar o ZIP de mídias.';
+      this.logger.error(
+        `Falha ao vincular as mídias do backup Android ${batchId}.`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      const message = publicImportError(
+        error,
+        'Não foi possível processar o ZIP de mídias. Tente novamente; os arquivos já armazenados serão preservados.',
+      );
       const upload = await this.readAndroidMediaUpload(uploadDirectory).catch(
         () => null,
       );
