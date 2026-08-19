@@ -59,7 +59,9 @@ mídias pendentes e itens excluídos. A situação final e o departamento são
 escolhidos explicitamente. A aplicação ocorre em segundo plano, em blocos
 determinísticos, e pode ser retomada sem duplicar mensagens.
 
-A comparação incremental usa prioritariamente o `key_id` estável do WhatsApp;
+A comparação incremental usa prioritariamente o `key_id` estável do WhatsApp,
+delimitado pelo telefone normalizado porque esse identificador pode se repetir
+entre contatos diferentes;
 o identificador interno do chat não participa da identidade porque pode mudar
 entre backups do mesmo aparelho. A prévia separa mensagens já existentes,
 novas e divergentes. Repetir o mesmo backup produz zero mensagens novas; um

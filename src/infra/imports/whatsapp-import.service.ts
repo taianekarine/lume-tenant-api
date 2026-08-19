@@ -1153,7 +1153,7 @@ export class WhatsAppImportService {
           issues,
           'Mensagens',
           'DUPLICATE_EXTERNAL_MESSAGE_ID',
-          'external_message_id está duplicado no lote.',
+          'A mesma mensagem aparece mais de uma vez neste lote.',
           row.rowNumber,
         );
       }

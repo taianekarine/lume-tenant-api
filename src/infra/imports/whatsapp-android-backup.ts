@@ -375,7 +375,12 @@ function externalMessageId(row: AndroidMessageRow): string {
   const keyId = row.keyId?.trim();
   const identity = createHash('sha256');
   if (keyId) {
+    // O key_id é estável entre backups, mas não é global: o WhatsApp pode
+    // reutilizá-lo em conversas de contatos diferentes. O telefone funciona
+    // apenas como namespace da conversa e evita fundir mensagens distintas.
     identity.update('whatsapp-key-id');
+    identity.update('\0');
+    identity.update(normalizeWhatsAppPhone(row.phone));
     identity.update('\0');
     identity.update(keyId);
   } else {
