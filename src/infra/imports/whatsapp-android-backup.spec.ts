@@ -150,6 +150,35 @@ describe('WhatsApp Android backup reader', () => {
     expect(read(secondPath)).toEqual(read(firstPath));
   });
 
+  it('namespaces equal WhatsApp key ids by contact without depending on internal chat ids', async () => {
+    const path = await fixture();
+    const db = new DatabaseSync(path);
+    db.exec(`
+      INSERT INTO jid VALUES
+        (4, '5534888888888', 's.whatsapp.net');
+      INSERT INTO chat VALUES
+        (40, 4);
+      INSERT INTO message VALUES
+        (102, 40, 0, 'inbound-1', 4, 1700000040000, 0, 'Outro contato');
+    `);
+    db.close();
+
+    const rows = [
+      ...readWhatsAppAndroidBackup(path, {
+        departmentCode: 'commercial',
+        state: 'closed',
+      }),
+    ];
+    const identities = rows.flatMap((item) =>
+      item.parsed.messages.flatMap((message) =>
+        message.externalMessageId ? [message.externalMessageId] : [],
+      ),
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(new Set(identities)).toHaveProperty('size', identities.length);
+  });
+
   it('identifies only the increment when two backups contain overlapping history', async () => {
     const firstPath = await fixture();
     const laterPath = await fixture();
