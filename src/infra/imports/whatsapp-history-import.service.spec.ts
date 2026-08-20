@@ -292,6 +292,97 @@ describe('WhatsAppHistoryImportService.create', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
+  it('consulta o progresso sem reativar jobs e apresenta o avanço da comparação', async () => {
+    const { root, service, durableStates } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 100,
+        mediaReferences: 0,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: null,
+      chunksCompleted: 0,
+      conversationsProcessed: 0,
+      messagesProcessed: 0,
+      processingPhase: null,
+      errorMessage: null,
+      comparison: {
+        status: 'processing',
+        messagesProcessed: 40,
+        messagesTotal: 100,
+        messagesExisting: 10,
+        messagesNew: 30,
+        messagesDivergent: 0,
+        mediaStored: 0,
+        mediaNew: 0,
+        mediaMissing: 0,
+        updatedAt: new Date().toISOString(),
+        errorMessage: null,
+      },
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
+    const internals = service as unknown as {
+      resumeAndroidPreview: (value: unknown) => void;
+      resumeAndroidImport: (value: unknown) => void;
+      resumeAndroidMediaValidationJob: (value: unknown) => void;
+      resumeAndroidMediaJob: (value: unknown) => void;
+    };
+    const schedulers = [
+      vi.spyOn(internals, 'resumeAndroidPreview'),
+      vi.spyOn(internals, 'resumeAndroidImport'),
+      vi.spyOn(internals, 'resumeAndroidMediaValidationJob'),
+      vi.spyOn(internals, 'resumeAndroidMediaJob'),
+    ];
+
+    await expect(service.detail(COMPANY_ID, COMMAND_ID)).resolves.toMatchObject(
+      {
+        operation: {
+          phase: 'comparing-messages',
+          processed: 40,
+          total: 100,
+        },
+      },
+    );
+    schedulers.forEach((scheduler) => expect(scheduler).not.toHaveBeenCalled());
+  });
+
   it('lista somente backups Android concluídos do tenant', async () => {
     const { root, service, durableStates } = await setup();
     const input = {
@@ -1049,6 +1140,15 @@ describe('WhatsAppHistoryImportService media retention', () => {
         stored: 1,
         pending: 0,
       });
+    });
+    await vi.waitFor(() => {
+      expect(
+        (
+          service as unknown as {
+            androidMediaJobs: ReadonlySet<string>;
+          }
+        ).androidMediaJobs.size,
+      ).toBe(0);
     });
     expect(androidMediaImporter.attachArchive).toHaveBeenCalledTimes(2);
   });

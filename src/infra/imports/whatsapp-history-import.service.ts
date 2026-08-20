@@ -208,9 +208,12 @@ interface StoredAndroidBackup {
   chunksCompleted: number;
   conversationsProcessed: number;
   messagesProcessed: number;
+  processingPhase?: 'messages' | 'finalizing' | null;
   errorMessage: string | null;
   comparison?: {
     status: 'processing' | 'ready' | 'failed';
+    messagesProcessed?: number;
+    messagesTotal?: number;
     messagesExisting: number;
     messagesNew: number;
     messagesDivergent: number;
@@ -452,6 +455,12 @@ function importPhase(manifest: StoredManifest): string {
   if (media?.status === 'validating') return 'validating-media';
   if (media?.status === 'processing')
     return `processing-media:${media.phase ?? 'scanning'}`;
+  if (
+    manifest.status === 'applying' &&
+    manifest.androidBackup?.processingPhase === 'finalizing'
+  ) {
+    return 'finalizing-import';
+  }
   if (manifest.status === 'applying') return 'applying-messages';
   if (manifest.androidBackup?.comparison?.status === 'processing') {
     return 'comparing-messages';
@@ -483,6 +492,16 @@ function importProgress(manifest: StoredManifest): {
         android.summary.mediaReferences,
       processed: android.mediaImport.processingFilesProcessed ?? 0,
       failed: android.mediaImport.skippedOversize,
+    };
+  }
+  if (android.comparison?.status === 'processing') {
+    return {
+      total: android.comparison.messagesTotal ?? android.summary.directMessages,
+      processed: Math.min(
+        android.comparison.messagesProcessed ?? 0,
+        android.comparison.messagesTotal ?? android.summary.directMessages,
+      ),
+      failed: 0,
     };
   }
   return {
@@ -719,7 +738,7 @@ function presentManifest(manifest: StoredManifest) {
     expiresAt: manifest.expiresAt,
     appliedAt: manifest.appliedAt,
     operation: {
-      phase: manifest.phase ?? importPhase(manifest),
+      phase: importPhase(manifest),
       heartbeatAt: manifest.heartbeatAt ?? manifest.updatedAt,
       attempts: manifest.attempts ?? 0,
       total: progress.total,
@@ -774,6 +793,8 @@ function presentManifest(manifest: StoredManifest) {
             : manifest.status === 'draft'
               ? {
                   status: 'processing' as const,
+                  messagesProcessed: 0,
+                  messagesTotal: android.summary.directMessages,
                   messagesExisting: 0,
                   messagesNew: 0,
                   messagesDivergent: 0,
@@ -807,10 +828,12 @@ export class WhatsAppHistoryImportService
   private readonly androidImportChunkMessages: number;
   private readonly instanceId = randomUUID();
   private readonly leaseMs: number;
+  private readonly recoveryIntervalMs: number;
   private readonly cleanupIntervalMs: number;
   private readonly maximumActiveBatchesPerTenant: number;
   private readonly maximumTemporaryBytesPerTenant: number;
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private recoveryTimer: NodeJS.Timeout | null = null;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly androidJobs = new Set<string>();
   private readonly androidPreviewJobs = new Set<string>();
@@ -881,6 +904,15 @@ export class WhatsAppHistoryImportService
     this.leaseMs =
       finiteConfig(config, 'WHATSAPP_HISTORY_IMPORT_LEASE_SECONDS', 900) *
       1_000;
+    this.recoveryIntervalMs =
+      Math.max(
+        5,
+        finiteConfig(
+          config,
+          'WHATSAPP_HISTORY_IMPORT_RECOVERY_INTERVAL_SECONDS',
+          15,
+        ),
+      ) * 1_000;
     this.cleanupIntervalMs =
       finiteConfig(
         config,
@@ -932,11 +964,17 @@ export class WhatsAppHistoryImportService
       void this.runLifecycleTask('cleanup', () => this.cleanupExpiredImports());
     }, this.cleanupIntervalMs);
     this.cleanupTimer.unref();
+    this.recoveryTimer = setInterval(() => {
+      void this.runLifecycleTask('recovery', () => this.recoverDurableJobs());
+    }, this.recoveryIntervalMs);
+    this.recoveryTimer.unref();
   }
 
   onModuleDestroy(): void {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
     this.cleanupTimer = null;
+    this.recoveryTimer = null;
   }
 
   private async runLifecycleTask(
@@ -987,9 +1025,6 @@ export class WhatsAppHistoryImportService
           new Date(right.appliedAt ?? right.updatedAt).getTime() -
           new Date(left.appliedAt ?? left.updatedAt).getTime(),
       );
-    for (const manifest of applied)
-      this.resumeAndroidMediaValidationJob(manifest);
-    for (const manifest of applied) this.resumeAndroidMediaJob(manifest);
     return applied.map(presentManifest);
   }
 
@@ -1010,10 +1045,6 @@ export class WhatsAppHistoryImportService
     });
     if (!row) return null;
     const manifest = row.manifest as unknown as StoredManifest;
-    this.resumeAndroidPreview(manifest);
-    this.resumeAndroidImport(manifest);
-    this.resumeAndroidMediaValidationJob(manifest);
-    this.resumeAndroidMediaJob(manifest);
     return presentManifest(manifest);
   }
 
@@ -1139,10 +1170,6 @@ export class WhatsAppHistoryImportService
 
   async detail(companyId: string, batchId: string) {
     const manifest = await this.readManifest(companyId, batchId);
-    this.resumeAndroidPreview(manifest);
-    this.resumeAndroidImport(manifest);
-    this.resumeAndroidMediaValidationJob(manifest);
-    this.resumeAndroidMediaJob(manifest);
     return presentManifest(manifest);
   }
 
@@ -1351,9 +1378,12 @@ export class WhatsAppHistoryImportService
           chunksCompleted: 0,
           conversationsProcessed: 0,
           messagesProcessed: 0,
+          processingPhase: null,
           errorMessage: null,
           comparison: {
             status: 'processing',
+            messagesProcessed: 0,
+            messagesTotal: summary.directMessages,
             messagesExisting: 0,
             messagesNew: 0,
             messagesDivergent: 0,
@@ -2356,10 +2386,7 @@ export class WhatsAppHistoryImportService
 
   private resumeAndroidPreview(manifest: StoredManifest): void {
     const comparison = manifest.androidBackup?.comparison;
-    if (
-      manifest.status !== 'draft' ||
-      (comparison && comparison.status !== 'processing')
-    ) {
+    if (manifest.status !== 'draft' || comparison?.status !== 'processing') {
       return;
     }
     const jobKey = `${manifest.companyId}:${manifest.id}`;
@@ -2413,9 +2440,41 @@ export class WhatsAppHistoryImportService
       let messagesDivergent = 0;
       let mediaStored = 0;
       let mediaReferences = 0;
+      let messagesCompared = 0;
+      let lastProgressPersistedAt = 0;
       const newMessageIds: string[] = [];
       const divergences: StoredAndroidDivergence[] = [];
       const mediaPreviewReferences: PreviewWhatsAppAndroidMediaReference[] = [];
+
+      const persistPreviewProgress = async (force = false): Promise<void> => {
+        const nowMs = Date.now();
+        if (!force && nowMs - lastProgressPersistedAt < 5_000) return;
+        lastProgressPersistedAt = nowMs;
+        await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+          const current = await this.readManifest(companyId, batchId);
+          const currentComparison = current.androidBackup?.comparison;
+          if (
+            current.status !== 'draft' ||
+            currentComparison?.status !== 'processing'
+          ) {
+            return;
+          }
+          const now = new Date().toISOString();
+          currentComparison.messagesProcessed = messagesCompared;
+          currentComparison.messagesTotal = android.summary.directMessages;
+          currentComparison.messagesExisting = messagesExisting;
+          currentComparison.messagesNew = messagesNew;
+          currentComparison.messagesDivergent = messagesDivergent;
+          currentComparison.mediaStored = mediaStored;
+          currentComparison.mediaMissing = Math.max(
+            0,
+            mediaReferences - mediaStored,
+          );
+          currentComparison.updatedAt = now;
+          current.updatedAt = now;
+          await this.writeManifest(current);
+        });
+      };
 
       const flush = async (): Promise<void> => {
         if (exports.length === 0) return;
@@ -2564,8 +2623,10 @@ export class WhatsAppHistoryImportService
               : false,
           })),
         );
+        messagesCompared += chunkRows.length;
         exports = [];
         chunkMessages = 0;
+        await persistPreviewProgress();
       };
 
       for (const item of readWhatsAppAndroidBackup(databasePath, {
@@ -2610,6 +2671,7 @@ export class WhatsAppHistoryImportService
         }
       }
       await flush();
+      await persistPreviewProgress(true);
       const newIdsPath = resolve(
         this.batchPath(companyId, batchId),
         'android',
@@ -2638,6 +2700,8 @@ export class WhatsAppHistoryImportService
         const now = new Date().toISOString();
         current.androidBackup.comparison = {
           status: 'ready',
+          messagesProcessed: android.summary.directMessages,
+          messagesTotal: android.summary.directMessages,
           messagesExisting,
           messagesNew,
           messagesDivergent,
@@ -2658,6 +2722,9 @@ export class WhatsAppHistoryImportService
         const now = new Date().toISOString();
         manifest.androidBackup.comparison = {
           status: 'failed',
+          messagesProcessed:
+            manifest.androidBackup.comparison?.messagesProcessed ?? 0,
+          messagesTotal: manifest.androidBackup.summary.directMessages,
           messagesExisting: 0,
           messagesNew: 0,
           messagesDivergent: 0,
@@ -2868,6 +2935,7 @@ export class WhatsAppHistoryImportService
       android.chunksCompleted = 0;
       android.conversationsProcessed = 0;
       android.messagesProcessed = 0;
+      android.processingPhase = 'messages';
       android.errorMessage = null;
       manifest.updatedAt = new Date().toISOString();
       await this.writeManifest(manifest);
@@ -2979,6 +3047,9 @@ export class WhatsAppHistoryImportService
       }
       await flush();
       android.messagesProcessed = android.summary.directMessages;
+      android.processingPhase = 'finalizing';
+      manifest.updatedAt = new Date().toISOString();
+      await this.writeManifest(manifest);
       if (chunkIndex < 1 && newMessageIds.size > 0) {
         throw validationError(
           'Nenhuma mensagem anterior à data de corte foi encontrada.',
@@ -3014,6 +3085,7 @@ export class WhatsAppHistoryImportService
         mediaImport.errorMessage = null;
       }
       manifest.status = 'applied';
+      android.processingPhase = null;
       manifest.appliedAt = new Date().toISOString();
       manifest.updatedAt = manifest.appliedAt;
       await this.writeManifest(manifest);
@@ -3026,6 +3098,7 @@ export class WhatsAppHistoryImportService
       const manifest = await this.readManifest(companyId, batchId);
       manifest.status = 'failed';
       if (manifest.androidBackup) {
+        manifest.androidBackup.processingPhase = null;
         manifest.androidBackup.errorMessage = publicImportError(
           error,
           'Não foi possível concluir a importação. Tente novamente; as mensagens já incorporadas não serão duplicadas.',
@@ -3758,6 +3831,7 @@ export class WhatsAppHistoryImportService
     try {
       const upload = await this.readAndroidMediaUpload(uploadDirectory);
       const archivePath = this.androidMediaArchivePath(uploadDirectory);
+      let lastProgressPersistedAt = 0;
       const result = await this.androidMediaImporter.attachArchive({
         companyId,
         batchId,
@@ -3765,6 +3839,12 @@ export class WhatsAppHistoryImportService
         originalName: upload.originalName,
         sizeBytes: upload.expectedBytes,
         onProgress: async (progress) => {
+          const nowMs = Date.now();
+          const completed =
+            progress.filesTotal > 0 &&
+            progress.filesProcessed >= progress.filesTotal;
+          if (!completed && nowMs - lastProgressPersistedAt < 2_000) return;
+          lastProgressPersistedAt = nowMs;
           await this.withBatchLock(`${companyId}:${batchId}`, async () => {
             const manifest = await this.readManifest(companyId, batchId);
             const mediaImport = manifest.androidBackup?.mediaImport;
