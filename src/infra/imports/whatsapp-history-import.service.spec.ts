@@ -866,15 +866,22 @@ describe('WhatsAppHistoryImportService media retention', () => {
       offsetBytes: 0,
       content: Buffer.alloc(30, 1),
     });
-    const ready = await service.completeAndroidMediaUpload(
+    const validating = await service.completeAndroidMediaUpload(
       COMPANY_ID,
       COMMAND_ID,
       started.uploadId,
     );
 
-    expect(ready).toMatchObject({
+    expect(validating).toMatchObject({
       status: 'draft',
-      androidBackup: { mediaImport: { status: 'ready' } },
+      androidBackup: { mediaImport: { status: 'validating' } },
+    });
+    let ready = validating;
+    await vi.waitFor(async () => {
+      ready = await service.detail(COMPANY_ID, COMMAND_ID);
+      expect(ready.androidBackup?.mediaImport).toMatchObject({
+        status: 'ready',
+      });
     });
     expect(androidMediaImporter.previewArchive).toHaveBeenCalledOnce();
     expect(ready.androidBackup?.comparison).toMatchObject({
@@ -982,13 +989,13 @@ describe('WhatsAppHistoryImportService media retention', () => {
     androidMediaImporter.attachArchive.mockRejectedValue(
       new Error('falha transitória'),
     );
-    const processing = await service.completeAndroidMediaUpload(
+    const validating = await service.completeAndroidMediaUpload(
       COMPANY_ID,
       COMMAND_ID,
       started.uploadId,
     );
-    expect(processing.androidBackup?.mediaImport).toMatchObject({
-      status: 'processing',
+    expect(validating.androidBackup?.mediaImport).toMatchObject({
+      status: 'validating',
       uploadBytesReceived: 30,
       uploadBytesTotal: 30,
     });

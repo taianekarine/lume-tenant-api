@@ -60,6 +60,7 @@ const IMPORT_TRANSACTION_TIMEOUT_MS = 120_000;
 const IMPORT_TRANSACTION_MAX_ATTEMPTS = 8;
 const IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS = 50;
 const IMPORT_CREATE_MANY_CHUNK_SIZE = 1_000;
+const IMPORT_LOOKUP_CHUNK_SIZE = 1_000;
 
 const DEPARTMENT_TO_PRISMA: Record<string, DepartmentCode> = {
   commercial: DepartmentCode.COMMERCIAL,
@@ -210,6 +211,18 @@ function chunks<T>(rows: readonly T[], size: number): T[][] {
   const result: T[][] = [];
   for (let offset = 0; offset < rows.length; offset += size) {
     result.push(rows.slice(offset, offset + size));
+  }
+  return result;
+}
+
+async function collectChunked<T, R>(
+  rows: readonly T[],
+  size: number,
+  handler: (chunk: readonly T[]) => Promise<readonly R[]>,
+): Promise<R[]> {
+  const result: R[] = [];
+  for (const chunk of chunks(rows, size)) {
+    result.push(...(await handler(chunk)));
   }
   return result;
 }
@@ -815,37 +828,47 @@ export class WhatsAppImportService {
           .map(normalizeUsername),
       ),
     );
-    const users = await this.prisma.user.findMany({
-      where: {
-        companyId: input.companyId,
-        usernameNormalized: { in: ownerNames },
-      },
-      select: {
-        id: true,
-        usernameNormalized: true,
-        departments: true,
-        status: true,
-        isActive: true,
-      },
-    });
+    const users = await collectChunked(
+      ownerNames,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (usernameChunk) =>
+        this.prisma.user.findMany({
+          where: {
+            companyId: input.companyId,
+            usernameNormalized: { in: [...usernameChunk] },
+          },
+          select: {
+            id: true,
+            usernameNormalized: true,
+            departments: true,
+            status: true,
+            isActive: true,
+          },
+        }),
+    );
     const userByUsername = new Map(
       users.map((user) => [user.usernameNormalized, user]),
     );
     const phones = Array.from(
       new Set(parsedPackage.conversations.map((row) => row.phoneE164)),
     );
-    const contacts = await this.prisma.whatsAppContact.findMany({
-      where: {
-        companyId: input.companyId,
-        phoneNormalized: { in: phones },
-      },
-      select: {
-        id: true,
-        phoneNormalized: true,
-        displayName: true,
-        updatedAt: true,
-      },
-    });
+    const contacts = await collectChunked(
+      phones,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (phoneChunk) =>
+        this.prisma.whatsAppContact.findMany({
+          where: {
+            companyId: input.companyId,
+            phoneNormalized: { in: [...phoneChunk] },
+          },
+          select: {
+            id: true,
+            phoneNormalized: true,
+            displayName: true,
+            updatedAt: true,
+          },
+        }),
+    );
     const contactByPhone = new Map(
       contacts.map((contact) => [contact.phoneNormalized, contact]),
     );
@@ -854,16 +877,18 @@ export class WhatsAppImportService {
       sourceSystem: row.sourceSystem,
       externalId: row.externalConversationId,
     }));
-    const conversationRefs =
-      sourceConversationPairs.length === 0
-        ? []
-        : await this.prisma.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              entityType: 'conversation',
-              OR: sourceConversationPairs,
-            },
-          });
+    const conversationRefs = await collectChunked(
+      sourceConversationPairs,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (pairChunk) =>
+        this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'conversation',
+            OR: [...pairChunk],
+          },
+        }),
+    );
     const conversationRefByKey = new Map(
       conversationRefs.map((reference) => [
         externalKey(reference.sourceSystem, reference.externalId),
@@ -873,40 +898,44 @@ export class WhatsAppImportService {
     const referencedConversationIds = conversationRefs.map(
       (reference) => reference.internalId,
     );
-    const referencedConversations =
-      referencedConversationIds.length === 0
-        ? []
-        : await this.prisma.whatsAppConversation.findMany({
-            where: {
-              companyId: input.companyId,
-              id: { in: referencedConversationIds },
-            },
-            select: {
-              id: true,
-              contactId: true,
-              closedAt: true,
-              updatedAt: true,
-              contact: { select: { phoneNormalized: true } },
-            },
-          });
+    const referencedConversations = await collectChunked(
+      referencedConversationIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppConversation.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: {
+            id: true,
+            contactId: true,
+            closedAt: true,
+            updatedAt: true,
+            contact: { select: { phoneNormalized: true } },
+          },
+        }),
+    );
     const referencedConversationById = new Map(
       referencedConversations.map((conversation) => [
         conversation.id,
         conversation,
       ]),
     );
-    const openConversations =
-      contacts.length === 0
-        ? []
-        : await this.prisma.whatsAppConversation.findMany({
-            where: {
-              companyId: input.companyId,
-              channelId: input.channelId,
-              contactId: { in: contacts.map((contact) => contact.id) },
-              closedAt: null,
-            },
-            select: { id: true, contactId: true },
-          });
+    const openConversations = await collectChunked(
+      contacts.map((contact) => contact.id),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (contactIdChunk) =>
+        this.prisma.whatsAppConversation.findMany({
+          where: {
+            companyId: input.companyId,
+            channelId: input.channelId,
+            contactId: { in: [...contactIdChunk] },
+            closedAt: null,
+          },
+          select: { id: true, contactId: true },
+        }),
+    );
     const openByContactId = new Map<string, string[]>();
     for (const conversation of openConversations) {
       openByContactId.set(conversation.contactId, [
@@ -1096,34 +1125,36 @@ export class WhatsAppImportService {
           ]
         : [];
     });
-    const messageRefs =
-      messageRefPairs.length === 0
-        ? []
-        : await this.prisma.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              entityType: 'message',
-              OR: messageRefPairs,
-            },
-          });
+    const messageRefs = await collectChunked(
+      messageRefPairs,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (pairChunk) =>
+        this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'message',
+            OR: [...pairChunk],
+          },
+        }),
+    );
     const messageRefByKey = new Map(
       messageRefs.map((reference) => [
         externalKey(reference.sourceSystem, reference.externalId),
         reference,
       ]),
     );
-    const referencedMessages =
-      messageRefs.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId: input.companyId,
-              id: {
-                in: messageRefs.map((reference) => reference.internalId),
-              },
-            },
-            select: { id: true, conversationId: true },
-          });
+    const referencedMessages = await collectChunked(
+      messageRefs.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
     const referencedMessageById = new Map(
       referencedMessages.map((message) => [message.id, message]),
     );
@@ -1134,17 +1165,19 @@ export class WhatsAppImportService {
           .filter((value): value is string => Boolean(value)),
       ),
     );
-    const existingProviderMessages =
-      providerMessageIds.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId: input.companyId,
-              channelId: input.channelId,
-              providerMessageId: { in: providerMessageIds },
-            },
-            select: { id: true, providerMessageId: true },
-          });
+    const existingProviderMessages = await collectChunked(
+      providerMessageIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (providerIdChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            channelId: input.channelId,
+            providerMessageId: { in: [...providerIdChunk] },
+          },
+          select: { id: true, providerMessageId: true },
+        }),
+    );
     const messageByProviderId = new Map(
       existingProviderMessages.map((message) => [
         message.providerMessageId!,
@@ -1166,16 +1199,18 @@ export class WhatsAppImportService {
           : [];
       },
     );
-    const existingCorrelatedMessages =
-      deterministicCorrelations.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId: input.companyId,
-              correlationId: { in: deterministicCorrelations },
-            },
-            select: { id: true, correlationId: true },
-          });
+    const existingCorrelatedMessages = await collectChunked(
+      deterministicCorrelations,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (correlationChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            correlationId: { in: [...correlationChunk] },
+          },
+          select: { id: true, correlationId: true },
+        }),
+    );
     const messageByCorrelation = new Map(
       existingCorrelatedMessages.map((message) => [
         message.correlationId,
@@ -1315,38 +1350,40 @@ export class WhatsAppImportService {
           ]
         : [];
     });
-    const documentRefs =
-      documentRefPairs.length === 0
-        ? []
-        : await this.prisma.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              entityType: 'document',
-              OR: documentRefPairs,
-            },
-          });
+    const documentRefs = await collectChunked(
+      documentRefPairs,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (pairChunk) =>
+        this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'document',
+            OR: [...pairChunk],
+          },
+        }),
+    );
     const documentRefByKey = new Map(
       documentRefs.map((reference) => [
         externalKey(reference.sourceSystem, reference.externalId),
         reference,
       ]),
     );
-    const referencedDocuments =
-      documentRefs.length === 0
-        ? []
-        : await this.prisma.quoteProposalDocument.findMany({
-            where: {
-              companyId: input.companyId,
-              id: {
-                in: documentRefs.map((reference) => reference.internalId),
-              },
-            },
-            select: {
-              id: true,
-              conversationId: true,
-              quoteRequest: { select: { sequence: true } },
-            },
-          });
+    const referencedDocuments = await collectChunked(
+      documentRefs.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.quoteProposalDocument.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: {
+            id: true,
+            conversationId: true,
+            quoteRequest: { select: { sequence: true } },
+          },
+        }),
+    );
     const referencedDocumentById = new Map(
       referencedDocuments.map((document) => [document.id, document]),
     );
@@ -1357,16 +1394,18 @@ export class WhatsAppImportService {
           .filter((value): value is string => Boolean(value)),
       ),
     );
-    const existingProviderDocuments =
-      documentProviderIds.length === 0
-        ? []
-        : await this.prisma.quoteProposalDocument.findMany({
-            where: {
-              companyId: input.companyId,
-              providerMessageId: { in: documentProviderIds },
-            },
-            select: { id: true, providerMessageId: true },
-          });
+    const existingProviderDocuments = await collectChunked(
+      documentProviderIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (providerIdChunk) =>
+        this.prisma.quoteProposalDocument.findMany({
+          where: {
+            companyId: input.companyId,
+            providerMessageId: { in: [...providerIdChunk] },
+          },
+          select: { id: true, providerMessageId: true },
+        }),
+    );
     const documentByProviderId = new Map(
       existingProviderDocuments.map((document) => [
         document.providerMessageId!,
@@ -2636,16 +2675,18 @@ export class WhatsAppImportService {
         internalId: document.id,
       })),
     ];
-    const importedReferences =
-      candidateIds.length === 0
-        ? []
-        : await transaction.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              OR: candidateIds,
-            },
-            select: { entityType: true, internalId: true },
-          });
+    const importedReferences = await collectChunked(
+      candidateIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (candidateChunk) =>
+        transaction.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            OR: [...candidateChunk],
+          },
+          select: { entityType: true, internalId: true },
+        }),
+    );
     const importedResourceKeys = new Set(
       importedReferences.map(
         (reference) => `${reference.entityType}\0${reference.internalId}`,
@@ -2986,40 +3027,40 @@ export class WhatsAppImportService {
     const externalMessageIds = messages.map(
       (message) => message.externalMessageId,
     );
-    const existingMessageRefs =
-      externalMessageIds.length === 0
-        ? []
-        : await transaction.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              entityType: 'message',
-              sourceSystem: row.sourceSystem,
-              externalId: { in: externalMessageIds },
-            },
-            select: {
-              id: true,
-              externalId: true,
-              internalId: true,
-              payloadHash: true,
-            },
-          });
+    const existingMessageRefs = await collectChunked(
+      externalMessageIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (externalIdChunk) =>
+        transaction.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'message',
+            sourceSystem: row.sourceSystem,
+            externalId: { in: [...externalIdChunk] },
+          },
+          select: {
+            id: true,
+            externalId: true,
+            internalId: true,
+            payloadHash: true,
+          },
+        }),
+    );
     const existingMessageRefByExternalId = new Map(
       existingMessageRefs.map((reference) => [reference.externalId, reference]),
     );
-    const referencedMessages =
-      existingMessageRefs.length === 0
-        ? []
-        : await transaction.whatsAppMessage.findMany({
-            where: {
-              companyId: input.companyId,
-              id: {
-                in: existingMessageRefs.map(
-                  (reference) => reference.internalId,
-                ),
-              },
-            },
-            select: { id: true, conversationId: true },
-          });
+    const referencedMessages = await collectChunked(
+      existingMessageRefs.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        transaction.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
     const referencedMessageById = new Map(
       referencedMessages.map((message) => [message.id, message]),
     );
@@ -3031,18 +3072,20 @@ export class WhatsAppImportService {
           .map(normalizeUsername),
       ),
     );
-    const messageActors =
-      actorUsernames.length === 0
-        ? []
-        : await transaction.user.findMany({
-            where: {
-              companyId: input.companyId,
-              usernameNormalized: { in: actorUsernames },
-              isActive: true,
-              status: UserAccountStatus.ACTIVE,
-            },
-            select: { id: true, usernameNormalized: true },
-          });
+    const messageActors = await collectChunked(
+      actorUsernames,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (usernameChunk) =>
+        transaction.user.findMany({
+          where: {
+            companyId: input.companyId,
+            usernameNormalized: { in: [...usernameChunk] },
+            isActive: true,
+            status: UserAccountStatus.ACTIVE,
+          },
+          select: { id: true, usernameNormalized: true },
+        }),
+    );
     const messageActorByUsername = new Map(
       messageActors.map((actor) => [actor.usernameNormalized, actor.id]),
     );
@@ -3449,46 +3492,52 @@ export class WhatsAppImportService {
       );
     }
     const conversationIds = records.map((record) => record.conversationId);
-    const conversations =
-      conversationIds.length === 0
-        ? []
-        : await this.prisma.whatsAppConversation.findMany({
-            where: { companyId, id: { in: conversationIds } },
-            select: {
-              id: true,
-              contactId: true,
-              department: true,
-              conversationState: true,
-              requestStatus: true,
-              closedAt: true,
-            },
-          });
+    const conversations = await collectChunked(
+      conversationIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppConversation.findMany({
+          where: { companyId, id: { in: [...idChunk] } },
+          select: {
+            id: true,
+            contactId: true,
+            department: true,
+            conversationState: true,
+            requestStatus: true,
+            closedAt: true,
+          },
+        }),
+    );
     const messages = refs.filter(
       (reference) => reference.entityType === 'message',
     );
     const documents = refs.filter(
       (reference) => reference.entityType === 'document',
     );
-    const persistedMessageIds =
-      messages.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId,
-              id: { in: messages.map((reference) => reference.internalId) },
-            },
-            select: { id: true, conversationId: true },
-          });
-    const persistedDocumentIds =
-      documents.length === 0
-        ? []
-        : await this.prisma.quoteProposalDocument.findMany({
-            where: {
-              companyId,
-              id: { in: documents.map((reference) => reference.internalId) },
-            },
-            select: { id: true, conversationId: true },
-          });
+    const persistedMessageIds = await collectChunked(
+      messages.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
+    const persistedDocumentIds = await collectChunked(
+      documents.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.quoteProposalDocument.findMany({
+          where: {
+            companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
     if (conversations.length !== records.length) {
       issue(
         issues,

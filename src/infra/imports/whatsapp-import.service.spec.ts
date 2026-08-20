@@ -68,6 +68,21 @@ function conversationRow(
   return row;
 }
 
+function messageRow(
+  externalConversationId: string,
+  externalMessageId: string,
+): unknown[] {
+  const row = blanks(MESSAGE_HEADERS.length);
+  row[0] = externalConversationId;
+  row[1] = externalMessageId;
+  row[2] = 'inbound';
+  row[3] = 'text';
+  row[4] = new Date('2026-07-29T12:00:00.000Z');
+  row[5] = 'received';
+  row[6] = `Mensagem ${externalMessageId}`;
+  return row;
+}
+
 async function packageWithRows(options: {
   conversations: unknown[][];
   messages?: unknown[][];
@@ -469,6 +484,41 @@ describe('WhatsAppImportService.validate', () => {
       conversationsToCreate: 1,
     });
     expect(writeAttempt).not.toHaveBeenCalled();
+  });
+
+  it('consulta referências de históricos extensos em blocos seguros para o PostgreSQL', async () => {
+    const messages = Array.from({ length: 2_005 }, (_, index) =>
+      messageRow('legacy-large', `legacy-message-${index + 1}`),
+    );
+    const fixture = await packageWithRows({
+      conversations: [conversationRow('legacy-large')],
+      messages,
+    });
+    const prisma = readOnlyPrisma(vi.fn());
+    const externalRefFindMany = vi.fn().mockResolvedValue([]);
+    Object.assign(prisma.whatsAppImportExternalRef, {
+      findMany: externalRefFindMany,
+    });
+    const service = new WhatsAppImportService(prisma, fixture.root);
+
+    const report = await service.validate({
+      companyId: testCompanyId,
+      channelId: testChannelId,
+      actorUsername: 'admin',
+      batchName: 'batch-large-lookups',
+      packagePath: fixture.packagePath,
+      cutoffAt: new Date('2026-07-30T00:00:00.000Z'),
+    });
+
+    const lookupSizes = externalRefFindMany.mock.calls
+      .map(([query]) => {
+        const where = (query as { where?: { OR?: unknown[] } }).where;
+        return where?.OR?.length ?? 0;
+      })
+      .filter((size) => size > 0);
+    expect(report.valid).toBe(true);
+    expect(Math.max(...lookupSizes)).toBeLessThanOrEqual(1_000);
+    expect(lookupSizes.length).toBeGreaterThanOrEqual(4);
   });
 });
 

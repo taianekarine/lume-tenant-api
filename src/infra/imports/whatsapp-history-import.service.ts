@@ -230,7 +230,13 @@ interface StoredAndroidBackup {
     skippedOversize: number;
     updatedAt: string;
     lastArchiveName: string;
-    status?: 'uploading' | 'ready' | 'processing' | 'completed' | 'failed';
+    status?:
+      | 'uploading'
+      | 'validating'
+      | 'ready'
+      | 'processing'
+      | 'completed'
+      | 'failed';
     phase?: 'uploading' | 'scanning' | 'storing' | null;
     uploadId?: string | null;
     uploadBytesReceived?: number;
@@ -251,7 +257,13 @@ interface StoredAndroidMediaUpload {
   originalName: string;
   expectedBytes: number;
   receivedBytes: number;
-  status: 'uploading' | 'ready' | 'processing' | 'completed' | 'failed';
+  status:
+    | 'uploading'
+    | 'validating'
+    | 'ready'
+    | 'processing'
+    | 'completed'
+    | 'failed';
   createdAt: string;
   updatedAt: string;
   fingerprint?: string;
@@ -437,6 +449,7 @@ function importPhase(manifest: StoredManifest): string {
   }
   const media = manifest.androidBackup?.mediaImport;
   if (media?.status === 'uploading') return 'uploading-media';
+  if (media?.status === 'validating') return 'validating-media';
   if (media?.status === 'processing')
     return `processing-media:${media.phase ?? 'scanning'}`;
   if (manifest.status === 'applying') return 'applying-messages';
@@ -801,6 +814,7 @@ export class WhatsAppHistoryImportService
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly androidJobs = new Set<string>();
   private readonly androidPreviewJobs = new Set<string>();
+  private readonly androidMediaValidationJobs = new Set<string>();
   private readonly androidMediaJobs = new Set<string>();
   private readonly androidMediaJobResumeRequested = new Set<string>();
   private readonly cancelledBatches = new Set<string>();
@@ -973,6 +987,8 @@ export class WhatsAppHistoryImportService
           new Date(right.appliedAt ?? right.updatedAt).getTime() -
           new Date(left.appliedAt ?? left.updatedAt).getTime(),
       );
+    for (const manifest of applied)
+      this.resumeAndroidMediaValidationJob(manifest);
     for (const manifest of applied) this.resumeAndroidMediaJob(manifest);
     return applied.map(presentManifest);
   }
@@ -996,6 +1012,7 @@ export class WhatsAppHistoryImportService
     const manifest = row.manifest as unknown as StoredManifest;
     this.resumeAndroidPreview(manifest);
     this.resumeAndroidImport(manifest);
+    this.resumeAndroidMediaValidationJob(manifest);
     this.resumeAndroidMediaJob(manifest);
     return presentManifest(manifest);
   }
@@ -1124,6 +1141,7 @@ export class WhatsAppHistoryImportService
     const manifest = await this.readManifest(companyId, batchId);
     this.resumeAndroidPreview(manifest);
     this.resumeAndroidImport(manifest);
+    this.resumeAndroidMediaValidationJob(manifest);
     this.resumeAndroidMediaJob(manifest);
     return presentManifest(manifest);
   }
@@ -2105,50 +2123,14 @@ export class WhatsAppHistoryImportService
             `O ZIP ainda não foi enviado por completo: ${upload.receivedBytes} de ${upload.expectedBytes} bytes.`,
           );
         }
-        const archivePath = this.androidMediaArchivePath(uploadDirectory);
-        const actualChecksum = await sha256File(archivePath);
-        if (upload.checksumSha256 && upload.checksumSha256 !== actualChecksum) {
-          throw validationError(
-            'O ZIP recebido não corresponde ao checksum informado.',
-          );
-        }
-        upload.checksumSha256 = actualChecksum;
-        if (upload.status === 'completed' || upload.status === 'ready') {
+        if (
+          upload.status === 'completed' ||
+          upload.status === 'ready' ||
+          upload.status === 'validating'
+        ) {
           return currentManifest;
         }
-        const shouldStage = currentManifest.status !== 'applied';
-        let stagedMediaPreview:
-          | {
-              filesTotal: number;
-              mediaStored: number;
-              mediaNew: number;
-              mediaMissing: number;
-            }
-          | undefined;
-        if (shouldStage) {
-          const mediaReferencesPath = resolve(
-            this.batchPath(companyId, batchId),
-            'android',
-            'media-preview-references.json',
-          );
-          assertInside(this.batchPath(companyId, batchId), mediaReferencesPath);
-          const references = JSON.parse(
-            await readFile(mediaReferencesPath, 'utf8').catch(() => {
-              throw validationError(
-                'Aguarde a comparação das mensagens antes de concluir o ZIP de mídias.',
-              );
-            }),
-          ) as PreviewWhatsAppAndroidMediaReference[];
-          stagedMediaPreview = await this.androidMediaImporter.previewArchive(
-            {
-              archivePath: this.androidMediaArchivePath(uploadDirectory),
-              originalName: upload.originalName,
-              sizeBytes: upload.expectedBytes,
-            },
-            references,
-          );
-        }
-        upload.status = shouldStage ? 'ready' : 'processing';
+        upload.status = 'validating';
         upload.updatedAt = new Date().toISOString();
         await this.writeAndroidMediaUpload(uploadDirectory, upload);
         const mediaImport = currentManifest.androidBackup.mediaImport;
@@ -2163,34 +2145,23 @@ export class WhatsAppHistoryImportService
           skippedOversize: mediaImport?.skippedOversize ?? 0,
           updatedAt: upload.updatedAt,
           lastArchiveName: upload.originalName,
-          status: shouldStage ? 'ready' : 'processing',
-          phase: shouldStage ? null : 'scanning',
+          status: 'validating',
+          phase: 'scanning',
           uploadId,
           uploadBytesReceived: upload.receivedBytes,
           uploadBytesTotal: upload.expectedBytes,
           processingFilesScanned: 0,
-          processingFilesTotal: stagedMediaPreview?.filesTotal ?? 0,
+          processingFilesTotal: 0,
           processingFilesProcessed: 0,
           processingAttached: 0,
           errorMessage: null,
         };
-        if (stagedMediaPreview && currentManifest.androidBackup.comparison) {
-          currentManifest.androidBackup.comparison.mediaStored =
-            stagedMediaPreview.mediaStored;
-          currentManifest.androidBackup.comparison.mediaNew =
-            stagedMediaPreview.mediaNew;
-          currentManifest.androidBackup.comparison.mediaMissing =
-            stagedMediaPreview.mediaMissing;
-          currentManifest.androidBackup.comparison.updatedAt = upload.updatedAt;
-        }
         currentManifest.updatedAt = upload.updatedAt;
         await this.writeManifest(currentManifest);
         return currentManifest;
       },
     );
-    if (manifest.status === 'applied') {
-      this.resumeAndroidMediaJob(manifest, true);
-    }
+    this.resumeAndroidMediaValidationJob(manifest);
     return presentManifest(manifest);
   }
 
@@ -2422,7 +2393,13 @@ export class WhatsAppHistoryImportService
     try {
       const manifest = await this.readManifest(companyId, batchId);
       const android = manifest.androidBackup;
-      if (!android) return;
+      if (
+        !android ||
+        manifest.status !== 'draft' ||
+        android.comparison?.status !== 'processing'
+      ) {
+        return;
+      }
       const databasePath = resolve(
         this.batchPath(companyId, batchId),
         'android',
@@ -3561,6 +3538,172 @@ export class WhatsAppHistoryImportService
     }
   }
 
+  private resumeAndroidMediaValidationJob(manifest: StoredManifest): void {
+    const mediaImport = manifest.androidBackup?.mediaImport;
+    if (
+      !['draft', 'applied'].includes(manifest.status) ||
+      mediaImport?.status !== 'validating' ||
+      !mediaImport.uploadId ||
+      !UUID_PATTERN.test(mediaImport.uploadId)
+    ) {
+      return;
+    }
+    const jobKey = `${manifest.companyId}:${manifest.id}:${mediaImport.uploadId}`;
+    if (this.androidMediaValidationJobs.has(jobKey)) return;
+    this.androidMediaValidationJobs.add(jobKey);
+    setImmediate(() => {
+      void this.runClaimedJob(
+        manifest.companyId,
+        manifest.id,
+        'media-validation',
+        () =>
+          this.runAndroidMediaValidationJob(
+            manifest.companyId,
+            manifest.id,
+            mediaImport.uploadId as string,
+          ),
+      ).finally(() => this.androidMediaValidationJobs.delete(jobKey));
+    });
+  }
+
+  private async runAndroidMediaValidationJob(
+    companyId: string,
+    batchId: string,
+    uploadId: string,
+  ): Promise<void> {
+    const uploadDirectory = this.androidMediaUploadPath(
+      companyId,
+      batchId,
+      uploadId,
+    );
+    try {
+      const manifest = await this.readManifest(companyId, batchId);
+      const mediaImport = manifest.androidBackup?.mediaImport;
+      if (
+        !manifest.androidBackup ||
+        !['draft', 'applied'].includes(manifest.status) ||
+        mediaImport?.status !== 'validating' ||
+        mediaImport.uploadId !== uploadId
+      ) {
+        return;
+      }
+      const upload = await this.readAndroidMediaUpload(uploadDirectory);
+      if (upload.status !== 'validating') return;
+      const archivePath = this.androidMediaArchivePath(uploadDirectory);
+      const actualChecksum = await sha256File(archivePath);
+      if (upload.checksumSha256 && upload.checksumSha256 !== actualChecksum) {
+        throw validationError(
+          'O ZIP recebido não corresponde ao checksum informado.',
+        );
+      }
+      upload.checksumSha256 = actualChecksum;
+
+      let stagedMediaPreview:
+        | {
+            filesTotal: number;
+            mediaStored: number;
+            mediaNew: number;
+            mediaMissing: number;
+          }
+        | undefined;
+      if (manifest.status === 'draft') {
+        const mediaReferencesPath = resolve(
+          this.batchPath(companyId, batchId),
+          'android',
+          'media-preview-references.json',
+        );
+        assertInside(this.batchPath(companyId, batchId), mediaReferencesPath);
+        const references = JSON.parse(
+          await readFile(mediaReferencesPath, 'utf8').catch(() => {
+            throw validationError(
+              'Aguarde a comparação das mensagens antes de concluir o ZIP de mídias.',
+            );
+          }),
+        ) as PreviewWhatsAppAndroidMediaReference[];
+        stagedMediaPreview = await this.androidMediaImporter.previewArchive(
+          {
+            archivePath,
+            originalName: upload.originalName,
+            sizeBytes: upload.expectedBytes,
+          },
+          references,
+        );
+      }
+
+      let shouldResumeMediaImport = false;
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const current = await this.readManifest(companyId, batchId);
+        const currentMedia = current.androidBackup?.mediaImport;
+        if (
+          !current.androidBackup ||
+          currentMedia?.status !== 'validating' ||
+          currentMedia.uploadId !== uploadId
+        ) {
+          return;
+        }
+        const shouldStage = current.status !== 'applied';
+        const now = new Date().toISOString();
+        upload.status = shouldStage ? 'ready' : 'processing';
+        upload.updatedAt = now;
+        await this.writeAndroidMediaUpload(uploadDirectory, upload);
+        current.androidBackup.mediaImport = {
+          ...currentMedia,
+          status: shouldStage ? 'ready' : 'processing',
+          phase: shouldStage ? null : 'scanning',
+          processingFilesTotal: stagedMediaPreview?.filesTotal ?? 0,
+          updatedAt: now,
+          errorMessage: null,
+        };
+        if (stagedMediaPreview && current.androidBackup.comparison) {
+          current.androidBackup.comparison.mediaStored =
+            stagedMediaPreview.mediaStored;
+          current.androidBackup.comparison.mediaNew =
+            stagedMediaPreview.mediaNew;
+          current.androidBackup.comparison.mediaMissing =
+            stagedMediaPreview.mediaMissing;
+          current.androidBackup.comparison.updatedAt = now;
+        }
+        current.updatedAt = now;
+        await this.writeManifest(current);
+        shouldResumeMediaImport = current.status === 'applied';
+      });
+      if (shouldResumeMediaImport) {
+        const current = await this.readManifest(companyId, batchId);
+        this.resumeAndroidMediaJob(current, true);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Falha ao validar o ZIP de mídias do backup Android ${batchId}.`,
+        error instanceof Error ? error.stack : String(error),
+      );
+      const message = publicImportError(
+        error,
+        'Não foi possível validar o ZIP de mídias. Tente novamente.',
+      );
+      const upload = await this.readAndroidMediaUpload(uploadDirectory).catch(
+        () => null,
+      );
+      if (upload) {
+        upload.status = 'failed';
+        upload.updatedAt = new Date().toISOString();
+        await this.writeAndroidMediaUpload(uploadDirectory, upload).catch(
+          () => undefined,
+        );
+      }
+      await this.withBatchLock(`${companyId}:${batchId}`, async () => {
+        const current = await this.readManifest(companyId, batchId);
+        const currentMedia = current.androidBackup?.mediaImport;
+        if (!currentMedia || currentMedia.uploadId !== uploadId) return;
+        currentMedia.status = 'failed';
+        currentMedia.phase = null;
+        currentMedia.errorMessage = message;
+        currentMedia.updatedAt = new Date().toISOString();
+        current.updatedAt = currentMedia.updatedAt;
+        await this.writeManifest(current);
+      }).catch(() => undefined);
+    }
+  }
+
   private resumeAndroidMediaJob(
     manifest: StoredManifest,
     resumeAfterActiveJob = false,
@@ -3881,7 +4024,9 @@ export class WhatsAppHistoryImportService
 
   private durableStatus(manifest: StoredManifest): string {
     if (manifest.status === 'applied') {
-      return manifest.androidBackup?.mediaImport?.status === 'processing'
+      return ['validating', 'processing'].includes(
+        manifest.androidBackup?.mediaImport?.status ?? '',
+      )
         ? 'processing-media'
         : 'completed';
     }
@@ -4061,6 +4206,7 @@ export class WhatsAppHistoryImportService
       if (current) {
         this.resumeAndroidPreview(current);
         this.resumeAndroidImport(current);
+        this.resumeAndroidMediaValidationJob(current);
         this.resumeAndroidMediaJob(current);
       }
     }
@@ -4087,6 +4233,7 @@ export class WhatsAppHistoryImportService
       const manifest = row.manifest as unknown as StoredManifest;
       this.resumeAndroidPreview(manifest);
       this.resumeAndroidImport(manifest);
+      this.resumeAndroidMediaValidationJob(manifest);
       this.resumeAndroidMediaJob(manifest);
     }
     if (rows.length > 0) {

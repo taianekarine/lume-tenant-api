@@ -500,7 +500,19 @@ export class WhatsAppAndroidMediaImportService {
     input: ValidateWhatsAppAndroidMediaArchiveInput,
     references: readonly PreviewWhatsAppAndroidMediaReference[],
   ): Promise<PreviewWhatsAppAndroidMediaResult> {
-    const { filesTotal } = await this.validateArchive(input);
+    if (!input.originalName.toLocaleLowerCase('pt-BR').endsWith('.zip')) {
+      throw validationError('Selecione um arquivo ZIP da pasta Media.');
+    }
+    const archivePath = resolve(input.archivePath);
+    const archiveStat = await stat(archivePath);
+    if (
+      !archiveStat.isFile() ||
+      archiveStat.size !== input.sizeBytes ||
+      archiveStat.size < 22 ||
+      archiveStat.size > this.maximumArchiveBytes
+    ) {
+      throw validationError('O arquivo ZIP de mídias possui tamanho inválido.');
+    }
     const uniqueReferences = new Map(
       references
         .filter((item) =>
@@ -525,11 +537,34 @@ export class WhatsAppAndroidMediaImportService {
     }
 
     const matched = new Set<string>();
+    let filesTotal = 0;
+    let declaredUncompressedBytes = 0;
     let archive: ZipFile | null = null;
     try {
-      archive = await openZip(resolve(input.archivePath));
+      archive = await openZip(archivePath);
       for await (const entry of zipEntries(archive)) {
         if (entry.fileName.endsWith('/')) continue;
+        filesTotal += 1;
+        if (filesTotal > this.maximumArchiveEntries) {
+          throw validationError(
+            `Cada ZIP deve conter entre 1 e ${this.maximumArchiveEntries} arquivos.`,
+          );
+        }
+        if (
+          !Number.isSafeInteger(entry.uncompressedSize) ||
+          entry.uncompressedSize < 0
+        ) {
+          throw validationError('O ZIP possui um item com tamanho inválido.');
+        }
+        declaredUncompressedBytes += entry.uncompressedSize;
+        if (declaredUncompressedBytes > this.maximumUncompressedBytes) {
+          throw validationError(
+            'O conteúdo descompactado excede o limite seguro por arquivo ZIP.',
+          );
+        }
+        if (unsafeZipEntry(entry)) {
+          throw validationError('O ZIP contém um caminho de arquivo inseguro.');
+        }
         const exact = (
           byPath.get(canonicalMediaPath(entry.fileName)) ?? []
         ).filter((item) => !matched.has(item.id));
@@ -542,6 +577,12 @@ export class WhatsAppAndroidMediaImportService {
         ).filter((item) => !matched.has(item.id));
         if (fallback.length === 1) matched.add(fallback[0].id);
       }
+      if (filesTotal < 1) {
+        throw validationError('O ZIP deve conter pelo menos um arquivo.');
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code === 'VALIDATION_ERROR') throw error;
+      throw validationError('O arquivo ZIP de mídias está corrompido.');
     } finally {
       archive?.close();
     }
