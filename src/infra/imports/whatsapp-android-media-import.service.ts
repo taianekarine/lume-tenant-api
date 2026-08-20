@@ -9,7 +9,7 @@ import yauzl, { type Entry, type ZipFile } from 'yauzl';
 
 import { WhatsAppMediaStorage } from '../../application/contracts/whatsapp-media.storage';
 import { validationError } from '../../core/errors/app-error';
-import { Prisma } from '../database/prisma/generated/client';
+import { MessageKind, Prisma } from '../database/prisma/generated/client';
 import { PrismaService } from '../database/prisma/prisma.service';
 import { WHATSAPP_ANDROID_BACKUP_SOURCE_SYSTEM } from './whatsapp-android-backup';
 
@@ -1001,6 +1001,16 @@ export class WhatsAppAndroidMediaImportService {
       typeof sourceMimeType === 'string' && sourceMimeType.includes('/')
         ? sourceMimeType
         : mimeType(originalName);
+    const detectedKind = detectedMimeType.startsWith('image/')
+      ? MessageKind.IMAGE
+      : detectedMimeType.startsWith('audio/')
+        ? MessageKind.AUDIO
+        : detectedMimeType.startsWith('video/')
+          ? MessageKind.VIDEO
+          : detectedMimeType === 'text/vcard' ||
+              detectedMimeType === 'text/x-vcard'
+            ? MessageKind.CONTACT
+            : MessageKind.DOCUMENT;
     const updated = await this.prisma.whatsAppMessage.updateMany({
       where: {
         id: candidate.id,
@@ -1009,6 +1019,7 @@ export class WhatsAppAndroidMediaImportService {
         mediaStorageKey: null,
       },
       data: {
+        kind: detectedKind,
         media: {
           ...currentMedia,
           fileName: originalName,

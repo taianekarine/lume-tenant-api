@@ -4184,6 +4184,10 @@ export class WhatsAppHistoryImportService
       }),
     );
     try {
+      const claimedManifest = await this.readManifest(companyId, batchId);
+      claimedManifest.attempts = (claimedManifest.attempts ?? 0) + 1;
+      claimedManifest.updatedAt = new Date().toISOString();
+      await this.writeManifest(claimedManifest);
       await operation();
     } finally {
       clearInterval(heartbeatTimer);

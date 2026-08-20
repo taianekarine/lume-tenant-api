@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 
+import { MessageKind } from '../database/prisma/generated/client';
 import { WhatsAppAndroidMediaImportService } from './whatsapp-android-media-import.service';
 
 const COMPANY_ID = '11111111-1111-4111-8111-111111111111';
@@ -309,6 +310,7 @@ describe('WhatsAppAndroidMediaImportService', () => {
     expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          kind: MessageKind.DOCUMENT,
           mediaMimeType: 'application/pdf',
           mediaOriginalName: 'contrato.pdf',
         }),
@@ -317,6 +319,7 @@ describe('WhatsAppAndroidMediaImportService', () => {
     expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
+          kind: MessageKind.AUDIO,
           mediaMimeType: 'audio/ogg',
           mediaOriginalName: 'PTT-2026',
         }),
