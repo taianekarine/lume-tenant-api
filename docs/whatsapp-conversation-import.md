@@ -19,10 +19,14 @@ individuais exportados pelo WhatsApp e conduz o mesmo contrato oficial abaixo:
 4. é gerada uma única planilha consolidada com as três tabelas oficiais;
 5. o botão de aplicar executa `validate` e `apply` do importador existente.
 
-Não há associação por semelhança de nome. O telefone confirmado é a identidade
-canônica e dois backups que apontem para o mesmo número são rejeitados no mesmo
-lote. O estado final nunca é deduzido arbitrariamente; enquanto houver dado
-obrigatório sem revisão, o lote permanece bloqueado para aplicação.
+Não há associação por semelhança de nome. O telefone confirmado, dentro do
+tenant e do canal, é a identidade canônica. Referências externas distintas do
+mesmo contato — por exemplo, JID telefônico, LID ou aliases legados — são
+vinculadas à mesma conversa, inclusive quando a primeira referência já foi
+aplicada antes de uma interrupção. A restrição de unicidade continua impedindo
+duas conversas reais para o mesmo contato no canal. O estado final nunca é
+deduzido arbitrariamente; enquanto houver dado obrigatório sem revisão, o lote
+permanece bloqueado para aplicação.
 
 As datas sem fuso no arquivo exportado são interpretadas como horário civil de
 `America/Sao_Paulo` e persistidas em UTC. Identificadores de conversa e mensagem
@@ -44,7 +48,9 @@ como recuperáveis.
 Aplicar novamente um lote ou combinar uma conversa já importada com novas
 conversas é idempotente: as mensagens já confirmadas são reconhecidas por seus
 identificadores determinísticos, não invalidam o restante do lote e não são
-duplicadas.
+duplicadas. Se a execução parar depois de aplicar somente parte dos aliases, a
+retomada ignora os registros concluídos e registra as referências restantes na
+mesma conversa canônica.
 
 ## Backup Android completo (`msgstore.db.crypt15`)
 

@@ -909,6 +909,7 @@ export class WhatsAppImportService {
           },
           select: {
             id: true,
+            channelId: true,
             contactId: true,
             closedAt: true,
             updatedAt: true,
@@ -922,7 +923,7 @@ export class WhatsAppImportService {
         conversation,
       ]),
     );
-    const openConversations = await collectChunked(
+    const canonicalConversations = await collectChunked(
       contacts.map((contact) => contact.id),
       IMPORT_LOOKUP_CHUNK_SIZE,
       (contactIdChunk) =>
@@ -931,23 +932,24 @@ export class WhatsAppImportService {
             companyId: input.companyId,
             channelId: input.channelId,
             contactId: { in: [...contactIdChunk] },
-            closedAt: null,
           },
-          select: { id: true, contactId: true },
+          select: { id: true, contactId: true, closedAt: true },
         }),
     );
-    const openByContactId = new Map<string, string[]>();
-    for (const conversation of openConversations) {
-      openByContactId.set(conversation.contactId, [
-        ...(openByContactId.get(conversation.contactId) ?? []),
-        conversation.id,
-      ]);
-    }
+    const canonicalByContactId = new Map(
+      canonicalConversations.map((conversation) => [
+        conversation.contactId,
+        conversation,
+      ]),
+    );
 
     const workbookConversationIds = new Set<string>();
     const projectedNewContacts = new Set<string>();
-    const projectedConversationByPhone = new Map<string, string>();
-    const projectedOpenConversationByPhone = new Map<string, string>();
+    const projectedCanonicalPhones = new Set(
+      contacts
+        .filter((contact) => canonicalByContactId.has(contact.id))
+        .map((contact) => contact.phoneNormalized),
+    );
     for (const row of parsedPackage.conversations) {
       this.validateConversationRow(
         row,
@@ -970,56 +972,17 @@ export class WhatsAppImportService {
       if (row.migrationAction !== 'upsert') {
         continue;
       }
-      const previousConversationForPhone = projectedConversationByPhone.get(
-        row.phoneE164,
-      );
-      if (
-        previousConversationForPhone &&
-        previousConversationForPhone !== row.externalConversationId
-      ) {
-        issue(
-          issues,
-          'Atendimentos',
-          'DUPLICATE_PHONE_IN_BATCH',
-          'O lote de atendimentos atuais deve conter no máximo uma conversa por telefone.',
-          row.rowNumber,
-        );
-      } else {
-        projectedConversationByPhone.set(
-          row.phoneE164,
-          row.externalConversationId,
-        );
-      }
       counts.conversations += 1;
       incrementImportCount(counts.byDepartment, row.departmentCode);
       incrementImportCount(counts.byConversationState, row.conversationState);
       incrementImportCount(counts.byRequestStatus, row.requestStatus);
-      if (OPEN_STATES.has(row.conversationState)) {
-        const previousExternalId = projectedOpenConversationByPhone.get(
-          row.phoneE164,
-        );
-        if (
-          previousExternalId &&
-          previousExternalId !== row.externalConversationId
-        ) {
-          issue(
-            issues,
-            'Atendimentos',
-            'SECOND_OPEN_CONVERSATION_IN_BATCH',
-            'O próprio lote contém duas conversas abertas para o mesmo telefone.',
-            row.rowNumber,
-          );
-        } else {
-          projectedOpenConversationByPhone.set(
-            row.phoneE164,
-            row.externalConversationId,
-          );
-        }
-      }
       const reference = conversationRefByKey.get(
         externalKey(row.sourceSystem, row.externalConversationId),
       );
       const contact = contactByPhone.get(row.phoneE164);
+      const canonical = contact
+        ? canonicalByContactId.get(contact.id)
+        : undefined;
       if (contact) {
         if (
           reference &&
@@ -1044,6 +1007,7 @@ export class WhatsAppImportService {
           );
         } else {
           counts.conversationsToUpdate += 1;
+          projectedCanonicalPhones.add(row.phoneE164);
           if (referenced.contact.phoneNormalized !== row.phoneE164) {
             issue(
               issues,
@@ -1053,19 +1017,23 @@ export class WhatsAppImportService {
               row.rowNumber,
             );
           }
-          if (OPEN_STATES.has(row.conversationState)) {
-            const competingOpen = (
-              openByContactId.get(referenced.contactId) ?? []
-            ).filter((conversationId) => conversationId !== referenced.id);
-            if (competingOpen.length > 0) {
-              issue(
-                issues,
-                'database',
-                'SECOND_OPEN_CONVERSATION',
-                'Outra conversa aberta já existe para este contato no canal.',
-                row.rowNumber,
-              );
-            }
+          if (referenced.channelId !== input.channelId) {
+            issue(
+              issues,
+              'database',
+              'CONVERSATION_CHANNEL_MISMATCH',
+              'A referência externa já pertence a outro canal.',
+              row.rowNumber,
+            );
+          }
+          if (canonical && canonical.id !== referenced.id) {
+            issue(
+              issues,
+              'database',
+              'SECOND_OPEN_CONVERSATION',
+              'A referência externa aponta para outra conversa e não pode criar uma segunda conversa para o contato no canal.',
+              row.rowNumber,
+            );
           }
           try {
             await this.assertNoDriftSinceLastImport(
@@ -1088,18 +1056,11 @@ export class WhatsAppImportService {
           }
         }
       } else {
-        counts.conversationsToCreate += 1;
-        if (OPEN_STATES.has(row.conversationState) && contact) {
-          const existingOpen = openByContactId.get(contact.id) ?? [];
-          if (existingOpen.length > 0) {
-            issue(
-              issues,
-              'database',
-              'SECOND_OPEN_CONVERSATION',
-              'Já existe uma conversa aberta para este contato no canal.',
-              row.rowNumber,
-            );
-          }
+        if (canonical || projectedCanonicalPhones.has(row.phoneE164)) {
+          counts.conversationsToUpdate += 1;
+        } else {
+          counts.conversationsToCreate += 1;
+          projectedCanonicalPhones.add(row.phoneE164);
         }
       }
     }
@@ -2435,52 +2396,71 @@ export class WhatsAppImportService {
         }
         await renewalPromise;
       };
-      const results = await mapWithConcurrency(
-        upserts,
+      const conversationsByPhone = new Map<string, ConversationImportRow[]>();
+      for (const row of upserts) {
+        conversationsByPhone.set(row.phoneE164, [
+          ...(conversationsByPhone.get(row.phoneE164) ?? []),
+          row,
+        ]);
+      }
+      const groupedResults = await mapWithConcurrency(
+        [...conversationsByPhone.values()],
         this.applyConcurrency,
-        async (row): Promise<AppliedConversationResult | null> => {
-          await renewLeaseIfNeeded();
-          const existingRecord =
-            await this.prisma.whatsAppImportRecord.findUnique({
-              where: {
-                batchId_sourceSystem_externalConversationId: {
-                  batchId: input.batchId,
-                  sourceSystem: row.sourceSystem,
-                  externalConversationId: row.externalConversationId,
+        async (rows): Promise<(AppliedConversationResult | null)[]> => {
+          const phoneResults: (AppliedConversationResult | null)[] = [];
+          // Referências diferentes (JID, LID ou aliases legados) do mesmo
+          // telefone resolvem para uma única conversa. Processá-las em série
+          // evita que duas transações disputem essa conversa canônica.
+          for (const row of rows) {
+            await renewLeaseIfNeeded();
+            const existingRecord =
+              await this.prisma.whatsAppImportRecord.findUnique({
+                where: {
+                  batchId_sourceSystem_externalConversationId: {
+                    batchId: input.batchId,
+                    sourceSystem: row.sourceSystem,
+                    externalConversationId: row.externalConversationId,
+                  },
                 },
-              },
-            });
-          if (existingRecord?.status === WhatsAppImportRecordStatus.APPLIED) {
-            return null;
-          }
-          const messages =
-            messagesByConversation.get(row.externalConversationId) ?? [];
-          const documents =
-            documentsByConversation.get(row.externalConversationId) ?? [];
-          return retryTransactionWriteConflict(() =>
-            this.prisma.$transaction(
-              (transaction) =>
-                this.applyConversation(
-                  transaction,
-                  input,
-                  actor.id,
-                  row,
-                  messages,
-                  documents,
+              });
+            if (existingRecord?.status === WhatsAppImportRecordStatus.APPLIED) {
+              phoneResults.push(null);
+              continue;
+            }
+            const messages =
+              messagesByConversation.get(row.externalConversationId) ?? [];
+            const documents =
+              documentsByConversation.get(row.externalConversationId) ?? [];
+            phoneResults.push(
+              await retryTransactionWriteConflict(() =>
+                this.prisma.$transaction(
+                  (transaction) =>
+                    this.applyConversation(
+                      transaction,
+                      input,
+                      actor.id,
+                      row,
+                      messages,
+                      documents,
+                    ),
+                  {
+                    // The batch lease guarantees one importer for this child batch.
+                    // READ COMMITTED avoids PostgreSQL serialization failures while
+                    // independent conversations are persisted in parallel; unique
+                    // constraints remain the final idempotency guard.
+                    isolationLevel:
+                      Prisma.TransactionIsolationLevel.ReadCommitted,
+                    maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+                    timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
+                  },
                 ),
-              {
-                // The batch lease guarantees one importer for this child batch.
-                // READ COMMITTED avoids PostgreSQL serialization failures while
-                // independent conversations are persisted in parallel; unique
-                // constraints remain the final idempotency guard.
-                isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
-                maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
-                timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
-              },
-            ),
-          );
+              ),
+            );
+          }
+          return phoneResults;
         },
       );
+      const results = groupedResults.flat();
       for (const result of results) {
         if (!result) continue;
         if (result.created) {
@@ -2591,8 +2571,7 @@ export class WhatsAppImportService {
       transaction.whatsAppImportRecord.findFirst({
         where: {
           companyId: input.companyId,
-          sourceSystem: row.sourceSystem,
-          externalConversationId: row.externalConversationId,
+          conversationId: existingReference.internalId,
           status: WhatsAppImportRecordStatus.APPLIED,
         },
         orderBy: [{ appliedAt: 'desc' }, { id: 'desc' }],
@@ -2778,7 +2757,7 @@ export class WhatsAppImportService {
     if (!existingContact) {
       created.contactId = contact.id;
     }
-    const existingConversation = existingReference
+    const referencedConversation = existingReference
       ? await transaction.whatsAppConversation.findUniqueOrThrow({
           where: {
             id_companyId: {
@@ -2788,11 +2767,43 @@ export class WhatsAppImportService {
           },
         })
       : null;
-    if (existingConversation && existingConversation.contactId !== contact.id) {
+    const canonicalConversation =
+      await transaction.whatsAppConversation.findUnique({
+        where: {
+          companyId_channelId_contactId: {
+            companyId: input.companyId,
+            channelId: input.channelId,
+            contactId: contact.id,
+          },
+        },
+      });
+    if (
+      referencedConversation &&
+      referencedConversation.channelId !== input.channelId
+    ) {
+      throw new Error(
+        `Referência externa ${row.externalConversationId} pertence a outro canal.`,
+      );
+    }
+    if (
+      referencedConversation &&
+      referencedConversation.contactId !== contact.id
+    ) {
       throw new Error(
         `Referência externa ${row.externalConversationId} pertence a outro contato.`,
       );
     }
+    if (
+      referencedConversation &&
+      canonicalConversation &&
+      referencedConversation.id !== canonicalConversation.id
+    ) {
+      throw new Error(
+        `Segunda conversa aberta bloqueada para ${row.externalConversationId}.`,
+      );
+    }
+    const existingConversation =
+      referencedConversation ?? canonicalConversation ?? null;
     if (OPEN_STATES.has(row.conversationState)) {
       const collision = await transaction.whatsAppConversation.findFirst({
         where: {

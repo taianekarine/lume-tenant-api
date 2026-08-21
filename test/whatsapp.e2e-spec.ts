@@ -5292,6 +5292,165 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     }
   }, 60_000);
 
+  it('retoma importação parcial consolidando JIDs do mesmo telefone na conversa canônica', async () => {
+    const importRoot = await mkdtemp(
+      join(tmpdir(), 'lume-whatsapp-canonical-aliases-e2e-'),
+    );
+    const batchId = randomUUID();
+    try {
+      const wallClock = new Date(Date.now() - 6 * 60 * 60 * 1_000);
+      const cutoffAt = new Date(Date.now() + 60 * 60 * 1_000);
+      const phone = `55117${String(Date.now()).slice(-8)}`;
+      const firstExternalId = `${phone}@s.whatsapp.net`;
+      const secondExternalId = `${randomUUID()}@lid`;
+      const packagePath = await createLegacyImportPackage({
+        root: importRoot,
+        directory: 'canonical-aliases',
+        conversations: [
+          legacyConversationRow({
+            externalId: firstExternalId,
+            phone,
+            wallClock,
+            contactName: 'Cliente com aliases E2E',
+          }),
+          legacyConversationRow({
+            externalId: secondExternalId,
+            phone,
+            wallClock: new Date(wallClock.getTime() + 1_000),
+            contactName: 'Cliente com aliases E2E',
+          }),
+        ],
+        messages: [
+          legacyMessageRow(
+            firstExternalId,
+            `message-${randomUUID()}`,
+            wallClock,
+          ),
+          legacyMessageRow(
+            secondExternalId,
+            `message-${randomUUID()}`,
+            new Date(wallClock.getTime() + 1_000),
+          ),
+        ],
+      });
+      let transactionCalls = 0;
+      let interruptSecondAlias = true;
+      const faultInjectingPrisma = new Proxy(prisma, {
+        get(target, property) {
+          if (property === '$transaction') {
+            const executeTransaction = target.$transaction.bind(target);
+            return (...args: unknown[]) => {
+              transactionCalls += 1;
+              if (interruptSecondAlias && transactionCalls === 2) {
+                interruptSecondAlias = false;
+                return Promise.reject(
+                  new Error(
+                    'Interrupção parcial simulada após o primeiro JID.',
+                  ),
+                );
+              }
+              return Reflect.apply(
+                executeTransaction,
+                undefined,
+                args,
+              ) as unknown;
+            };
+          }
+          return Reflect.get(target, property, target) as unknown;
+        },
+      });
+      const service = new WhatsAppImportService(
+        faultInjectingPrisma,
+        importRoot,
+      );
+      const input = {
+        companyId: tenantId,
+        channelId,
+        actorUsername: 'admin.e2e',
+        batchName: `canonical-aliases-${batchId}`,
+        batchId,
+        packagePath,
+        cutoffAt,
+        confirmation: `APPLY:${batchId}`,
+      };
+
+      await expect(service.validate(input)).resolves.toMatchObject({
+        valid: true,
+        counts: {
+          conversationsToCreate: 1,
+          conversationsToUpdate: 1,
+        },
+      });
+      await expect(service.apply(input)).rejects.toThrow(
+        'Interrupção parcial simulada',
+      );
+      await expect(
+        prisma.whatsAppImportBatch.findUniqueOrThrow({
+          where: { id: batchId },
+          select: { status: true },
+        }),
+      ).resolves.toMatchObject({ status: WhatsAppImportBatchStatus.FAILED });
+      await expect(
+        prisma.whatsAppImportRecord.count({ where: { batchId } }),
+      ).resolves.toBe(1);
+
+      await expect(service.apply(input)).resolves.toMatchObject({
+        status: 'applied',
+        idempotentReplay: false,
+        counts: {
+          conversations: 2,
+          conversationsToCreate: 1,
+          conversationsToUpdate: 1,
+          messagesToCreate: 2,
+        },
+      });
+      const references = await prisma.whatsAppImportExternalRef.findMany({
+        where: {
+          companyId: tenantId,
+          entityType: 'conversation',
+          sourceSystem: 'legacy-e2e',
+          externalId: { in: [firstExternalId, secondExternalId] },
+        },
+        orderBy: { externalId: 'asc' },
+      });
+      expect(references).toHaveLength(2);
+      expect(
+        new Set(references.map((reference) => reference.internalId)),
+      ).toEqual(new Set([references[0].internalId]));
+      await expect(
+        prisma.whatsAppConversation.count({
+          where: {
+            id: references[0].internalId,
+            companyId: tenantId,
+            channelId,
+            contact: { phoneNormalized: phone },
+          },
+        }),
+      ).resolves.toBe(1);
+      await expect(
+        prisma.whatsAppMessage.count({
+          where: {
+            companyId: tenantId,
+            conversationId: references[0].internalId,
+          },
+        }),
+      ).resolves.toBe(2);
+      await expect(service.apply(input)).resolves.toMatchObject({
+        status: 'applied',
+        idempotentReplay: true,
+      });
+
+      await service.rollback({
+        companyId: tenantId,
+        batchId,
+        actorUsername: 'admin.e2e',
+        confirmation: `ROLLBACK:${batchId}`,
+      });
+    } finally {
+      await rm(importRoot, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('importa historico silenciosamente, retoma lote, reconcilia e protege rollback', async () => {
     const importRoot = await mkdtemp(
       join(tmpdir(), 'lume-whatsapp-import-e2e-'),

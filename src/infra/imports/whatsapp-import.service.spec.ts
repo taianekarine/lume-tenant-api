@@ -306,7 +306,7 @@ describe('WhatsAppImportService.validate', () => {
     );
   });
 
-  it('rejeita duas novas conversas abertas do mesmo telefone no próprio lote', async () => {
+  it('consolida duas referências abertas do mesmo telefone no próprio lote', async () => {
     const fixture = await packageWithRows({
       conversations: [conversationRow('legacy-1'), conversationRow('legacy-2')],
     });
@@ -323,21 +323,23 @@ describe('WhatsAppImportService.validate', () => {
       packagePath: fixture.packagePath,
     });
 
-    expect(report.valid).toBe(false);
-    expect(report.issues).toContainEqual(
-      expect.objectContaining({
-        code: 'SECOND_OPEN_CONVERSATION_IN_BATCH',
-      }),
+    expect(report.valid).toBe(true);
+    expect(report.counts).toMatchObject({
+      conversationsToCreate: 1,
+      conversationsToUpdate: 1,
+    });
+    expect(report.issues).not.toContainEqual(
+      expect.objectContaining({ code: 'SECOND_OPEN_CONVERSATION_IN_BATCH' }),
     );
   });
 
-  it('rejeita duas conversas fechadas do mesmo contato no lote de estado atual', async () => {
+  it('consolida duas referências fechadas do mesmo contato no lote de estado atual', async () => {
     const first = conversationRow('legacy-1');
     const second = conversationRow('legacy-2');
     for (const row of [first, second]) {
       row[7] = 'closed';
       row[8] = 'closed';
-      row[9] = 'rejected';
+      row[9] = 'not-started';
     }
     const fixture = await packageWithRows({
       conversations: [first, second],
@@ -355,8 +357,12 @@ describe('WhatsAppImportService.validate', () => {
       packagePath: fixture.packagePath,
     });
 
-    expect(report.valid).toBe(false);
-    expect(report.issues).toContainEqual(
+    expect(report.valid).toBe(true);
+    expect(report.counts).toMatchObject({
+      conversationsToCreate: 1,
+      conversationsToUpdate: 1,
+    });
+    expect(report.issues).not.toContainEqual(
       expect.objectContaining({ code: 'DUPLICATE_PHONE_IN_BATCH' }),
     );
   });
@@ -482,6 +488,53 @@ describe('WhatsAppImportService.validate', () => {
       contactsToCreate: 0,
       contactsToUpdate: 0,
       conversationsToCreate: 1,
+    });
+    expect(writeAttempt).not.toHaveBeenCalled();
+  });
+
+  it('reutiliza a conversa canônica pelo telefone quando o novo JID ainda não tem referência', async () => {
+    const fixture = await packageWithRows({
+      conversations: [conversationRow('novo-alias@lid')],
+    });
+    const writeAttempt = vi.fn(() => {
+      throw new Error('write não permitido no dry-run');
+    });
+    const prisma = readOnlyPrisma(writeAttempt);
+    const contactId = '00000000-0000-4000-8000-000000000003';
+    Object.assign(prisma.whatsAppContact, {
+      findMany: vi.fn().mockResolvedValue([
+        {
+          id: contactId,
+          phoneNormalized: '553496305110',
+          displayName: 'Cliente legado',
+          updatedAt: new Date('2026-07-29T20:00:00.000Z'),
+        },
+      ]),
+    });
+    Object.assign(prisma.whatsAppConversation, {
+      findMany: vi.fn().mockResolvedValue([
+        {
+          id: '00000000-0000-4000-8000-000000000004',
+          contactId,
+          closedAt: null,
+        },
+      ]),
+    });
+    const service = new WhatsAppImportService(prisma, fixture.root);
+
+    const report = await service.validate({
+      companyId: testCompanyId,
+      channelId: testChannelId,
+      actorUsername: 'admin',
+      batchName: 'batch-canonical-alias',
+      packagePath: fixture.packagePath,
+      cutoffAt: new Date('2026-07-30T00:00:00.000Z'),
+    });
+
+    expect(report.valid).toBe(true);
+    expect(report.counts).toMatchObject({
+      conversationsToCreate: 0,
+      conversationsToUpdate: 1,
     });
     expect(writeAttempt).not.toHaveBeenCalled();
   });
