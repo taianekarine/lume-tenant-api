@@ -21,7 +21,7 @@ export function resolveEffectivePermissions(
   departments: readonly SupportedUserDepartment[],
   individualPermissions: readonly PermissionCode[] = [],
   isAdministrator = false,
-  documentAccessMode: 'standard' | 'document-portal' = 'standard',
+  documentAccessMode: 'standard' | 'document-portal' | 'client' = 'standard',
 ): PermissionCode[] {
   if (isAdministrator) {
     return [...ALL_PERMISSION_CODES];

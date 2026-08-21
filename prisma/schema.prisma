@@ -15,6 +15,98 @@ enum CompanyStatus {
   SUSPENDED
 }
 
+enum RoutingCompanyStatus {
+  ACTIVE    @map("active")
+  INACTIVE  @map("inactive")
+  SUSPENDED @map("suspended")
+}
+
+enum RoutingFixedPointStatus {
+  ACTIVE   @map("active")
+  INACTIVE @map("inactive")
+}
+
+enum PassengerStatus {
+  ACTIVE                @map("active")
+  ON_LEAVE              @map("on-leave")
+  VACATION              @map("vacation")
+  TEMPORARILY_OFF_ROUTE @map("temporarily-off-route")
+  UNLINKED              @map("unlinked")
+}
+
+enum PassengerRegistrationStatus {
+  READY   @map("ready")
+  PENDING @map("pending")
+}
+
+enum RoutingDataOrigin {
+  COMPANY    @map("company")
+  AGENT      @map("agent")
+  OPERATIONS @map("operations")
+  IMPORT     @map("import")
+  SYSTEM     @map("system")
+}
+
+enum PassengerIssueStatus {
+  OPEN     @map("open")
+  RESOLVED @map("resolved")
+}
+
+enum PassengerImportBatchStatus {
+  PROCESSING      @map("processing")
+  COMPLETED       @map("completed")
+  REVIEW_REQUIRED @map("review-required")
+  FAILED          @map("failed")
+}
+
+enum PassengerImportAction {
+  CREATED  @map("created")
+  UPDATED  @map("updated")
+  KEPT     @map("kept")
+  CONFLICT @map("conflict")
+  PENDING  @map("pending")
+}
+
+enum RoutingRouteType {
+  MUNICIPAL     @map("municipal")
+  INTERMUNICIPAL @map("intermunicipal")
+}
+
+enum RoutingRouteStatus {
+  DRAFT            @map("draft")
+  ROUTED           @map("routed")
+  IN_REVIEW        @map("in-review")
+  PENDING_APPROVAL @map("pending-approval")
+  APPROVED         @map("approved")
+  PUBLISHED        @map("published")
+}
+
+enum RoutingDirection {
+  OUTBOUND @map("outbound")
+  RETURN   @map("return")
+}
+
+enum RoutingAssignmentStatus {
+  ASSIGNED          @map("assigned")
+  OVERFLOW          @map("overflow")
+  PENDING_DATA      @map("pending-data")
+  PENDING_DOCUMENTS @map("pending-documents")
+}
+
+enum RoutingContractStatus {
+  DRAFT     @map("draft")
+  ACTIVE    @map("active")
+  SUSPENDED @map("suspended")
+  ENDED     @map("ended")
+}
+
+enum RoutingContractPeriodicity {
+  MONTHLY   @map("monthly")
+  WEEKLY    @map("weekly")
+  DAILY     @map("daily")
+  PER_ROUTE @map("per-route")
+}
+
 enum OutboxStatus {
   PENDING
   PROCESSING
@@ -23,6 +115,7 @@ enum OutboxStatus {
 }
 
 enum DepartmentCode {
+  CLIENT_COMPANY          @map("client-company")
   HUMAN_RESOURCES        @map("human-resources")
   PERSONNEL_DEPARTMENT   @map("personnel-department")
   COMMERCIAL             @map("commercial")
@@ -179,6 +272,12 @@ enum DataExchangeArtifactKind {
 enum DocumentAccessMode {
   STANDARD        @map("standard")
   DOCUMENT_PORTAL @map("document-portal")
+  CLIENT          @map("client")
+}
+
+enum UserClientCategory {
+  LEGAL_ENTITY @map("legal-entity")
+  INDIVIDUAL   @map("individual")
 }
 
 enum DocumentRequestContext {
@@ -295,6 +394,27 @@ model Company {
   documentReviews               DocumentReview[]
   documentStatusHistory         DocumentStatusHistory[]
   apiRequestMetrics             ApiRequestMetric[]
+  routingCompanies              RoutingCompany[]
+  routingCompanyHistoryEntries RoutingCompanyHistory[]
+  passengers                    Passenger[]
+  passengerHistoryEntries      PassengerHistory[]
+  passengerIssues              PassengerIssue[]
+  passengerDocumentData        PassengerDocumentData[]
+  passengerImportBatches       PassengerImportBatch[]
+  passengerImportRecords       PassengerImportRecord[]
+  routingRoutes                 RoutingRoute[]
+  routingRoutePoints           RoutingRoutePoint[]
+  routingRouteAssignments      RoutingRoutePassenger[]
+  routingRouteHistoryEntries   RoutingRouteHistory[]
+  routingRouteVersions         RoutingRouteVersion[]
+  routingRouteApprovals        RoutingRouteApproval[]
+  routingNavigationLinks       RoutingNavigationLink[]
+  routingExecutions            RoutingRouteExecution[]
+  routingContracts             RoutingContract[]
+  routingContractCostCenters   RoutingContractCostCenter[]
+  routingContractShifts        RoutingContractShift[]
+  routingContractHistoryEntries RoutingContractHistory[]
+  routingFixedPoints             RoutingFixedPoint[]
 
   @@map("companies")
 }
@@ -302,6 +422,7 @@ model Company {
 model User {
   id                     String             @id @default(uuid()) @db.Uuid
   companyId              String             @map("company_id") @db.Uuid
+  routingCompanyId       String?            @map("routing_company_id") @db.Uuid
   name                   String             @db.VarChar(120)
   username               String             @db.VarChar(40)
   usernameNormalized     String             @unique @map("username_normalized") @db.VarChar(40)
@@ -314,6 +435,7 @@ model User {
   profilePictureMime     String?            @map("profile_picture_mime") @db.VarChar(40)
   isAdministrator        Boolean            @default(false) @map("is_administrator")
   documentAccessMode     DocumentAccessMode @default(STANDARD) @map("document_access_mode")
+  clientCategory         UserClientCategory? @map("client_category")
   jobTitle               String?            @map("job_title") @db.VarChar(120)
   maritalStatus          String?            @map("marital_status") @db.VarChar(30)
   militaryDocumentStatus String             @default("pending-confirmation") @map("military_document_status") @db.VarChar(30)
@@ -331,6 +453,19 @@ model User {
   updatedAt              DateTime           @updatedAt @map("updated_at")
 
   company                       Company                          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany                RoutingCompany?                  @relation("RoutingCompanyUsers", fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  createdRoutingCompanies       RoutingCompany[]                 @relation("RoutingCompanyCreator")
+  routingCompanyHistoryEntries RoutingCompanyHistory[]          @relation("RoutingCompanyHistoryActor")
+  createdPassengers            Passenger[]                       @relation("PassengerCreator")
+  passengerHistoryEntries      PassengerHistory[]                @relation("PassengerHistoryActor")
+  passengerImportBatches       PassengerImportBatch[]            @relation("PassengerImportActor")
+  createdRoutingRoutes         RoutingRoute[]                     @relation("RoutingRouteCreator")
+  routingRouteHistoryEntries   RoutingRouteHistory[]              @relation("RoutingRouteHistoryActor")
+  routingRouteApprovals        RoutingRouteApproval[]             @relation("RoutingRouteApprover")
+  publishedRoutingRoutes       RoutingRoute[]                     @relation("RoutingRoutePublisher")
+  createdRoutingContracts      RoutingContract[]                  @relation("RoutingContractCreator")
+  routingContractHistoryEntries RoutingContractHistory[]          @relation("RoutingContractHistoryActor")
+  createdRoutingFixedPoints     RoutingFixedPoint[]                 @relation("RoutingFixedPointCreator")
   refreshTokens                 RefreshToken[]
   auditLogs                     TenantAuditLog[]
   assignedWhatsappConversations WhatsAppConversation[]           @relation("ConversationAssignee")
@@ -356,11 +491,627 @@ model User {
 
   @@unique([id, companyId])
   @@index([companyId])
+  @@index([companyId, routingCompanyId])
   @@index([companyId, status, name])
   @@index([companyId, deletedAt])
   @@index([departments], type: Gin)
   @@index([permissionCodes], type: Gin)
   @@map("users")
+}
+
+model RoutingCompany {
+  id               String               @id @default(uuid()) @db.Uuid
+  companyId        String               @map("company_id") @db.Uuid
+  taxId            String               @map("tax_id") @db.VarChar(14)
+  legalName        String               @map("legal_name") @db.VarChar(160)
+  tradeName        String?              @map("trade_name") @db.VarChar(120)
+  costCenter       String?              @map("cost_center") @db.VarChar(120)
+  status           RoutingCompanyStatus @default(ACTIVE)
+  avicExternalId   String?              @map("avic_external_id") @db.VarChar(160)
+  avicLastSyncedAt DateTime?            @map("avic_last_synced_at") @db.Timestamptz(3)
+  version          Int                  @default(1)
+  createdByUserId  String?              @map("created_by_user_id") @db.Uuid
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation("RoutingCompanyCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  users     User[]  @relation("RoutingCompanyUsers")
+  history   RoutingCompanyHistory[]
+  passengers Passenger[]
+  importRecords PassengerImportRecord[]
+  routes RoutingRoute[]
+  contracts RoutingContract[]
+  fixedPoints RoutingFixedPoint[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, taxId])
+  @@index([companyId, status, legalName])
+  @@map("routing_companies")
+}
+
+model RoutingFixedPoint {
+  id               String                  @id @default(uuid()) @db.Uuid
+  companyId        String                  @map("company_id") @db.Uuid
+  routingCompanyId String?                 @map("routing_company_id") @db.Uuid
+  code             String                  @db.VarChar(24)
+  name             String                  @db.VarChar(160)
+  status           RoutingFixedPointStatus @default(ACTIVE)
+  street           String                  @db.VarChar(160)
+  number           String                  @db.VarChar(30)
+  complement       String?                 @db.VarChar(120)
+  district         String                  @db.VarChar(120)
+  postalCode       String                  @map("postal_code") @db.VarChar(8)
+  city             String                  @db.VarChar(120)
+  state            String                  @db.Char(2)
+  latitude         Decimal?                @db.Decimal(10, 7)
+  longitude        Decimal?                @db.Decimal(10, 7)
+  version          Int                     @default(1)
+  createdByUserId  String                  @map("created_by_user_id") @db.Uuid
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company                Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany         RoutingCompany?   @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  createdBy              User              @relation("RoutingFixedPointCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  originContracts        RoutingContract[] @relation("RoutingContractOriginFixedPoint")
+  destinationContracts   RoutingContract[] @relation("RoutingContractDestinationFixedPoint")
+  passengers             Passenger[]
+  routePoints            RoutingRoutePoint[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, code])
+  @@index([companyId, routingCompanyId, status, name])
+  @@map("routing_fixed_points")
+}
+
+model RoutingCompanyHistory {
+  id               String   @id @default(uuid()) @db.Uuid
+  companyId        String   @map("company_id") @db.Uuid
+  routingCompanyId String   @map("routing_company_id") @db.Uuid
+  actorUserId      String?  @map("actor_user_id") @db.Uuid
+  commandId        String   @map("command_id") @db.Uuid
+  action           String   @db.VarChar(80)
+  beforeSnapshot   Json?    @map("before_snapshot") @db.JsonB
+  afterSnapshot    Json     @map("after_snapshot") @db.JsonB
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company        Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany RoutingCompany @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: Cascade)
+  actor          User?          @relation("RoutingCompanyHistoryActor", fields: [actorUserId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([companyId, commandId])
+  @@index([companyId, routingCompanyId, createdAt])
+  @@map("routing_company_history")
+}
+
+model Passenger {
+  id                              String                      @id @default(uuid()) @db.Uuid
+  companyId                       String                      @map("company_id") @db.Uuid
+  routingCompanyId                String                      @map("routing_company_id") @db.Uuid
+  externalReference               String?                     @map("external_reference") @db.VarChar(120)
+  identityFingerprint             String                      @map("identity_fingerprint") @db.Char(64)
+  fullName                        String                      @map("full_name") @db.VarChar(160)
+  normalizedName                  String                      @map("normalized_name") @db.VarChar(160)
+  shift                           String?                     @db.VarChar(80)
+  requiredArrivalTime             String?                     @map("required_arrival_time") @db.Char(5)
+  sector                          String?                     @db.VarChar(120)
+  accessibilityRequired           Boolean                     @default(false) @map("accessibility_required")
+  accessibilityNotes              String?                     @map("accessibility_notes") @db.VarChar(1000)
+  residenceStreet                 String?                     @map("residence_street") @db.VarChar(160)
+  residenceNumber                 String?                     @map("residence_number") @db.VarChar(30)
+  residenceComplement             String?                     @map("residence_complement") @db.VarChar(120)
+  residenceDistrict               String?                     @map("residence_district") @db.VarChar(120)
+  residencePostalCode             String?                     @map("residence_postal_code") @db.VarChar(8)
+  residenceCity                   String?                     @map("residence_city") @db.VarChar(120)
+  residenceState                  String?                     @map("residence_state") @db.Char(2)
+  residenceLatitude               Decimal?                    @map("residence_latitude") @db.Decimal(10, 7)
+  residenceLongitude              Decimal?                    @map("residence_longitude") @db.Decimal(10, 7)
+  predefinedBoardingLabel         String?                     @map("predefined_boarding_label") @db.VarChar(160)
+  predefinedBoardingStreet        String?                     @map("predefined_boarding_street") @db.VarChar(160)
+  predefinedBoardingNumber        String?                     @map("predefined_boarding_number") @db.VarChar(30)
+  predefinedBoardingComplement    String?                     @map("predefined_boarding_complement") @db.VarChar(120)
+  predefinedBoardingDistrict      String?                     @map("predefined_boarding_district") @db.VarChar(120)
+  predefinedBoardingPostalCode    String?                     @map("predefined_boarding_postal_code") @db.VarChar(8)
+  predefinedBoardingCity          String?                     @map("predefined_boarding_city") @db.VarChar(120)
+  predefinedBoardingState         String?                     @map("predefined_boarding_state") @db.Char(2)
+  predefinedBoardingLatitude      Decimal?                    @map("predefined_boarding_latitude") @db.Decimal(10, 7)
+  predefinedBoardingLongitude     Decimal?                    @map("predefined_boarding_longitude") @db.Decimal(10, 7)
+  predefinedBoardingOrigin        RoutingDataOrigin?          @map("predefined_boarding_origin")
+  predefinedBoardingFixedPointId  String?                     @map("predefined_boarding_fixed_point_id") @db.Uuid
+  status                          PassengerStatus             @default(ACTIVE)
+  registrationStatus              PassengerRegistrationStatus @default(PENDING) @map("registration_status")
+  version                         Int                         @default(1)
+  createdByUserId                 String?                     @map("created_by_user_id") @db.Uuid
+  createdAt                       DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                       DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company        Company                @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany RoutingCompany         @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  predefinedBoardingFixedPoint RoutingFixedPoint? @relation(fields: [predefinedBoardingFixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
+  createdBy      User?                  @relation("PassengerCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  documents      PassengerDocumentData[]
+  issues         PassengerIssue[]
+  history        PassengerHistory[]
+  importRecords  PassengerImportRecord[]
+  routeAssignments RoutingRoutePassenger[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, routingCompanyId, externalReference])
+  @@index([companyId, routingCompanyId, status, registrationStatus])
+  @@index([companyId, routingCompanyId, identityFingerprint])
+  @@index([companyId, normalizedName])
+  @@map("passengers")
+}
+
+model PassengerDocumentData {
+  id               String            @id @default(uuid()) @db.Uuid
+  companyId        String            @map("company_id") @db.Uuid
+  passengerId      String            @map("passenger_id") @db.Uuid
+  documentTypeCode String            @map("document_type_code") @db.VarChar(80)
+  data             Json              @default("{}") @db.JsonB
+  origin           RoutingDataOrigin @default(COMPANY)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  passenger Passenger @relation(fields: [passengerId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, passengerId, documentTypeCode])
+  @@index([companyId, documentTypeCode])
+  @@map("passenger_document_data")
+}
+
+model PassengerIssue {
+  id               String               @id @default(uuid()) @db.Uuid
+  companyId        String               @map("company_id") @db.Uuid
+  passengerId      String               @map("passenger_id") @db.Uuid
+  field            String               @db.VarChar(100)
+  code             String               @db.VarChar(100)
+  reason           String               @db.VarChar(500)
+  resolutionAction String               @map("resolution_action") @db.VarChar(500)
+  blocksRouting    Boolean              @default(true) @map("blocks_routing")
+  status           PassengerIssueStatus @default(OPEN)
+  resolvedAt       DateTime?            @map("resolved_at") @db.Timestamptz(3)
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  passenger Passenger @relation(fields: [passengerId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, passengerId, code, status])
+  @@index([companyId, status, blocksRouting])
+  @@map("passenger_issues")
+}
+
+model PassengerHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  passengerId    String   @map("passenger_id") @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid
+  commandId      String   @map("command_id") @db.Uuid
+  action         String   @db.VarChar(100)
+  beforeSnapshot Json?    @map("before_snapshot") @db.JsonB
+  afterSnapshot  Json     @map("after_snapshot") @db.JsonB
+  reason         String?  @db.VarChar(1000)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  passenger Passenger @relation(fields: [passengerId, companyId], references: [id, companyId], onDelete: Cascade)
+  actor     User?      @relation("PassengerHistoryActor", fields: [actorUserId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([companyId, commandId])
+  @@index([companyId, passengerId, createdAt])
+  @@map("passenger_history")
+}
+
+model PassengerImportBatch {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  companyId            String                     @map("company_id") @db.Uuid
+  actorUserId          String                     @map("actor_user_id") @db.Uuid
+  commandId            String                     @map("command_id") @db.Uuid
+  routeId              String?                    @map("route_id") @db.Uuid
+  sourceFileName       String                     @map("source_file_name") @db.VarChar(255)
+  sourceSha256         String                     @map("source_sha256") @db.Char(64)
+  status               PassengerImportBatchStatus @default(PROCESSING)
+  totalRows            Int                        @default(0) @map("total_rows")
+  createdCount         Int                        @default(0) @map("created_count")
+  updatedCount         Int                        @default(0) @map("updated_count")
+  keptCount            Int                        @default(0) @map("kept_count")
+  pendingCount         Int                        @default(0) @map("pending_count")
+  conflictCount        Int                        @default(0) @map("conflict_count")
+  requiresRerouting    Boolean                    @default(false) @map("requires_rerouting")
+  createdAt            DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  actor   User                    @relation("PassengerImportActor", fields: [actorUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  records PassengerImportRecord[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, commandId])
+  @@unique([companyId, sourceSha256, commandId])
+  @@index([companyId, status, createdAt])
+  @@index([companyId, routeId, createdAt])
+  @@map("passenger_import_batches")
+}
+
+model PassengerImportRecord {
+  id               String                @id @default(uuid()) @db.Uuid
+  companyId        String                @map("company_id") @db.Uuid
+  batchId          String                @map("batch_id") @db.Uuid
+  rowNumber        Int                   @map("row_number")
+  routingCompanyId String?               @map("routing_company_id") @db.Uuid
+  passengerId      String?               @map("passenger_id") @db.Uuid
+  action           PassengerImportAction
+  payload          Json                  @default("{}") @db.JsonB
+  problems         Json                  @default("[]") @db.JsonB
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  batch          PassengerImportBatch @relation(fields: [batchId, companyId], references: [id, companyId], onDelete: Cascade)
+  routingCompany RoutingCompany?      @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  passenger      Passenger?           @relation(fields: [passengerId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([batchId, rowNumber])
+  @@index([companyId, routingCompanyId, action])
+  @@index([companyId, passengerId])
+  @@map("passenger_import_records")
+}
+
+model RoutingContract {
+  id                         String                     @id @default(uuid()) @db.Uuid
+  companyId                  String                     @map("company_id") @db.Uuid
+  routingCompanyId           String                     @map("routing_company_id") @db.Uuid
+  originFixedPointId         String?                    @map("origin_fixed_point_id") @db.Uuid
+  destinationFixedPointId    String?                    @map("destination_fixed_point_id") @db.Uuid
+  code                       String                     @db.VarChar(80)
+  name                       String                     @db.VarChar(160)
+  operationType              String                     @map("operation_type") @db.VarChar(120)
+  routeType                  RoutingRouteType           @map("route_type")
+  status                     RoutingContractStatus      @default(DRAFT)
+  periodicity                RoutingContractPeriodicity
+  contractedVehicleCount     Int                        @map("contracted_vehicle_count")
+  predictedVehicleName       String                     @map("predicted_vehicle_name") @db.VarChar(160)
+  predictedVehicleReference  String?                    @map("predicted_vehicle_reference") @db.VarChar(120)
+  predictedVehicleCapacity   Int                        @map("predicted_vehicle_capacity")
+  contractedKm               Decimal?                   @map("contracted_km") @db.Decimal(12, 3)
+  plannedKm                  Decimal?                   @map("planned_km") @db.Decimal(12, 3)
+  maxWalkingDistanceMeters   Int                        @map("max_walking_distance_meters")
+  requiresDocumentation      Boolean                    @default(false) @map("requires_documentation")
+  requiredDocumentTypeCodes  String[]                   @default([]) @map("required_document_type_codes")
+  unitName                   String                     @map("unit_name") @db.VarChar(160)
+  originLabel                String                     @map("origin_label") @db.VarChar(160)
+  originStreet               String                     @map("origin_street") @db.VarChar(160)
+  originNumber               String                     @map("origin_number") @db.VarChar(30)
+  originComplement           String?                    @map("origin_complement") @db.VarChar(120)
+  originDistrict             String                     @map("origin_district") @db.VarChar(120)
+  originPostalCode           String                     @map("origin_postal_code") @db.VarChar(8)
+  originCity                 String                     @map("origin_city") @db.VarChar(120)
+  originState                String                     @map("origin_state") @db.Char(2)
+  originLatitude             Decimal?                   @map("origin_latitude") @db.Decimal(10, 7)
+  originLongitude            Decimal?                   @map("origin_longitude") @db.Decimal(10, 7)
+  destinationLabel           String                     @map("destination_label") @db.VarChar(160)
+  destinationStreet          String                     @map("destination_street") @db.VarChar(160)
+  destinationNumber          String                     @map("destination_number") @db.VarChar(30)
+  destinationComplement      String?                    @map("destination_complement") @db.VarChar(120)
+  destinationDistrict        String                     @map("destination_district") @db.VarChar(120)
+  destinationPostalCode      String                     @map("destination_postal_code") @db.VarChar(8)
+  destinationCity            String                     @map("destination_city") @db.VarChar(120)
+  destinationState           String                     @map("destination_state") @db.Char(2)
+  destinationLatitude        Decimal?                   @map("destination_latitude") @db.Decimal(10, 7)
+  destinationLongitude       Decimal?                   @map("destination_longitude") @db.Decimal(10, 7)
+  validFrom                  DateTime                   @map("valid_from") @db.Date
+  validUntil                 DateTime?                  @map("valid_until") @db.Date
+  notes                      String?                    @db.VarChar(2000)
+  version                    Int                        @default(1)
+  createdByUserId            String                     @map("created_by_user_id") @db.Uuid
+  createdAt                  DateTime                   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                  DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company        Company                    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany RoutingCompany             @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  originFixedPoint RoutingFixedPoint?        @relation("RoutingContractOriginFixedPoint", fields: [originFixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
+  destinationFixedPoint RoutingFixedPoint?   @relation("RoutingContractDestinationFixedPoint", fields: [destinationFixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
+  createdBy      User                       @relation("RoutingContractCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  costCenters    RoutingContractCostCenter[]
+  shifts         RoutingContractShift[]
+  routes         RoutingRoute[]
+  history        RoutingContractHistory[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, routingCompanyId, code])
+  @@index([companyId, routingCompanyId, status, validFrom])
+  @@map("routing_contracts")
+}
+
+model RoutingContractCostCenter {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @map("company_id") @db.Uuid
+  contractId String   @map("contract_id") @db.Uuid
+  code       String   @db.VarChar(80)
+  name       String?  @db.VarChar(160)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contract RoutingContract @relation(fields: [contractId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, contractId, code])
+  @@index([companyId, code])
+  @@map("routing_contract_cost_centers")
+}
+
+model RoutingContractShift {
+  id                  String   @id @default(uuid()) @db.Uuid
+  companyId           String   @map("company_id") @db.Uuid
+  contractId          String   @map("contract_id") @db.Uuid
+  name                String   @db.VarChar(80)
+  requiredArrivalTime String   @map("required_arrival_time") @db.Char(5)
+  vehicleCount        Int?     @map("vehicle_count")
+  vehicleCapacity     Int?     @map("vehicle_capacity")
+  activeWeekdays      Int[]    @default([]) @map("active_weekdays")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contract RoutingContract @relation(fields: [contractId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, contractId, name, requiredArrivalTime])
+  @@index([companyId, contractId])
+  @@map("routing_contract_shifts")
+}
+
+model RoutingContractHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  contractId     String   @map("contract_id") @db.Uuid
+  actorUserId    String   @map("actor_user_id") @db.Uuid
+  commandId      String   @map("command_id") @db.Uuid
+  action         String   @db.VarChar(100)
+  beforeSnapshot Json?    @map("before_snapshot") @db.JsonB
+  afterSnapshot  Json     @map("after_snapshot") @db.JsonB
+  reason         String?  @db.VarChar(1000)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contract RoutingContract @relation(fields: [contractId, companyId], references: [id, companyId], onDelete: Cascade)
+  actor    User            @relation("RoutingContractHistoryActor", fields: [actorUserId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([companyId, commandId])
+  @@index([companyId, contractId, createdAt])
+  @@map("routing_contract_history")
+}
+
+model RoutingRoute {
+  id                         String             @id @default(uuid()) @db.Uuid
+  companyId                  String             @map("company_id") @db.Uuid
+  routingCompanyId           String             @map("routing_company_id") @db.Uuid
+  contractId                 String             @map("contract_id") @db.Uuid
+  code                       String             @db.VarChar(80)
+  name                       String             @db.VarChar(160)
+  shift                      String             @db.VarChar(80)
+  requiredArrivalTime        String             @map("required_arrival_time") @db.Char(5)
+  type                       RoutingRouteType
+  requiresDocumentation      Boolean            @default(false) @map("requires_documentation")
+  requiredDocumentTypeCodes  String[]           @default([]) @map("required_document_type_codes")
+  originLabel                String             @map("origin_label") @db.VarChar(160)
+  originStreet               String             @map("origin_street") @db.VarChar(160)
+  originNumber               String             @map("origin_number") @db.VarChar(30)
+  originComplement           String?            @map("origin_complement") @db.VarChar(120)
+  originDistrict             String             @map("origin_district") @db.VarChar(120)
+  originPostalCode           String             @map("origin_postal_code") @db.VarChar(8)
+  originCity                 String             @map("origin_city") @db.VarChar(120)
+  originState                String             @map("origin_state") @db.Char(2)
+  originLatitude             Decimal?           @map("origin_latitude") @db.Decimal(10, 7)
+  originLongitude            Decimal?           @map("origin_longitude") @db.Decimal(10, 7)
+  destinationLabel           String             @map("destination_label") @db.VarChar(160)
+  destinationStreet          String             @map("destination_street") @db.VarChar(160)
+  destinationNumber          String             @map("destination_number") @db.VarChar(30)
+  destinationComplement      String?            @map("destination_complement") @db.VarChar(120)
+  destinationDistrict        String             @map("destination_district") @db.VarChar(120)
+  destinationPostalCode      String             @map("destination_postal_code") @db.VarChar(8)
+  destinationCity            String             @map("destination_city") @db.VarChar(120)
+  destinationState           String             @map("destination_state") @db.Char(2)
+  destinationLatitude        Decimal?           @map("destination_latitude") @db.Decimal(10, 7)
+  destinationLongitude       Decimal?           @map("destination_longitude") @db.Decimal(10, 7)
+  predictedVehicleReference  String?            @map("predicted_vehicle_reference") @db.VarChar(120)
+  predictedVehicleName       String              @map("predicted_vehicle_name") @db.VarChar(160)
+  predictedVehicleCapacity   Int                 @map("predicted_vehicle_capacity")
+  maxWalkingDistanceMeters   Int                 @map("max_walking_distance_meters")
+  validFrom                  DateTime            @map("valid_from") @db.Date
+  validUntil                 DateTime?           @map("valid_until") @db.Date
+  notes                      String?             @db.VarChar(2000)
+  status                     RoutingRouteStatus  @default(DRAFT)
+  needsRerouting             Boolean             @default(false) @map("needs_rerouting")
+  version                    Int                 @default(1)
+  planVersion                Int                 @default(0) @map("plan_version")
+  approvedVersion            Int?                @map("approved_version")
+  plannedOutboundKm          Decimal?            @map("planned_outbound_km") @db.Decimal(10, 3)
+  plannedReturnKm            Decimal?            @map("planned_return_km") @db.Decimal(10, 3)
+  plannedTotalKm             Decimal?            @map("planned_total_km") @db.Decimal(10, 3)
+  estimatedDurationMinutes   Int?                @map("estimated_duration_minutes")
+  overflowPassengerCount     Int                 @default(0) @map("overflow_passenger_count")
+  additionalRouteSuggested   Boolean             @default(false) @map("additional_route_suggested")
+  createdByUserId            String               @map("created_by_user_id") @db.Uuid
+  publishedByUserId          String?              @map("published_by_user_id") @db.Uuid
+  publishedAt                DateTime?            @map("published_at") @db.Timestamptz(3)
+  createdAt                  DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                  DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany RoutingCompany      @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
+  contract       RoutingContract     @relation(fields: [contractId, companyId], references: [id, companyId], onDelete: NoAction)
+  createdBy      User                @relation("RoutingRouteCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  publishedBy    User?               @relation("RoutingRoutePublisher", fields: [publishedByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  points         RoutingRoutePoint[]
+  passengers     RoutingRoutePassenger[]
+  history        RoutingRouteHistory[]
+  versions       RoutingRouteVersion[]
+  approvals      RoutingRouteApproval[]
+  navigationLinks RoutingNavigationLink[]
+  executions     RoutingRouteExecution[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, routingCompanyId, code])
+  @@index([companyId, contractId, status])
+  @@index([companyId, routingCompanyId, status, validFrom])
+  @@index([companyId, status, updatedAt])
+  @@map("routing_routes")
+}
+
+model RoutingRoutePoint {
+  id               String             @id @default(uuid()) @db.Uuid
+  companyId        String             @map("company_id") @db.Uuid
+  routeId          String             @map("route_id") @db.Uuid
+  fixedPointId     String?            @map("fixed_point_id") @db.Uuid
+  direction        RoutingDirection   @default(OUTBOUND)
+  sequence         Int
+  label            String             @db.VarChar(160)
+  street           String             @db.VarChar(160)
+  number           String             @db.VarChar(30)
+  complement       String?            @db.VarChar(120)
+  district         String             @db.VarChar(120)
+  postalCode       String             @map("postal_code") @db.VarChar(8)
+  city             String             @db.VarChar(120)
+  state            String             @db.Char(2)
+  latitude         Decimal?           @db.Decimal(10, 7)
+  longitude        Decimal?           @db.Decimal(10, 7)
+  origin           RoutingDataOrigin
+  scheduledTime    String?            @map("scheduled_time") @db.Char(5)
+  alerts           Json               @default("[]") @db.JsonB
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company     Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  route       RoutingRoute             @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+  fixedPoint  RoutingFixedPoint?       @relation(fields: [fixedPointId, companyId], references: [id, companyId], onDelete: NoAction)
+  passengers  RoutingRoutePassenger[]
+
+  @@unique([id, companyId])
+  @@unique([companyId, routeId, direction, sequence])
+  @@index([companyId, routeId])
+  @@map("routing_route_points")
+}
+
+model RoutingRoutePassenger {
+  id                    String                    @id @default(uuid()) @db.Uuid
+  companyId             String                    @map("company_id") @db.Uuid
+  routeId               String                    @map("route_id") @db.Uuid
+  passengerId           String                    @map("passenger_id") @db.Uuid
+  pointId               String?                   @map("point_id") @db.Uuid
+  status                RoutingAssignmentStatus
+  walkingDistanceMeters Int?                      @map("walking_distance_meters")
+  boardingOrder         Int?                      @map("boarding_order")
+  origin                RoutingDataOrigin
+  warnings              Json                      @default("[]") @db.JsonB
+  createdAt             DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company   Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  route     RoutingRoute       @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+  passenger Passenger          @relation(fields: [passengerId, companyId], references: [id, companyId], onDelete: NoAction)
+  point     RoutingRoutePoint? @relation(fields: [pointId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([companyId, routeId, passengerId])
+  @@index([companyId, routeId, status])
+  @@index([companyId, passengerId])
+  @@map("routing_route_passengers")
+}
+
+model RoutingRouteHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  routeId        String   @map("route_id") @db.Uuid
+  actorUserId    String   @map("actor_user_id") @db.Uuid
+  commandId      String   @map("command_id") @db.Uuid
+  action         String   @db.VarChar(100)
+  beforeSnapshot Json?    @map("before_snapshot") @db.JsonB
+  afterSnapshot  Json     @map("after_snapshot") @db.JsonB
+  reason         String?  @db.VarChar(1000)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  route   RoutingRoute @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+  actor   User         @relation("RoutingRouteHistoryActor", fields: [actorUserId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([companyId, commandId])
+  @@index([companyId, routeId, createdAt])
+  @@map("routing_route_history")
+}
+
+model RoutingRouteVersion {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @map("company_id") @db.Uuid
+  routeId     String   @map("route_id") @db.Uuid
+  version     Int
+  planVersion Int      @map("plan_version")
+  snapshot    Json     @db.JsonB
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  route   RoutingRoute @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, routeId, version])
+  @@index([companyId, routeId, createdAt])
+  @@map("routing_route_versions")
+}
+
+model RoutingRouteApproval {
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  routeId        String   @map("route_id") @db.Uuid
+  approvedVersion Int     @map("approved_version")
+  approvedByUserId String @map("approved_by_user_id") @db.Uuid
+  notes          String?  @db.VarChar(1000)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company    Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  route      RoutingRoute @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+  approvedBy User         @relation("RoutingRouteApprover", fields: [approvedByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([companyId, routeId, approvedVersion])
+  @@index([companyId, approvedByUserId, createdAt])
+  @@map("routing_route_approvals")
+}
+
+model RoutingNavigationLink {
+  id           String             @id @default(uuid()) @db.Uuid
+  companyId    String             @map("company_id") @db.Uuid
+  routeId      String             @map("route_id") @db.Uuid
+  routeVersion Int                @map("route_version")
+  direction    RoutingDirection
+  sequence     Int
+  label        String             @db.VarChar(120)
+  url          String             @db.VarChar(2048)
+  createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  route   RoutingRoute @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, routeId, routeVersion, direction, sequence])
+  @@index([companyId, routeId, routeVersion])
+  @@map("routing_navigation_links")
+}
+
+model RoutingRouteExecution {
+  id                       String   @id @default(uuid()) @db.Uuid
+  companyId                String   @map("company_id") @db.Uuid
+  routeId                  String   @map("route_id") @db.Uuid
+  routeVersion             Int      @map("route_version")
+  executedVehicleReference String?  @map("executed_vehicle_reference") @db.VarChar(120)
+  initialOdometerKm        Decimal? @map("initial_odometer_km") @db.Decimal(12, 3)
+  finalOdometerKm          Decimal? @map("final_odometer_km") @db.Decimal(12, 3)
+  executedKm               Decimal? @map("executed_km") @db.Decimal(12, 3)
+  vehicleRecords           Json     @default("[]") @map("vehicle_records") @db.JsonB
+  createdAt                DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  route   RoutingRoute @relation(fields: [routeId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  @@unique([companyId, routeId, routeVersion])
+  @@index([companyId, routeId])
+  @@map("routing_route_executions")
 }
 
 model PasswordChangeChallenge {
@@ -521,7 +1272,10 @@ model WhatsAppContact {
   id                String   @id @default(uuid()) @db.Uuid
   companyId         String   @map("company_id") @db.Uuid
   phoneNormalized   String   @map("phone_normalized") @db.VarChar(16)
+  phoneDisplay      String   @map("phone_display") @db.VarChar(24)
   displayName       String?  @map("display_name") @db.VarChar(160)
+  isSaved           Boolean  @default(false) @map("is_saved")
+  nameNeedsReview   Boolean  @default(false) @map("name_needs_review")
   profilePictureUrl String?  @map("profile_picture_url") @db.VarChar(1000)
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
@@ -533,6 +1287,7 @@ model WhatsAppContact {
   @@unique([companyId, phoneNormalized])
   @@unique([id, companyId])
   @@index([companyId, displayName])
+  @@index([companyId, isSaved, nameNeedsReview, displayName])
   @@map("whatsapp_contacts")
 }
 
@@ -1323,6 +2078,7 @@ model WhatsAppImportExternalRef {
   externalId   String   @map("external_id") @db.VarChar(160)
   internalId   String   @map("internal_id") @db.Uuid
   payloadHash  String?  @map("payload_hash") @db.Char(64)
+  acceptedPayloadHashes Json? @map("accepted_payload_hashes") @db.JsonB
   createdAt    DateTime @default(now()) @map("created_at")
 
   batch   WhatsAppImportBatch @relation(fields: [batchId, companyId], references: [id, companyId], onDelete: Cascade)
@@ -1332,6 +2088,84 @@ model WhatsAppImportExternalRef {
   @@index([companyId, entityType, internalId])
   @@index([batchId, entityType])
   @@map("whatsapp_import_external_refs")
+}
+
+model WhatsAppHistoryImportState {
+  id             String   @id @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  channelId      String   @map("channel_id") @db.Uuid
+  actorUserId    String   @map("actor_user_id") @db.Uuid
+  status         String   @db.VarChar(40)
+  phase          String?  @db.VarChar(60)
+  manifest       Json     @db.JsonB
+  total          Int      @default(0)
+  processed      Int      @default(0)
+  failed         Int      @default(0)
+  attempts       Int      @default(0)
+  leaseOwner     String?  @map("lease_owner") @db.Uuid
+  leaseExpiresAt DateTime? @map("lease_expires_at") @db.Timestamptz(3)
+  heartbeatAt    DateTime? @map("heartbeat_at") @db.Timestamptz(3)
+  errorCode      String?  @map("error_code") @db.VarChar(80)
+  errorMessage   String?  @map("error_message") @db.VarChar(1000)
+  errorRetryable Boolean? @map("error_retryable")
+  errorOccurredAt DateTime? @map("error_occurred_at") @db.Timestamptz(3)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(3)
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([id, companyId])
+  @@index([companyId, status, updatedAt])
+  @@index([status, leaseExpiresAt])
+  @@index([expiresAt])
+  @@map("whatsapp_history_import_states")
+}
+
+model WhatsAppHistoryUploadSession {
+  id             String   @id @db.Uuid
+  batchId        String   @map("batch_id") @db.Uuid
+  companyId      String   @map("company_id") @db.Uuid
+  kind           String   @db.VarChar(30)
+  fileName       String   @map("file_name") @db.VarChar(255)
+  mimeType       String?  @map("mime_type") @db.VarChar(160)
+  expectedBytes  BigInt   @map("expected_bytes")
+  uploadedBytes  BigInt   @default(0) @map("uploaded_bytes")
+  fingerprint    String   @db.Char(64)
+  checksumSha256 String?  @map("checksum_sha256") @db.Char(64)
+  temporaryPath  String   @map("temporary_path") @db.VarChar(1000)
+  status         String   @db.VarChar(30)
+  errorCode      String?  @map("error_code") @db.VarChar(80)
+  errorMessage   String?  @map("error_message") @db.VarChar(1000)
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(3)
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([companyId, batchId, kind, fingerprint])
+  @@index([companyId, batchId, status])
+  @@index([status, expiresAt])
+  @@map("whatsapp_history_upload_sessions")
+}
+
+model WhatsAppHistoryImportAuditEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @map("company_id") @db.Uuid
+  batchId       String   @map("batch_id") @db.Uuid
+  uploadId      String?  @map("upload_id") @db.Uuid
+  actorUserId   String?  @map("actor_user_id") @db.Uuid
+  actorUsername String?  @map("actor_username") @db.VarChar(80)
+  action        String   @db.VarChar(80)
+  phase         String?  @db.VarChar(60)
+  oldValue      Json?    @map("old_value") @db.JsonB
+  newValue      Json?    @map("new_value") @db.JsonB
+  metadata      Json?    @db.JsonB
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([companyId, batchId, createdAt])
+  @@index([uploadId, createdAt])
+  @@map("whatsapp_history_import_audit_events")
 }
 
 model OutboxEvent {

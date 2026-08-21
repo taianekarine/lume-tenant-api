@@ -18,22 +18,52 @@ da Evolution e dos provedores de IA permanecem no servidor.
 ## Importação de históricos
 
 O subfluxo `whatsapp/history-imports` recebe backups ZIP exportados pelo
-WhatsApp, mantém um manifesto privado por empresa e gera uma planilha no
-contrato do importador oficial. Todas as rotas exigem
+WhatsApp ou um `msgstore.db.crypt15` completo do Android, mantém um manifesto
+privado por empresa e reutiliza o contrato do importador oficial. Todas as rotas exigem
 `whatsapp-conversations:manage`:
 
 - `GET /channels`: canais disponíveis no tenant;
 - `POST /`: inicia um lote idempotente por `commandId`;
 - `GET /:batchId`: consulta totais, erros e revisões;
 - `POST /:batchId/archives`: valida um ZIP por vez;
+- `POST /:batchId/android-database-uploads`: inicia ou retoma o envio
+  fracionado do `msgstore.db.crypt15`;
+- `POST /:batchId/android-database-uploads/:uploadId/chunks`: recebe um bloco
+  idempotente e confirma o total armazenado;
+- `POST /:batchId/android-database-uploads/:uploadId/complete`: recebe a chave
+  hexadecimal e a situação/departamento somente após concluir o upload;
+- `POST /:batchId/android-backup`: compatibilidade com clientes antigos que
+  ainda enviam o banco em uma única requisição;
 - `PATCH /:batchId/archives/:archiveId`: confirma identidade e estado;
 - `GET /:batchId/workbook`: baixa a planilha consolidada;
-- `POST /:batchId/apply`: valida e aplica pelo importador existente.
+- `POST /:batchId/apply`: valida e aplica mensagens e mídias pelo importador
+  existente.
+
+No modo Android, a chave permanece somente na memória da requisição e é
+descartada após a descriptografia autenticada. O SQLite é validado antes de ser
+aceito e processado assincronamente em blocos idempotentes de até 5.000
+mensagens. Conversas individuais com JID telefônico são consolidadas; grupos,
+listas, status e chats técnicos são contabilizados e excluídos porque o modelo
+atual do painel é orientado a atendimentos individuais.
+
+Quando o banco Android contém referências de mídia, o ZIP da pasta `Media` é
+validado e preparado antes de o botão de aplicação ser liberado. A aplicação
+grava primeiro as mensagens e, no mesmo fluxo, inicia a vinculação dos arquivos
+por caminho e SHA-256. A etapa posterior de mídias permanece disponível apenas
+para recuperação ou ZIPs adicionais.
 
 O lote não dispara respostas, IA, menus ou outbox. Depois da aplicação, as
 conversas passam a usar exatamente as mesmas entidades, transições e regras do
 fluxo corrente. Anexos realmente contidos no ZIP são retidos no volume próprio
 de mídias; referências ausentes permanecem identificadas como indisponíveis.
+O `msgstore` não contém os binários das mídias: caminhos e hashes de imagens,
+áudios, vídeos e documentos são preservados até que o ZIP selecionado forneça o
+conteúdo correspondente.
+
+O proxy reverso precisa aceitar cada bloco de até 32 MiB; não precisa manter uma
+única requisição aberta durante todo o envio do banco. O volume de importação deve ter
+espaço para o arquivo criptografado temporário, o SQLite descriptografado e os
+blocos XLSX; recomenda-se pelo menos três vezes o tamanho do banco aberto.
 
 ## Garantias de processamento
 
@@ -60,6 +90,12 @@ marcadores legados, devolve execuções interrompidas para processamento seguro 
 consolida conversas duplicadas antes de criar a chave única canônica.
 
 ## Conversa e atendimento
+
+A listagem autenticada de conversas é sempre paginada e aceita pesquisa e
+filtros de departamento, condução e situação comercial. A resposta inclui um
+resumo agregado da seleção, portanto o painel não precisa percorrer todas as
+páginas para calcular os indicadores. Esse contrato evita rajadas de centenas
+de requisições depois da importação de um histórico grande.
 
 Existe uma conversa canônica para cada combinação de empresa, canal e contato.
 Encerrar atendimento finaliza somente a sessão humana atual: remove o atendente

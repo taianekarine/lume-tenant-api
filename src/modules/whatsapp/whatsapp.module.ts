@@ -21,12 +21,15 @@ import { WhatsAppAutomationEventStore } from '../../infra/integrations/whatsapp/
 import { OpenAiCompatibleWhatsAppConversationAgent } from '../../infra/integrations/whatsapp-ai/openai-compatible-whatsapp-conversation-agent';
 import { WhatsAppRetentionService } from '../../infra/retention/whatsapp-retention.service';
 import { WhatsAppHistoryImportService } from '../../infra/imports/whatsapp-history-import.service';
+import { WhatsAppAndroidMediaImportService } from '../../infra/imports/whatsapp-android-media-import.service';
 import { FileSystemWhatsAppMediaStorage } from '../../infra/storage/file-system-whatsapp-media.storage';
 import { EvolutionWebhookController } from './evolution-webhook.controller';
 import { NotificationsController } from './notifications.controller';
 import { QuoteProposalController } from './quote-proposal.controller';
 import { WhatsAppPanelController } from './whatsapp-panel.controller';
 import { WhatsAppHistoryImportController } from './whatsapp-history-import.controller';
+import { WhatsAppContactsController } from './whatsapp-contacts.controller';
+import { WhatsAppContactsService } from './whatsapp-contacts.service';
 
 @Module({
   controllers: [
@@ -35,6 +38,7 @@ import { WhatsAppHistoryImportController } from './whatsapp-history-import.contr
     QuoteProposalController,
     NotificationsController,
     WhatsAppHistoryImportController,
+    WhatsAppContactsController,
   ],
   providers: [
     EvolutionWebhookService,
@@ -53,7 +57,9 @@ import { WhatsAppHistoryImportController } from './whatsapp-history-import.contr
     WhatsAppAutomationEventStore,
     WhatsAppAutomationDispatcher,
     WhatsAppRetentionService,
+    WhatsAppAndroidMediaImportService,
     WhatsAppHistoryImportService,
+    WhatsAppContactsService,
     {
       provide: EnsureWhatsAppConversationUseCase,
       useFactory: (repository: WhatsAppRepository) =>

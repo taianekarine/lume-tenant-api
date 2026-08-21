@@ -241,6 +241,28 @@ O destinatário principal é definido por `SUPPORT_RECIPIENT_EMAIL`.
 configuração é validada na inicialização, normaliza duplicatas e evita repetir o
 destinatário principal como cópia.
 
+## Roteirização orientada por contrato
+
+`Company` representa o tenant Milenium. `RoutingCompany` representa cada
+cliente atendido, identificado por CPF ou CNPJ. Usuários cliente PF ou PJ usam
+`documentAccessMode=client`, departamento único `client-company` e
+`routingCompanyId`; todas as consultas operacionais reforçam esse escopo.
+
+O agregado `RoutingContract` antecede as rotas e contém o acordo comercial. O
+agente de roteirização usa contrato vigente, turno, horário, capacidade,
+distância máxima, acessibilidade e pendências para produzir sugestões. Ajustes
+operacionais usam concorrência otimista; aprovação congela um snapshot
+imutável usado nas exportações e na publicação.
+
+KM de ida, retorno e total são persistidos separadamente. Centro de custo é
+mantido no contrato e nas saídas operacionais/financeiras, mas omitido dos
+arquivos XLSX/CSV compatíveis com Google My Maps.
+
+`RoutingFixedPoint` mantém o código e o endereço canônico de pontos globais ou
+exclusivos de um cliente. Contratos referenciam pontos fixos de origem e destino,
+e colaboradores podem referenciar um ponto de embarque. A capacidade de turno é
+por veículo; a capacidade geral do contrato é usada quando ela não for informada.
+
 ## Intercâmbio temporário de arquivos
 
 O módulo de intercâmbio segue as mesmas camadas da aplicação: catálogo de

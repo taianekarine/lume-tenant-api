@@ -7,7 +7,11 @@ import JSZip from 'jszip';
 
 import { parseWhatsAppExportArchive } from './whatsapp-export-parser';
 import { identifyWhatsAppExportMessages } from './whatsapp-export-workbook';
-import { WhatsAppHistoryImportService } from './whatsapp-history-import.service';
+import {
+  androidImportChunkBatchId,
+  ensureImportWorkbookArtifact,
+  WhatsAppHistoryImportService,
+} from './whatsapp-history-import.service';
 
 const COMPANY_ID = '11111111-1111-4111-8111-111111111111';
 const ACTOR_ID = '22222222-2222-4222-8222-222222222222';
@@ -24,6 +28,8 @@ afterEach(async () => {
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'lume-whatsapp-history-'));
   roots.push(root);
+  const durableStates = new Map<string, Record<string, unknown>>();
+  const uploadSessions = new Map<string, Record<string, unknown>>();
   const prisma = {
     whatsAppChannel: {
       findFirst: vi.fn().mockResolvedValue({
@@ -32,10 +38,100 @@ async function setup() {
         phoneNumber: '5534999999999',
       }),
     },
-    whatsAppImportExternalRef: { findMany: vi.fn().mockResolvedValue([]) },
+    whatsAppImportExternalRef: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
     whatsAppMessage: {
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    whatsAppHistoryImportState: {
+      count: vi.fn(async () => durableStates.size),
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string } }) =>
+          durableStates.get(where.id) ?? null,
+      ),
+      findFirst: vi.fn(
+        async ({ where }: { where: Record<string, unknown> }) => {
+          const rows = [...durableStates.values()].filter((row) => {
+            if (where.id && row.id !== where.id) return false;
+            if (where.companyId && row.companyId !== where.companyId)
+              return false;
+            if (where.actorUserId && row.actorUserId !== where.actorUserId)
+              return false;
+            return true;
+          });
+          return rows.at(-1) ?? null;
+        },
+      ),
+      findMany: vi.fn(
+        async ({ where }: { where?: Record<string, unknown> } = {}) =>
+          [...durableStates.values()].filter(
+            (row) => !where?.companyId || row.companyId === where.companyId,
+          ),
+      ),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        }) => {
+          const current = durableStates.get(where.id);
+          const next = current ? { ...current, ...update } : { ...create };
+          durableStates.set(where.id, next);
+          return next;
+        },
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          const row =
+            typeof where.id === 'string'
+              ? durableStates.get(where.id)
+              : undefined;
+          if (!row) return { count: 0 };
+          durableStates.set(where.id as string, { ...row, ...data });
+          return { count: 1 };
+        },
+      ),
+    },
+    whatsAppHistoryUploadSession: {
+      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        where.id ? (uploadSessions.get(where.id) ?? null) : null,
+      ),
+      findMany: vi.fn().mockResolvedValue([]),
+      aggregate: vi.fn().mockResolvedValue({ _sum: { expectedBytes: 0n } }),
+      upsert: vi.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        }) => {
+          const current = uploadSessions.get(where.id);
+          const next = current ? { ...current, ...update } : { ...create };
+          uploadSessions.set(where.id, next);
+          return next;
+        },
+      ),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    whatsAppHistoryImportAuditEvent: {
+      create: vi.fn().mockResolvedValue({}),
     },
   };
   const config = {
@@ -48,6 +144,25 @@ async function setup() {
     read: vi.fn(),
     delete: vi.fn(),
   };
+  const androidMediaImporter = {
+    validateArchive: vi.fn().mockResolvedValue({ filesTotal: 1 }),
+    previewArchive: vi.fn().mockResolvedValue({
+      filesTotal: 1,
+      mediaStored: 0,
+      mediaNew: 1,
+      mediaMissing: 0,
+    }),
+    attachArchive: vi.fn().mockResolvedValue({
+      schemaVersion: '1.0',
+      candidates: 1,
+      filesScanned: 1,
+      attached: 1,
+      alreadyStored: 0,
+      missing: 0,
+      ambiguous: 0,
+      skippedOversize: 0,
+    }),
+  };
   return {
     root,
     prisma,
@@ -55,12 +170,85 @@ async function setup() {
     service: new WhatsAppHistoryImportService(
       prisma as never,
       mediaStorage,
+      androidMediaImporter as never,
       config as never,
     ),
+    androidMediaImporter,
+    durableStates,
+    uploadSessions,
   };
 }
 
 describe('WhatsAppHistoryImportService.create', () => {
+  it('gera outro lote filho quando a retomada contém outro conjunto de mensagens', () => {
+    const parsed = {
+      archiveId: 'chat-1',
+      sourceSystem: 'whatsapp-android-backup',
+      externalConversationId: 'android-chat-1',
+      archiveName: 'msgstore.db',
+      archiveSha256: 'sha256',
+      chatFileName: 'msgstore.db',
+      suggestedContactName: 'Contato',
+      suggestedPhoneE164: '5534999999999',
+      senders: [],
+      messages: [
+        {
+          index: 0,
+          externalMessageId: 'message-1',
+          outbound: false,
+          senderName: 'Contato',
+          occurredAt: new Date('2026-08-19T12:00:00.000Z'),
+          wallClockAt: new Date('2026-08-19T12:00:00.000Z'),
+          text: 'Primeira',
+          kind: 'text' as const,
+          attachment: null,
+          system: false,
+        },
+        {
+          index: 1,
+          externalMessageId: 'message-2',
+          outbound: false,
+          senderName: 'Contato',
+          occurredAt: new Date('2026-08-19T12:01:00.000Z'),
+          wallClockAt: new Date('2026-08-19T12:01:00.000Z'),
+          text: 'Segunda',
+          kind: 'text' as const,
+          attachment: null,
+          system: false,
+        },
+      ],
+      messageCount: 2,
+      attachmentCount: 0,
+      missingAttachmentCount: 0,
+      startedAt: new Date('2026-08-19T12:00:00.000Z'),
+      endedAt: new Date('2026-08-19T12:01:00.000Z'),
+    };
+    const full = androidImportChunkBatchId(COMMAND_ID, 1, [parsed]);
+    const repeated = androidImportChunkBatchId(COMMAND_ID, 1, [parsed]);
+    const resumed = androidImportChunkBatchId(COMMAND_ID, 1, [
+      { ...parsed, messages: parsed.messages.slice(1), messageCount: 1 },
+    ]);
+
+    expect(repeated).toBe(full);
+    expect(resumed).not.toBe(full);
+  });
+
+  it('preserva o artefato do bloco em uma retomada da importação', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'lume-whatsapp-chunk-'));
+    roots.push(root);
+    const workbookPath = join(root, 'chunk.xlsx');
+    const generate = vi
+      .fn<() => Promise<Buffer>>()
+      .mockResolvedValueOnce(Buffer.from('primeira-versao'))
+      .mockResolvedValueOnce(Buffer.from('segunda-versao'));
+
+    await ensureImportWorkbookArtifact(workbookPath, generate);
+    await ensureImportWorkbookArtifact(workbookPath, generate);
+
+    expect(await readFile(workbookPath, 'utf8')).toBe('primeira-versao');
+    expect(generate).toHaveBeenCalledOnce();
+  });
+
   it('cria um manifesto privado e reutiliza o mesmo comando de forma idempotente', async () => {
     const { root, service } = await setup();
     const input = {
@@ -103,9 +291,868 @@ describe('WhatsAppHistoryImportService.create', () => {
       }),
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
+
+  it('consulta o progresso sem reativar jobs e apresenta o avanço da comparação', async () => {
+    const { root, service, durableStates } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 100,
+        mediaReferences: 0,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: null,
+      chunksCompleted: 0,
+      conversationsProcessed: 0,
+      messagesProcessed: 0,
+      processingPhase: null,
+      errorMessage: null,
+      comparison: {
+        status: 'processing',
+        messagesProcessed: 40,
+        messagesTotal: 100,
+        messagesExisting: 10,
+        messagesNew: 30,
+        messagesDivergent: 0,
+        mediaStored: 0,
+        mediaNew: 0,
+        mediaMissing: 0,
+        updatedAt: new Date().toISOString(),
+        errorMessage: null,
+      },
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
+    const internals = service as unknown as {
+      resumeAndroidPreview: (value: unknown) => void;
+      resumeAndroidImport: (value: unknown) => void;
+      resumeAndroidMediaValidationJob: (value: unknown) => void;
+      resumeAndroidMediaJob: (value: unknown) => void;
+    };
+    const schedulers = [
+      vi.spyOn(internals, 'resumeAndroidPreview'),
+      vi.spyOn(internals, 'resumeAndroidImport'),
+      vi.spyOn(internals, 'resumeAndroidMediaValidationJob'),
+      vi.spyOn(internals, 'resumeAndroidMediaJob'),
+    ];
+
+    await expect(service.detail(COMPANY_ID, COMMAND_ID)).resolves.toMatchObject(
+      {
+        operation: {
+          phase: 'comparing-messages',
+          processed: 40,
+          total: 100,
+        },
+      },
+    );
+    schedulers.forEach((scheduler) => expect(scheduler).not.toHaveBeenCalled());
+  });
+
+  it('lista somente backups Android concluídos do tenant', async () => {
+    const { root, service, durableStates } = await setup();
+    const input = {
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    };
+    await service.create(input);
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.status = 'applied';
+    manifest.appliedAt = new Date().toISOString();
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 3,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: new Date().toISOString(),
+      chunksCompleted: 1,
+      conversationsProcessed: 1,
+      messagesProcessed: 2,
+      errorMessage: null,
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
+
+    const result = await service.appliedAndroidBackups(COMPANY_ID);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: COMMAND_ID,
+      mode: 'android-backup',
+      status: 'applied',
+      androidBackup: {
+        databaseFileName: 'msgstore.db.crypt15',
+      },
+    });
+    await expect(
+      service.appliedAndroidBackups('77777777-7777-4777-8777-777777777777'),
+    ).resolves.toEqual([]);
+  });
+});
+
+describe('WhatsAppHistoryImportService divergence review', () => {
+  it('lista as diferenças e registra a decisão humana antes de aplicar', async () => {
+    const { root, service, durableStates } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const batchPath = join(root, 'history-batches', COMPANY_ID, COMMAND_ID);
+    const manifestPath = join(batchPath, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 0,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: null,
+      chunksCompleted: 0,
+      conversationsProcessed: 0,
+      messagesProcessed: 0,
+      errorMessage: null,
+      comparison: {
+        status: 'ready',
+        messagesExisting: 0,
+        messagesNew: 0,
+        messagesDivergent: 2,
+        messagesDivergentPending: 2,
+        mediaStored: 0,
+        mediaNew: 0,
+        mediaMissing: 0,
+        updatedAt: new Date().toISOString(),
+        errorMessage: null,
+      },
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
+    const androidPath = join(batchPath, 'android');
+    await mkdir(androidPath, { recursive: true });
+    const message = (externalMessageId: string) => ({
+      externalMessageId,
+      internalMessageId: '55555555-5555-4555-8555-555555555555',
+      externalConversationId: 'conversation-1',
+      contactName: 'Contato',
+      phoneE164: '5534999999999',
+      senderName: 'Contato',
+      existing: {
+        direction: 'inbound',
+        deliveryStatus: 'received',
+        kind: 'text',
+        text: 'Mensagem atual',
+        occurredAt: '2026-08-19T12:00:00.000Z',
+        mediaReference: null,
+        payloadHash: 'a'.repeat(64),
+      },
+      backup: {
+        direction: 'inbound',
+        deliveryStatus: 'received',
+        kind: 'text',
+        text: 'Mensagem do backup',
+        occurredAt: '2026-08-19T12:00:00.000Z',
+        mediaReference: null,
+        payloadHash: 'b'.repeat(64),
+      },
+      resolution: null,
+      decidedByUserId: null,
+      decidedByUsername: null,
+      decidedAt: null,
+    });
+    await writeFile(
+      join(androidPath, 'message-divergences.json'),
+      JSON.stringify([message('message-1'), message('message-2')]),
+      'utf8',
+    );
+
+    await expect(
+      service.apply(COMPANY_ID, COMMAND_ID, new Date()),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    const listed = await service.androidDivergences(COMPANY_ID, COMMAND_ID);
+    expect(listed).toMatchObject({ total: 2, pending: 2 });
+
+    const resolved = await service.resolveAndroidDivergence(
+      COMPANY_ID,
+      COMMAND_ID,
+      'message-1',
+      'keep-existing',
+      ACTOR_ID,
+      'admin',
+    );
+
+    expect(resolved).toMatchObject({
+      pending: 1,
+      divergence: {
+        externalMessageId: 'message-1',
+        resolution: 'keep-existing',
+        decidedByUsername: 'admin',
+      },
+    });
+    await expect(
+      service.androidDivergences(COMPANY_ID, COMMAND_ID),
+    ).resolves.toMatchObject({ total: 2, pending: 1 });
+  });
+
+  it('memoriza a versão recusada para não pedir a mesma decisão em uma nova importação', async () => {
+    const { prisma, service } = await setup();
+    prisma.whatsAppImportExternalRef.findFirst.mockResolvedValue({
+      id: '66666666-6666-4666-8666-666666666666',
+      payloadHash: 'a'.repeat(64),
+      acceptedPayloadHashes: null,
+    });
+    const applyResolutions = service as unknown as {
+      applyAndroidDivergenceResolutions(
+        companyId: string,
+        batchId: string,
+        divergences: readonly Record<string, unknown>[],
+      ): Promise<void>;
+    };
+
+    await applyResolutions.applyAndroidDivergenceResolutions(
+      COMPANY_ID,
+      COMMAND_ID,
+      [
+        {
+          externalMessageId: 'message-1',
+          internalMessageId: '55555555-5555-4555-8555-555555555555',
+          existing: {
+            mediaReference: null,
+          },
+          backup: {
+            payloadHash: 'b'.repeat(64),
+          },
+          resolution: 'keep-existing',
+        },
+      ],
+    );
+
+    expect(prisma.whatsAppImportExternalRef.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: '66666666-6666-4666-8666-666666666666',
+        companyId: COMPANY_ID,
+      },
+      data: {
+        acceptedPayloadHashes: ['b'.repeat(64)],
+      },
+    });
+    expect(prisma.whatsAppMessage.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('substitui a mensagem quando a versão do backup é escolhida', async () => {
+    const { prisma, service } = await setup();
+    prisma.whatsAppImportExternalRef.findFirst.mockResolvedValue({
+      id: '66666666-6666-4666-8666-666666666666',
+      payloadHash: 'a'.repeat(64),
+      acceptedPayloadHashes: null,
+    });
+    prisma.whatsAppMessage.updateMany.mockResolvedValue({ count: 1 });
+    const applyResolutions = service as unknown as {
+      applyAndroidDivergenceResolutions(
+        companyId: string,
+        batchId: string,
+        divergences: readonly Record<string, unknown>[],
+      ): Promise<void>;
+    };
+
+    await applyResolutions.applyAndroidDivergenceResolutions(
+      COMPANY_ID,
+      COMMAND_ID,
+      [
+        {
+          externalMessageId: 'message-1',
+          internalMessageId: '55555555-5555-4555-8555-555555555555',
+          existing: {
+            mediaReference: null,
+          },
+          backup: {
+            direction: 'inbound',
+            deliveryStatus: 'received',
+            kind: 'text',
+            text: 'Mensagem do backup',
+            occurredAt: '2026-08-19T12:00:00.000Z',
+            mediaReference: null,
+            payloadHash: 'b'.repeat(64),
+          },
+          resolution: 'use-backup',
+        },
+      ],
+    );
+
+    expect(prisma.whatsAppMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: '55555555-5555-4555-8555-555555555555',
+          companyId: COMPANY_ID,
+        },
+        data: expect.objectContaining({
+          text: 'Mensagem do backup',
+          occurredAt: new Date('2026-08-19T12:00:00.000Z'),
+        }),
+      }),
+    );
+    expect(prisma.whatsAppImportExternalRef.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payloadHash: 'b'.repeat(64),
+        }),
+      }),
+    );
+  });
 });
 
 describe('WhatsAppHistoryImportService media retention', () => {
+  it('rejeita um bloco corrompido antes de alterar o arquivo temporário', async () => {
+    const { root, service } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const started = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        originalName: 'msgstore.db.crypt15',
+        sizeBytes: 64,
+        fingerprint: 'a'.repeat(64),
+      },
+    );
+
+    await expect(
+      service.addAndroidDatabaseUploadChunk(COMPANY_ID, COMMAND_ID, {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: Buffer.alloc(32, 1),
+        checksumSha256: '0'.repeat(64),
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    const stored = await readFile(
+      join(
+        root,
+        'history-batches',
+        COMPANY_ID,
+        COMMAND_ID,
+        'android-database-uploads',
+        started.uploadId,
+        'database.crypt15',
+      ),
+    );
+    expect(stored).toHaveLength(0);
+  });
+
+  it('cancela o lote e remove os arquivos temporários sem permitir retomada', async () => {
+    const { root, service, durableStates } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const started = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        originalName: 'msgstore.db.crypt15',
+        sizeBytes: 64,
+        fingerprint: 'b'.repeat(64),
+      },
+    );
+    await service.addAndroidDatabaseUploadChunk(COMPANY_ID, COMMAND_ID, {
+      uploadId: started.uploadId,
+      offsetBytes: 0,
+      content: Buffer.alloc(32, 1),
+    });
+
+    const cancelled = await service.cancel(
+      COMPANY_ID,
+      COMMAND_ID,
+      ACTOR_ID,
+      'admin',
+    );
+
+    expect(cancelled).toMatchObject({ status: 'cancelled' });
+    expect(durableStates.get(COMMAND_ID)).toMatchObject({
+      status: 'cancelled',
+    });
+    await expect(
+      readFile(
+        join(
+          root,
+          'history-batches',
+          COMPANY_ID,
+          COMMAND_ID,
+          'android-database-uploads',
+          started.uploadId,
+          'database.crypt15',
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      service.createAndroidDatabaseUpload(COMPANY_ID, COMMAND_ID, {
+        originalName: 'msgstore.db.crypt15',
+        sizeBytes: 64,
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('recebe o banco Android em blocos idempotentes e retoma do último byte confirmado', async () => {
+    const { root, service } = await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+
+    const started = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'msgstore.db.crypt15', sizeBytes: 64 },
+    );
+    const firstChunk = Buffer.alloc(40, 1);
+    const partial = await service.addAndroidDatabaseUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: firstChunk,
+      },
+    );
+    const replayed = await service.addAndroidDatabaseUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: firstChunk,
+      },
+    );
+    const resumed = await service.createAndroidDatabaseUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'msgstore.db.crypt15', sizeBytes: 64 },
+    );
+    const completed = await service.addAndroidDatabaseUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 40,
+        content: Buffer.alloc(24, 2),
+      },
+    );
+    const stored = await readFile(
+      join(
+        root,
+        'history-batches',
+        COMPANY_ID,
+        COMMAND_ID,
+        'android-database-uploads',
+        started.uploadId,
+        'database.crypt15',
+      ),
+    );
+
+    expect(partial.uploadedBytes).toBe(40);
+    expect(replayed.uploadedBytes).toBe(40);
+    expect(resumed).toMatchObject({
+      uploadId: started.uploadId,
+      uploadedBytes: 40,
+      status: 'uploading',
+    });
+    expect(completed.uploadedBytes).toBe(64);
+    expect(stored).toEqual(Buffer.concat([firstChunk, Buffer.alloc(24, 2)]));
+  });
+
+  it('prepara o ZIP de mídias antes de liberar a aplicação do backup Android', async () => {
+    const { root, service, androidMediaImporter, durableStates } =
+      await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 1,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: null,
+      chunksCompleted: 0,
+      conversationsProcessed: 0,
+      messagesProcessed: 0,
+      errorMessage: null,
+      comparison: {
+        status: 'ready',
+        messagesExisting: 0,
+        messagesNew: 2,
+        messagesDivergent: 0,
+        mediaStored: 0,
+        mediaNew: 0,
+        mediaMissing: 1,
+        updatedAt: new Date().toISOString(),
+        errorMessage: null,
+      },
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
+    const androidPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'android',
+    );
+    await mkdir(androidPath, { recursive: true });
+    await writeFile(
+      join(androidPath, 'media-preview-references.json'),
+      JSON.stringify([
+        {
+          id: 'android-message-1',
+          reference: 'whatsapp-android-media://Media%2Ffoto.jpg',
+          stored: false,
+        },
+      ]),
+      'utf8',
+    );
+
+    await expect(
+      service.apply(COMPANY_ID, COMMAND_ID, new Date()),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+
+    const started = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    await service.addAndroidMediaUploadChunk(COMPANY_ID, COMMAND_ID, {
+      uploadId: started.uploadId,
+      offsetBytes: 0,
+      content: Buffer.alloc(30, 1),
+    });
+    const validating = await service.completeAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      started.uploadId,
+    );
+
+    expect(validating).toMatchObject({
+      status: 'draft',
+      androidBackup: { mediaImport: { status: 'validating' } },
+    });
+    let ready = validating;
+    await vi.waitFor(async () => {
+      ready = await service.detail(COMPANY_ID, COMMAND_ID);
+      expect(ready.androidBackup?.mediaImport).toMatchObject({
+        status: 'ready',
+      });
+    });
+    expect(androidMediaImporter.previewArchive).toHaveBeenCalledOnce();
+    expect(ready.androidBackup?.comparison).toMatchObject({
+      mediaStored: 0,
+      mediaNew: 1,
+      mediaMissing: 0,
+    });
+    expect(androidMediaImporter.attachArchive).not.toHaveBeenCalled();
+  });
+
+  it('recebe um ZIP grande em blocos retomáveis e processa em segundo plano', async () => {
+    const { root, service, androidMediaImporter, durableStates } =
+      await setup();
+    await service.create({
+      companyId: COMPANY_ID,
+      actorUserId: ACTOR_ID,
+      actorUsername: 'admin',
+      commandId: COMMAND_ID,
+      channelId: CHANNEL_ID,
+    });
+    const manifestPath = join(
+      root,
+      'history-batches',
+      COMPANY_ID,
+      COMMAND_ID,
+      'manifest.json',
+    );
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    manifest.status = 'applied';
+    manifest.appliedAt = new Date().toISOString();
+    manifest.androidBackup = {
+      databaseFileName: 'msgstore.db.crypt15',
+      databaseSha256: 'a'.repeat(64),
+      encryptedBytes: 128,
+      decryptedBytes: 256,
+      multiFileBackup: false,
+      summary: {
+        schemaVersion: '1',
+        directConversations: 1,
+        directMessages: 2,
+        mediaReferences: 1,
+        groupConversationsExcluded: 0,
+        groupMessagesExcluded: 0,
+        otherConversationsExcluded: 0,
+        otherMessagesExcluded: 0,
+        unmappedDirectConversations: 0,
+        startedAt: null,
+        endedAt: null,
+      },
+      state: 'closed',
+      departmentCode: 'commercial',
+      ownerUsername: null,
+      cutoffAt: new Date().toISOString(),
+      chunksCompleted: 1,
+      conversationsProcessed: 1,
+      messagesProcessed: 2,
+      errorMessage: null,
+      mediaImport: null,
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
+    const durable = durableStates.get(COMMAND_ID);
+    if (durable) durableStates.set(COMMAND_ID, { ...durable, manifest });
+
+    const started = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    const resumed = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    expect(resumed.uploadId).toBe(started.uploadId);
+
+    const partial = await service.addAndroidMediaUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: Buffer.alloc(20, 1),
+      },
+    );
+    expect(partial.uploadedBytes).toBe(20);
+    const replayed = await service.addAndroidMediaUploadChunk(
+      COMPANY_ID,
+      COMMAND_ID,
+      {
+        uploadId: started.uploadId,
+        offsetBytes: 0,
+        content: Buffer.alloc(20, 1),
+      },
+    );
+    expect(replayed.uploadedBytes).toBe(20);
+    await service.addAndroidMediaUploadChunk(COMPANY_ID, COMMAND_ID, {
+      uploadId: started.uploadId,
+      offsetBytes: 20,
+      content: Buffer.alloc(10, 2),
+    });
+
+    androidMediaImporter.attachArchive.mockRejectedValue(
+      new Error('falha transitória'),
+    );
+    const validating = await service.completeAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      started.uploadId,
+    );
+    expect(validating.androidBackup?.mediaImport).toMatchObject({
+      status: 'validating',
+      uploadBytesReceived: 30,
+      uploadBytesTotal: 30,
+    });
+    await vi.waitFor(async () => {
+      const failed = await service.detail(COMPANY_ID, COMMAND_ID);
+      expect(failed.androidBackup?.mediaImport).toMatchObject({
+        status: 'failed',
+        errorMessage:
+          'Não foi possível processar o ZIP de mídias. Tente novamente; os arquivos já armazenados serão preservados.',
+      });
+    });
+    await vi.waitFor(() => {
+      expect(
+        (
+          service as unknown as {
+            androidMediaJobs: ReadonlySet<string>;
+          }
+        ).androidMediaJobs.size,
+      ).toBe(0);
+    });
+
+    const retry = await service.createAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      { originalName: 'Media.zip', sizeBytes: 30 },
+    );
+    expect(retry).toMatchObject({
+      uploadId: started.uploadId,
+      uploadedBytes: 30,
+      status: 'failed',
+    });
+    androidMediaImporter.attachArchive.mockResolvedValue({
+      schemaVersion: '1.0',
+      candidates: 1,
+      filesScanned: 1,
+      attached: 1,
+      alreadyStored: 0,
+      missing: 0,
+      ambiguous: 0,
+      skippedOversize: 0,
+    });
+    await service.completeAndroidMediaUpload(
+      COMPANY_ID,
+      COMMAND_ID,
+      retry.uploadId,
+    );
+    await vi.waitFor(async () => {
+      const completed = await service.detail(COMPANY_ID, COMMAND_ID);
+      expect(completed.androidBackup?.mediaImport).toMatchObject({
+        status: 'completed',
+        stored: 1,
+        pending: 0,
+      });
+    });
+    await vi.waitFor(() => {
+      expect(
+        (
+          service as unknown as {
+            androidMediaJobs: ReadonlySet<string>;
+          }
+        ).androidMediaJobs.size,
+      ).toBe(0);
+    });
+    expect(androidMediaImporter.attachArchive).toHaveBeenCalledTimes(2);
+  });
+
   it('stores a ZIP attachment and links it to the imported message', async () => {
     const { root, prisma, mediaStorage, service } = await setup();
     const zip = new JSZip();

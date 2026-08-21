@@ -116,7 +116,22 @@ function normalizeMimeType(value: unknown): string {
     : '';
 }
 
-function canonicalKind(kind: MessageKind): WhatsAppMediaContent['kind'] {
+function mediaKindFromMimeType(
+  mimeType: string,
+): WhatsAppMediaContent['kind'] | null {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
+  if (mimeType === 'text/vcard' || mimeType === 'text/x-vcard') {
+    return 'contact';
+  }
+  return mimeType ? 'document' : null;
+}
+
+function canonicalKind(
+  kind: MessageKind,
+  mimeType = '',
+): WhatsAppMediaContent['kind'] {
   switch (kind) {
     case MessageKind.IMAGE:
       return 'image';
@@ -131,7 +146,7 @@ function canonicalKind(kind: MessageKind): WhatsAppMediaContent['kind'] {
     case MessageKind.CONTACT:
       return 'contact';
     default:
-      throw notFound('Conteúdo da mídia');
+      return mediaKindFromMimeType(mimeType) ?? 'document';
   }
 }
 
@@ -149,7 +164,7 @@ function isMimeCompatible(kind: MessageKind, mimeType: string): boolean {
     case MessageKind.CONTACT:
       return mimeType === 'text/vcard' || mimeType === 'text/x-vcard';
     default:
-      return false;
+      return mediaKindFromMimeType(mimeType) !== null;
   }
 }
 
@@ -220,7 +235,7 @@ function normalizedFileName(
   const safeName = replaceUnsafeFileNameCharacters(raw).slice(0, 180);
   const removedEncryptedSuffix = safeName.replace(/\.enc$/i, '');
   const extension = MIME_EXTENSIONS[mimeType] ?? '';
-  const fallback = `whatsapp-${canonicalKind(kind)}-${messageId.slice(0, 8)}`;
+  const fallback = `whatsapp-${canonicalKind(kind, mimeType)}-${messageId.slice(0, 8)}`;
   let fileName = removedEncryptedSuffix || fallback;
 
   const currentExtension = /\.[a-z0-9]{1,10}$/i
@@ -439,7 +454,7 @@ export class EvolutionMediaContentService {
       content,
       fileName: message.mediaOriginalName,
       mimeType: message.mediaMimeType,
-      kind: canonicalKind(message.kind),
+      kind: canonicalKind(message.kind, message.mediaMimeType),
     };
   }
 
@@ -525,7 +540,7 @@ export class EvolutionMediaContentService {
         message.id,
       ),
       mimeType,
-      kind: canonicalKind(message.kind),
+      kind: canonicalKind(message.kind, mimeType),
     };
   }
 
@@ -609,7 +624,7 @@ export class EvolutionMediaContentService {
         message.id,
       ),
       mimeType: document.mimeType,
-      kind: canonicalKind(message.kind),
+      kind: canonicalKind(message.kind, document.mimeType),
     };
   }
 
@@ -637,7 +652,10 @@ export class EvolutionMediaContentService {
         },
       },
     });
-    if (!message || !MEDIA_KINDS.has(message.kind)) {
+    if (
+      !message ||
+      (!MEDIA_KINDS.has(message.kind) && !message.mediaStorageKey)
+    ) {
       throw notFound('Conteúdo da mídia');
     }
     return message;

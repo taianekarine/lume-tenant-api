@@ -62,6 +62,15 @@ const militaryDocumentStatuses = [
 const userClassifications = ['Administrativo', 'Geral', 'Motorista'] as const;
 
 export class CreateUserDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Cliente atendido quando o acesso pertence a um cliente da Milenium.',
+  })
+  @IsOptional()
+  @IsUUID('4')
+  routingCompanyId?: string;
+
   @ApiProperty({ example: 'Carlos Oliveira' })
   @IsString()
   @MinLength(3)
@@ -109,12 +118,17 @@ export class CreateUserDto {
   isAdministrator = false;
 
   @ApiPropertyOptional({
-    enum: ['standard', 'document-portal'],
+    enum: ['standard', 'document-portal', 'client'],
     default: 'standard',
   })
   @IsOptional()
-  @IsIn(['standard', 'document-portal'])
-  documentAccessMode: 'standard' | 'document-portal' = 'standard';
+  @IsIn(['standard', 'document-portal', 'client'])
+  documentAccessMode: 'standard' | 'document-portal' | 'client' = 'standard';
+
+  @ApiPropertyOptional({ enum: ['legal-entity', 'individual'] })
+  @IsOptional()
+  @IsIn(['legal-entity', 'individual'])
+  clientCategory?: 'legal-entity' | 'individual';
 
   @ApiPropertyOptional({
     default: false,
@@ -170,6 +184,16 @@ export class CreateUserDto {
 }
 
 export class UpdateUserDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Cliente atendido do usuario cliente; null identifica usuario interno.',
+  })
+  @IsOptional()
+  @IsUUID('4')
+  routingCompanyId?: string | null;
+
   @ApiPropertyOptional({ example: 'Carlos Oliveira' })
   @IsOptional()
   @IsString()
@@ -205,10 +229,15 @@ export class UpdateUserDto {
   @IsBoolean()
   isAdministrator?: boolean;
 
-  @ApiPropertyOptional({ enum: ['standard', 'document-portal'] })
+  @ApiPropertyOptional({ enum: ['standard', 'document-portal', 'client'] })
   @IsOptional()
-  @IsIn(['standard', 'document-portal'])
-  documentAccessMode?: 'standard' | 'document-portal';
+  @IsIn(['standard', 'document-portal', 'client'])
+  documentAccessMode?: 'standard' | 'document-portal' | 'client';
+
+  @ApiPropertyOptional({ enum: ['legal-entity', 'individual'], nullable: true })
+  @IsOptional()
+  @IsIn(['legal-entity', 'individual'])
+  clientCategory?: 'legal-entity' | 'individual' | null;
 
   @ApiPropertyOptional({ enum: userClassifications })
   @IsOptional()
@@ -246,6 +275,11 @@ export class DeleteUserDto {
 }
 
 export class ListUsersQueryDto {
+  @ApiPropertyOptional({ format: 'uuid' })
+  @IsOptional()
+  @IsUUID('4')
+  routingCompanyId?: string;
+
   @ApiPropertyOptional({ default: 1, minimum: 1 })
   @IsOptional()
   @Type(() => Number)

@@ -27,6 +27,7 @@ import {
 } from '../../application/use-cases/users/profile.use-cases';
 import { UsersController } from './users.controller';
 import { DocumentManagementModule } from '../documents/document-management.module';
+import { RoutingRepository } from '../../application/contracts/routing.repository';
 
 @Module({
   imports: [DocumentManagementModule],
@@ -38,8 +39,14 @@ import { DocumentManagementModule } from '../documents/document-management.modul
         users: UsersRepository,
         passwordHasher: PasswordHasher,
         auditLogs: TenantAuditLogsRepository,
-      ) => new CreateUserUseCase(users, passwordHasher, auditLogs),
-      inject: [UsersRepository, PasswordHasher, TenantAuditLogsRepository],
+        routing: RoutingRepository,
+      ) => new CreateUserUseCase(users, passwordHasher, auditLogs, routing),
+      inject: [
+        UsersRepository,
+        PasswordHasher,
+        TenantAuditLogsRepository,
+        RoutingRepository,
+      ],
     },
     {
       provide: ListUsersUseCase,
@@ -56,8 +63,9 @@ import { DocumentManagementModule } from '../documents/document-management.modul
       useFactory: (
         users: UsersRepository,
         auditLogs: TenantAuditLogsRepository,
-      ) => new UpdateUserUseCase(users, auditLogs),
-      inject: [UsersRepository, TenantAuditLogsRepository],
+        routing: RoutingRepository,
+      ) => new UpdateUserUseCase(users, auditLogs, routing),
+      inject: [UsersRepository, TenantAuditLogsRepository, RoutingRepository],
     },
     {
       provide: UpdateUserStatusUseCase,

@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
+import { formatWhatsAppPhone } from '../../shared/utils/normalization';
+
 import {
   ConversationState,
   DeliveryStatus,
@@ -55,6 +57,10 @@ const UUID_PATTERN =
 const IMPORT_BATCH_LEASE_MS = 5 * 60 * 1_000;
 const IMPORT_TRANSACTION_MAX_WAIT_MS = 10_000;
 const IMPORT_TRANSACTION_TIMEOUT_MS = 120_000;
+const IMPORT_TRANSACTION_MAX_ATTEMPTS = 8;
+const IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS = 50;
+const IMPORT_CREATE_MANY_CHUNK_SIZE = 1_000;
+const IMPORT_LOOKUP_CHUNK_SIZE = 1_000;
 
 const DEPARTMENT_TO_PRISMA: Record<string, DepartmentCode> = {
   commercial: DepartmentCode.COMMERCIAL,
@@ -189,6 +195,118 @@ interface AppliedConversationResult {
   documentCount: number;
 }
 
+function groupByConversation<T extends { externalConversationId: string }>(
+  rows: readonly T[],
+): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const current = grouped.get(row.externalConversationId);
+    if (current) current.push(row);
+    else grouped.set(row.externalConversationId, [row]);
+  }
+  return grouped;
+}
+
+function chunks<T>(rows: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let offset = 0; offset < rows.length; offset += size) {
+    result.push(rows.slice(offset, offset + size));
+  }
+  return result;
+}
+
+async function collectChunked<T, R>(
+  rows: readonly T[],
+  size: number,
+  handler: (chunk: readonly T[]) => Promise<readonly R[]>,
+): Promise<R[]> {
+  const result: R[] = [];
+  for (const chunk of chunks(rows, size)) {
+    result.push(...(await handler(chunk)));
+  }
+  return result;
+}
+
+async function mapWithConcurrency<T, R>(
+  rows: readonly T[],
+  concurrency: number,
+  handler: (row: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(rows.length);
+  let nextIndex = 0;
+  let firstError: unknown;
+  const workers = Array.from(
+    { length: Math.min(concurrency, Math.max(1, rows.length)) },
+    async () => {
+      while (firstError === undefined) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= rows.length) return;
+        try {
+          results[index] = await handler(rows[index], index);
+        } catch (error) {
+          firstError ??= error;
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  if (firstError !== undefined) {
+    throw firstError instanceof Error
+      ? firstError
+      : new Error('Falha desconhecida ao aplicar uma conversa.');
+  }
+  return results;
+}
+
+export function isTransactionWriteConflict(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  if (
+    ('code' in error &&
+      ['P2034', '40001', '40P01'].includes(String(error.code))) ||
+    ('kind' in error && error.kind === 'TransactionWriteConflict')
+  ) {
+    return true;
+  }
+  if (
+    'message' in error &&
+    typeof error.message === 'string' &&
+    /write conflict|deadlock|serialization failure|transactionwriteconflict/i.test(
+      error.message,
+    )
+  ) {
+    return true;
+  }
+  return 'cause' in error && isTransactionWriteConflict(error.cause);
+}
+
+async function retryTransactionWriteConflict<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        !isTransactionWriteConflict(error) ||
+        attempt >= IMPORT_TRANSACTION_MAX_ATTEMPTS
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.min(
+            1_000,
+            IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1),
+          ) +
+            Math.floor(Math.random() * IMPORT_TRANSACTION_RETRY_BASE_DELAY_MS),
+        ),
+      );
+    }
+  }
+}
+
 function normalizeUsername(value: string): string {
   return value.trim().toLocaleLowerCase('pt-BR');
 }
@@ -219,9 +337,11 @@ export function importedMediaMetadata(
   if (!mediaReference && !correlationId) return undefined;
 
   let fileName: string | undefined;
-  const isWhatsAppExport =
-    mediaReference?.startsWith('whatsapp-export://') ?? false;
-  if (isWhatsAppExport && mediaReference) {
+  const isRetainedImportReference =
+    mediaReference?.startsWith('whatsapp-export://') ||
+    mediaReference?.startsWith('whatsapp-android-media://') ||
+    false;
+  if (isRetainedImportReference && mediaReference) {
     const encodedFileName = mediaReference.split('/').at(-1);
     if (encodedFileName) {
       try {
@@ -236,7 +356,7 @@ export function importedMediaMetadata(
     ...(mediaReference ? { legacyReference: mediaReference } : {}),
     ...(correlationId ? { legacyCorrelationId: correlationId } : {}),
     ...(fileName ? { fileName } : {}),
-    ...(isWhatsAppExport ? { retentionStatus: 'unavailable' } : {}),
+    ...(isRetainedImportReference ? { retentionStatus: 'unavailable' } : {}),
   });
 }
 
@@ -465,6 +585,17 @@ function sameDistribution(
 }
 
 export class WhatsAppImportService {
+  private readonly applyConcurrency = Math.min(
+    8,
+    Math.max(
+      1,
+      Number.parseInt(
+        process.env.WHATSAPP_IMPORT_APPLY_CONCURRENCY ?? '4',
+        10,
+      ) || 4,
+    ),
+  );
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly importsRoot = resolve(
@@ -697,37 +828,47 @@ export class WhatsAppImportService {
           .map(normalizeUsername),
       ),
     );
-    const users = await this.prisma.user.findMany({
-      where: {
-        companyId: input.companyId,
-        usernameNormalized: { in: ownerNames },
-      },
-      select: {
-        id: true,
-        usernameNormalized: true,
-        departments: true,
-        status: true,
-        isActive: true,
-      },
-    });
+    const users = await collectChunked(
+      ownerNames,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (usernameChunk) =>
+        this.prisma.user.findMany({
+          where: {
+            companyId: input.companyId,
+            usernameNormalized: { in: [...usernameChunk] },
+          },
+          select: {
+            id: true,
+            usernameNormalized: true,
+            departments: true,
+            status: true,
+            isActive: true,
+          },
+        }),
+    );
     const userByUsername = new Map(
       users.map((user) => [user.usernameNormalized, user]),
     );
     const phones = Array.from(
       new Set(parsedPackage.conversations.map((row) => row.phoneE164)),
     );
-    const contacts = await this.prisma.whatsAppContact.findMany({
-      where: {
-        companyId: input.companyId,
-        phoneNormalized: { in: phones },
-      },
-      select: {
-        id: true,
-        phoneNormalized: true,
-        displayName: true,
-        updatedAt: true,
-      },
-    });
+    const contacts = await collectChunked(
+      phones,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (phoneChunk) =>
+        this.prisma.whatsAppContact.findMany({
+          where: {
+            companyId: input.companyId,
+            phoneNormalized: { in: [...phoneChunk] },
+          },
+          select: {
+            id: true,
+            phoneNormalized: true,
+            displayName: true,
+            updatedAt: true,
+          },
+        }),
+    );
     const contactByPhone = new Map(
       contacts.map((contact) => [contact.phoneNormalized, contact]),
     );
@@ -736,16 +877,18 @@ export class WhatsAppImportService {
       sourceSystem: row.sourceSystem,
       externalId: row.externalConversationId,
     }));
-    const conversationRefs =
-      sourceConversationPairs.length === 0
-        ? []
-        : await this.prisma.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              entityType: 'conversation',
-              OR: sourceConversationPairs,
-            },
-          });
+    const conversationRefs = await collectChunked(
+      sourceConversationPairs,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (pairChunk) =>
+        this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'conversation',
+            OR: [...pairChunk],
+          },
+        }),
+    );
     const conversationRefByKey = new Map(
       conversationRefs.map((reference) => [
         externalKey(reference.sourceSystem, reference.externalId),
@@ -755,40 +898,44 @@ export class WhatsAppImportService {
     const referencedConversationIds = conversationRefs.map(
       (reference) => reference.internalId,
     );
-    const referencedConversations =
-      referencedConversationIds.length === 0
-        ? []
-        : await this.prisma.whatsAppConversation.findMany({
-            where: {
-              companyId: input.companyId,
-              id: { in: referencedConversationIds },
-            },
-            select: {
-              id: true,
-              contactId: true,
-              closedAt: true,
-              updatedAt: true,
-              contact: { select: { phoneNormalized: true } },
-            },
-          });
+    const referencedConversations = await collectChunked(
+      referencedConversationIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppConversation.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: {
+            id: true,
+            contactId: true,
+            closedAt: true,
+            updatedAt: true,
+            contact: { select: { phoneNormalized: true } },
+          },
+        }),
+    );
     const referencedConversationById = new Map(
       referencedConversations.map((conversation) => [
         conversation.id,
         conversation,
       ]),
     );
-    const openConversations =
-      contacts.length === 0
-        ? []
-        : await this.prisma.whatsAppConversation.findMany({
-            where: {
-              companyId: input.companyId,
-              channelId: input.channelId,
-              contactId: { in: contacts.map((contact) => contact.id) },
-              closedAt: null,
-            },
-            select: { id: true, contactId: true },
-          });
+    const openConversations = await collectChunked(
+      contacts.map((contact) => contact.id),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (contactIdChunk) =>
+        this.prisma.whatsAppConversation.findMany({
+          where: {
+            companyId: input.companyId,
+            channelId: input.channelId,
+            contactId: { in: [...contactIdChunk] },
+            closedAt: null,
+          },
+          select: { id: true, contactId: true },
+        }),
+    );
     const openByContactId = new Map<string, string[]>();
     for (const conversation of openConversations) {
       openByContactId.set(conversation.contactId, [
@@ -978,34 +1125,36 @@ export class WhatsAppImportService {
           ]
         : [];
     });
-    const messageRefs =
-      messageRefPairs.length === 0
-        ? []
-        : await this.prisma.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              entityType: 'message',
-              OR: messageRefPairs,
-            },
-          });
+    const messageRefs = await collectChunked(
+      messageRefPairs,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (pairChunk) =>
+        this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'message',
+            OR: [...pairChunk],
+          },
+        }),
+    );
     const messageRefByKey = new Map(
       messageRefs.map((reference) => [
         externalKey(reference.sourceSystem, reference.externalId),
         reference,
       ]),
     );
-    const referencedMessages =
-      messageRefs.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId: input.companyId,
-              id: {
-                in: messageRefs.map((reference) => reference.internalId),
-              },
-            },
-            select: { id: true, conversationId: true },
-          });
+    const referencedMessages = await collectChunked(
+      messageRefs.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
     const referencedMessageById = new Map(
       referencedMessages.map((message) => [message.id, message]),
     );
@@ -1016,17 +1165,19 @@ export class WhatsAppImportService {
           .filter((value): value is string => Boolean(value)),
       ),
     );
-    const existingProviderMessages =
-      providerMessageIds.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId: input.companyId,
-              channelId: input.channelId,
-              providerMessageId: { in: providerMessageIds },
-            },
-            select: { id: true, providerMessageId: true },
-          });
+    const existingProviderMessages = await collectChunked(
+      providerMessageIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (providerIdChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            channelId: input.channelId,
+            providerMessageId: { in: [...providerIdChunk] },
+          },
+          select: { id: true, providerMessageId: true },
+        }),
+    );
     const messageByProviderId = new Map(
       existingProviderMessages.map((message) => [
         message.providerMessageId!,
@@ -1048,16 +1199,18 @@ export class WhatsAppImportService {
           : [];
       },
     );
-    const existingCorrelatedMessages =
-      deterministicCorrelations.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId: input.companyId,
-              correlationId: { in: deterministicCorrelations },
-            },
-            select: { id: true, correlationId: true },
-          });
+    const existingCorrelatedMessages = await collectChunked(
+      deterministicCorrelations,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (correlationChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            correlationId: { in: [...correlationChunk] },
+          },
+          select: { id: true, correlationId: true },
+        }),
+    );
     const messageByCorrelation = new Map(
       existingCorrelatedMessages.map((message) => [
         message.correlationId,
@@ -1085,7 +1238,7 @@ export class WhatsAppImportService {
           issues,
           'Mensagens',
           'DUPLICATE_EXTERNAL_MESSAGE_ID',
-          'external_message_id está duplicado no lote.',
+          'A mesma mensagem aparece mais de uma vez neste lote.',
           row.rowNumber,
         );
       }
@@ -1197,38 +1350,40 @@ export class WhatsAppImportService {
           ]
         : [];
     });
-    const documentRefs =
-      documentRefPairs.length === 0
-        ? []
-        : await this.prisma.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              entityType: 'document',
-              OR: documentRefPairs,
-            },
-          });
+    const documentRefs = await collectChunked(
+      documentRefPairs,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (pairChunk) =>
+        this.prisma.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'document',
+            OR: [...pairChunk],
+          },
+        }),
+    );
     const documentRefByKey = new Map(
       documentRefs.map((reference) => [
         externalKey(reference.sourceSystem, reference.externalId),
         reference,
       ]),
     );
-    const referencedDocuments =
-      documentRefs.length === 0
-        ? []
-        : await this.prisma.quoteProposalDocument.findMany({
-            where: {
-              companyId: input.companyId,
-              id: {
-                in: documentRefs.map((reference) => reference.internalId),
-              },
-            },
-            select: {
-              id: true,
-              conversationId: true,
-              quoteRequest: { select: { sequence: true } },
-            },
-          });
+    const referencedDocuments = await collectChunked(
+      documentRefs.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.quoteProposalDocument.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: {
+            id: true,
+            conversationId: true,
+            quoteRequest: { select: { sequence: true } },
+          },
+        }),
+    );
     const referencedDocumentById = new Map(
       referencedDocuments.map((document) => [document.id, document]),
     );
@@ -1239,16 +1394,18 @@ export class WhatsAppImportService {
           .filter((value): value is string => Boolean(value)),
       ),
     );
-    const existingProviderDocuments =
-      documentProviderIds.length === 0
-        ? []
-        : await this.prisma.quoteProposalDocument.findMany({
-            where: {
-              companyId: input.companyId,
-              providerMessageId: { in: documentProviderIds },
-            },
-            select: { id: true, providerMessageId: true },
-          });
+    const existingProviderDocuments = await collectChunked(
+      documentProviderIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (providerIdChunk) =>
+        this.prisma.quoteProposalDocument.findMany({
+          where: {
+            companyId: input.companyId,
+            providerMessageId: { in: [...providerIdChunk] },
+          },
+          select: { id: true, providerMessageId: true },
+        }),
+    );
     const documentByProviderId = new Map(
       existingProviderDocuments.map((document) => [
         document.providerMessageId!,
@@ -2089,7 +2246,16 @@ export class WhatsAppImportService {
     }
     const prepared = await this.prepare(input);
     if (!prepared.report.valid) {
-      const error = new Error('O dry-run encontrou erros; apply bloqueado.');
+      const details = prepared.report.issues
+        .filter((issue) => issue.severity === 'error')
+        .slice(0, 3)
+        .map((issue) => issue.message.trim())
+        .filter(Boolean)
+        .join(' ');
+      const error = new Error(
+        details ||
+          'A validação encontrou dados inválidos; importação bloqueada.',
+      );
       Object.assign(error, { report: prepared.report });
       throw error;
     }
@@ -2121,7 +2287,7 @@ export class WhatsAppImportService {
         existingBatch.cutoffAt.getTime() !== input.cutoffAt.getTime()
       ) {
         throw new Error(
-          'O batchId já existe com tenant, canal, nome, corte ou planilha diferente.',
+          'Esta tentativa foi retomada com conteúdo diferente do processamento anterior. Reinicie a importação para preservar a integridade dos dados.',
         );
       }
       if (existingBatch.status === WhatsAppImportBatchStatus.ROLLED_BACK) {
@@ -2229,64 +2395,94 @@ export class WhatsAppImportService {
       );
       incrementImportCount(appliedCounts.byRequestStatus, row.requestStatus);
     }
+    const messagesByConversation = groupByConversation(
+      prepared.package.messages,
+    );
+    for (const messages of messagesByConversation.values()) {
+      messages.sort(
+        (left, right) => left.occurredAt.getTime() - right.occurredAt.getTime(),
+      );
+    }
+    const documentsByConversation = groupByConversation(
+      prepared.package.documents,
+    );
     try {
-      for (const row of upserts) {
-        const renewed = await this.prisma.whatsAppImportBatch.updateMany({
-          where: {
-            id: input.batchId,
-            status: WhatsAppImportBatchStatus.APPLYING,
-            claimId,
-          },
-          data: {
-            leaseUntil: new Date(Date.now() + IMPORT_BATCH_LEASE_MS),
-          },
-        });
-        if (renewed.count !== 1) {
-          throw new Error('O lease do lote foi perdido para outra execução.');
-        }
-        const existingRecord =
-          await this.prisma.whatsAppImportRecord.findUnique({
-            where: {
-              batchId_sourceSystem_externalConversationId: {
-                batchId: input.batchId,
-                sourceSystem: row.sourceSystem,
-                externalConversationId: row.externalConversationId,
+      let leaseRenewedAt = Date.now();
+      let renewalPromise: Promise<void> | null = null;
+      const renewLeaseIfNeeded = async () => {
+        if (Date.now() - leaseRenewedAt < 60_000) return;
+        if (!renewalPromise) {
+          renewalPromise = (async () => {
+            const renewed = await this.prisma.whatsAppImportBatch.updateMany({
+              where: {
+                id: input.batchId,
+                status: WhatsAppImportBatchStatus.APPLYING,
+                claimId,
               },
-            },
+              data: {
+                leaseUntil: new Date(Date.now() + IMPORT_BATCH_LEASE_MS),
+              },
+            });
+            if (renewed.count !== 1) {
+              throw new Error(
+                'O lease do lote foi perdido para outra execução.',
+              );
+            }
+            leaseRenewedAt = Date.now();
+          })().finally(() => {
+            renewalPromise = null;
           });
-        if (existingRecord?.status === WhatsAppImportRecordStatus.APPLIED) {
-          continue;
         }
-        const messages = prepared.package.messages
-          .filter(
-            (message) =>
-              message.externalConversationId === row.externalConversationId,
-          )
-          .sort(
-            (left, right) =>
-              left.occurredAt.getTime() - right.occurredAt.getTime(),
-          );
-        const documents = prepared.package.documents.filter(
-          (document) =>
-            document.externalConversationId === row.externalConversationId,
-        );
-        const result = await this.prisma.$transaction(
-          (transaction) =>
-            this.applyConversation(
-              transaction,
-              input,
-              actor.id,
-              claimId,
-              row,
-              messages,
-              documents,
+        await renewalPromise;
+      };
+      const results = await mapWithConcurrency(
+        upserts,
+        this.applyConcurrency,
+        async (row): Promise<AppliedConversationResult | null> => {
+          await renewLeaseIfNeeded();
+          const existingRecord =
+            await this.prisma.whatsAppImportRecord.findUnique({
+              where: {
+                batchId_sourceSystem_externalConversationId: {
+                  batchId: input.batchId,
+                  sourceSystem: row.sourceSystem,
+                  externalConversationId: row.externalConversationId,
+                },
+              },
+            });
+          if (existingRecord?.status === WhatsAppImportRecordStatus.APPLIED) {
+            return null;
+          }
+          const messages =
+            messagesByConversation.get(row.externalConversationId) ?? [];
+          const documents =
+            documentsByConversation.get(row.externalConversationId) ?? [];
+          return retryTransactionWriteConflict(() =>
+            this.prisma.$transaction(
+              (transaction) =>
+                this.applyConversation(
+                  transaction,
+                  input,
+                  actor.id,
+                  row,
+                  messages,
+                  documents,
+                ),
+              {
+                // The batch lease guarantees one importer for this child batch.
+                // READ COMMITTED avoids PostgreSQL serialization failures while
+                // independent conversations are persisted in parallel; unique
+                // constraints remain the final idempotency guard.
+                isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+                maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
+                timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
+              },
             ),
-          {
-            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-            maxWait: IMPORT_TRANSACTION_MAX_WAIT_MS,
-            timeout: IMPORT_TRANSACTION_TIMEOUT_MS,
-          },
-        );
+          );
+        },
+      );
+      for (const result of results) {
+        if (!result) continue;
         if (result.created) {
           appliedCounts.conversationsToCreate += 1;
         } else {
@@ -2479,16 +2675,18 @@ export class WhatsAppImportService {
         internalId: document.id,
       })),
     ];
-    const importedReferences =
-      candidateIds.length === 0
-        ? []
-        : await transaction.whatsAppImportExternalRef.findMany({
-            where: {
-              companyId: input.companyId,
-              OR: candidateIds,
-            },
-            select: { entityType: true, internalId: true },
-          });
+    const importedReferences = await collectChunked(
+      candidateIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (candidateChunk) =>
+        transaction.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            OR: [...candidateChunk],
+          },
+          select: { entityType: true, internalId: true },
+        }),
+    );
     const importedResourceKeys = new Set(
       importedReferences.map(
         (reference) => `${reference.entityType}\0${reference.internalId}`,
@@ -2511,24 +2709,10 @@ export class WhatsAppImportService {
     transaction: Transaction,
     input: WhatsAppImportApplyInput,
     actorUserId: string,
-    claimId: string,
     row: ConversationImportRow,
     messages: MessageImportRow[],
     documents: DocumentImportRow[],
   ): Promise<AppliedConversationResult> {
-    const lease = await transaction.whatsAppImportBatch.updateMany({
-      where: {
-        id: input.batchId,
-        status: WhatsAppImportBatchStatus.APPLYING,
-        claimId,
-      },
-      data: {
-        leaseUntil: new Date(Date.now() + IMPORT_BATCH_LEASE_MS),
-      },
-    });
-    if (lease.count !== 1) {
-      throw new Error('O lease do lote foi perdido antes da transação.');
-    }
     const created: CreatedResourceIds = {
       messageIds: [],
       documentIds: [],
@@ -2552,7 +2736,12 @@ export class WhatsAppImportService {
           phoneNormalized: row.phoneE164,
         },
       },
-      select: { id: true, displayName: true, updatedAt: true },
+      select: {
+        id: true,
+        displayName: true,
+        isSaved: true,
+        updatedAt: true,
+      },
     });
     await this.assertNoDriftSinceLastImport(
       transaction,
@@ -2563,6 +2752,7 @@ export class WhatsAppImportService {
     );
     const contact = existingContact
       ? existingReference &&
+        !existingContact.isSaved &&
         row.contactName &&
         row.contactName !== existingContact.displayName
         ? await transaction.whatsAppContact.update({
@@ -2580,6 +2770,7 @@ export class WhatsAppImportService {
           data: {
             companyId: input.companyId,
             phoneNormalized: row.phoneE164,
+            phoneDisplay: formatWhatsAppPhone(row.phoneE164),
             displayName: row.contactName,
           },
           select: { id: true, displayName: true },
@@ -2833,35 +3024,89 @@ export class WhatsAppImportService {
       }
     }
 
-    let messageCount = 0;
+    const externalMessageIds = messages.map(
+      (message) => message.externalMessageId,
+    );
+    const existingMessageRefs = await collectChunked(
+      externalMessageIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (externalIdChunk) =>
+        transaction.whatsAppImportExternalRef.findMany({
+          where: {
+            companyId: input.companyId,
+            entityType: 'message',
+            sourceSystem: row.sourceSystem,
+            externalId: { in: [...externalIdChunk] },
+          },
+          select: {
+            id: true,
+            externalId: true,
+            internalId: true,
+            payloadHash: true,
+          },
+        }),
+    );
+    const existingMessageRefByExternalId = new Map(
+      existingMessageRefs.map((reference) => [reference.externalId, reference]),
+    );
+    const referencedMessages = await collectChunked(
+      existingMessageRefs.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        transaction.whatsAppMessage.findMany({
+          where: {
+            companyId: input.companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
+    const referencedMessageById = new Map(
+      referencedMessages.map((message) => [message.id, message]),
+    );
+    const actorUsernames = Array.from(
+      new Set(
+        messages
+          .map((message) => message.actorUsername)
+          .filter((value): value is string => Boolean(value))
+          .map(normalizeUsername),
+      ),
+    );
+    const messageActors = await collectChunked(
+      actorUsernames,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (usernameChunk) =>
+        transaction.user.findMany({
+          where: {
+            companyId: input.companyId,
+            usernameNormalized: { in: [...usernameChunk] },
+            isActive: true,
+            status: UserAccountStatus.ACTIVE,
+          },
+          select: { id: true, usernameNormalized: true },
+        }),
+    );
+    const messageActorByUsername = new Map(
+      messageActors.map((actor) => [actor.usernameNormalized, actor.id]),
+    );
+    const messagesToCreate: Prisma.WhatsAppMessageCreateManyInput[] = [];
+    const messageReferencesToCreate: Prisma.WhatsAppImportExternalRefCreateManyInput[] =
+      [];
+
     for (const message of messages) {
       const payloadHash = this.messagePayloadHash(message);
-      const existingMessageRef =
-        await transaction.whatsAppImportExternalRef.findUnique({
-          where: {
-            companyId_entityType_sourceSystem_externalId: {
-              companyId: input.companyId,
-              entityType: 'message',
-              sourceSystem: row.sourceSystem,
-              externalId: message.externalMessageId,
-            },
-          },
-        });
+      const existingMessageRef = existingMessageRefByExternalId.get(
+        message.externalMessageId,
+      );
       if (existingMessageRef) {
         if (existingMessageRef.payloadHash !== payloadHash) {
           throw new Error(
             `Mensagem ${message.externalMessageId} diverge da carga anterior.`,
           );
         }
-        const referencedMessage = await transaction.whatsAppMessage.findUnique({
-          where: {
-            id_companyId: {
-              id: existingMessageRef.internalId,
-              companyId: input.companyId,
-            },
-          },
-          select: { conversationId: true },
-        });
+        const referencedMessage = referencedMessageById.get(
+          existingMessageRef.internalId,
+        );
         if (
           !referencedMessage ||
           referencedMessage.conversationId !== conversation.id
@@ -2872,56 +3117,67 @@ export class WhatsAppImportService {
         }
         continue;
       }
-      const messageActor = message.actorUsername
-        ? await transaction.user.findFirstOrThrow({
-            where: {
-              companyId: input.companyId,
-              usernameNormalized: normalizeUsername(message.actorUsername),
-              isActive: true,
-              status: UserAccountStatus.ACTIVE,
-            },
-            select: { id: true },
-          })
+      const actorUserId = message.actorUsername
+        ? messageActorByUsername.get(normalizeUsername(message.actorUsername))
         : undefined;
+      if (message.actorUsername && !actorUserId) {
+        throw new Error(
+          `O usuário ${message.actorUsername} não está disponível para a mensagem importada.`,
+        );
+      }
+      const messageId = randomUUID();
+      const referenceId = randomUUID();
       const mediaMetadata = importedMediaMetadata(
         message.mediaReference,
         message.correlationId,
       );
-      const persisted = await transaction.whatsAppMessage.create({
-        data: {
-          companyId: input.companyId,
-          conversationId: conversation.id,
-          channelId: input.channelId,
-          contactId: contact.id,
-          actorUserId: messageActor?.id,
-          providerMessageId: message.providerMessageId,
-          direction: DIRECTION_TO_PRISMA[message.direction],
-          deliveryStatus: DELIVERY_TO_PRISMA[message.deliveryStatus],
-          kind: KIND_TO_PRISMA[message.kind],
-          text: message.text,
-          ...(mediaMetadata !== undefined ? { media: mediaMetadata } : {}),
-          correlationId: deterministicCorrelation(
-            row.sourceSystem,
-            message.externalMessageId,
-          ),
-          occurredAt: message.occurredAt,
-        },
+      messagesToCreate.push({
+        id: messageId,
+        companyId: input.companyId,
+        conversationId: conversation.id,
+        channelId: input.channelId,
+        contactId: contact.id,
+        actorUserId,
+        providerMessageId: message.providerMessageId,
+        direction: DIRECTION_TO_PRISMA[message.direction],
+        deliveryStatus: DELIVERY_TO_PRISMA[message.deliveryStatus],
+        kind: KIND_TO_PRISMA[message.kind],
+        text: message.text,
+        ...(mediaMetadata !== undefined ? { media: mediaMetadata } : {}),
+        correlationId: deterministicCorrelation(
+          row.sourceSystem,
+          message.externalMessageId,
+        ),
+        occurredAt: message.occurredAt,
       });
-      const reference = await transaction.whatsAppImportExternalRef.create({
-        data: {
-          batchId: input.batchId,
-          companyId: input.companyId,
-          entityType: 'message',
-          sourceSystem: row.sourceSystem,
-          externalId: message.externalMessageId,
-          internalId: persisted.id,
-          payloadHash,
-        },
+      messageReferencesToCreate.push({
+        id: referenceId,
+        batchId: input.batchId,
+        companyId: input.companyId,
+        entityType: 'message',
+        sourceSystem: row.sourceSystem,
+        externalId: message.externalMessageId,
+        internalId: messageId,
+        payloadHash,
       });
-      created.messageIds.push(persisted.id);
-      created.externalRefIds.push(reference.id);
-      messageCount += 1;
+      created.messageIds.push(messageId);
+      created.externalRefIds.push(referenceId);
     }
+    for (const messageChunk of chunks(
+      messagesToCreate,
+      IMPORT_CREATE_MANY_CHUNK_SIZE,
+    )) {
+      await transaction.whatsAppMessage.createMany({ data: messageChunk });
+    }
+    for (const referenceChunk of chunks(
+      messageReferencesToCreate,
+      IMPORT_CREATE_MANY_CHUNK_SIZE,
+    )) {
+      await transaction.whatsAppImportExternalRef.createMany({
+        data: referenceChunk,
+      });
+    }
+    const messageCount = messagesToCreate.length;
 
     let documentCount = 0;
     for (const document of documents) {
@@ -3236,46 +3492,52 @@ export class WhatsAppImportService {
       );
     }
     const conversationIds = records.map((record) => record.conversationId);
-    const conversations =
-      conversationIds.length === 0
-        ? []
-        : await this.prisma.whatsAppConversation.findMany({
-            where: { companyId, id: { in: conversationIds } },
-            select: {
-              id: true,
-              contactId: true,
-              department: true,
-              conversationState: true,
-              requestStatus: true,
-              closedAt: true,
-            },
-          });
+    const conversations = await collectChunked(
+      conversationIds,
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppConversation.findMany({
+          where: { companyId, id: { in: [...idChunk] } },
+          select: {
+            id: true,
+            contactId: true,
+            department: true,
+            conversationState: true,
+            requestStatus: true,
+            closedAt: true,
+          },
+        }),
+    );
     const messages = refs.filter(
       (reference) => reference.entityType === 'message',
     );
     const documents = refs.filter(
       (reference) => reference.entityType === 'document',
     );
-    const persistedMessageIds =
-      messages.length === 0
-        ? []
-        : await this.prisma.whatsAppMessage.findMany({
-            where: {
-              companyId,
-              id: { in: messages.map((reference) => reference.internalId) },
-            },
-            select: { id: true, conversationId: true },
-          });
-    const persistedDocumentIds =
-      documents.length === 0
-        ? []
-        : await this.prisma.quoteProposalDocument.findMany({
-            where: {
-              companyId,
-              id: { in: documents.map((reference) => reference.internalId) },
-            },
-            select: { id: true, conversationId: true },
-          });
+    const persistedMessageIds = await collectChunked(
+      messages.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.whatsAppMessage.findMany({
+          where: {
+            companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
+    const persistedDocumentIds = await collectChunked(
+      documents.map((reference) => reference.internalId),
+      IMPORT_LOOKUP_CHUNK_SIZE,
+      (idChunk) =>
+        this.prisma.quoteProposalDocument.findMany({
+          where: {
+            companyId,
+            id: { in: [...idChunk] },
+          },
+          select: { id: true, conversationId: true },
+        }),
+    );
     if (conversations.length !== records.length) {
       issue(
         issues,

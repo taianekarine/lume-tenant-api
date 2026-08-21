@@ -15,6 +15,7 @@ import type { UserRecord } from '../../../application/contracts/repositories';
 export const userRecordSelect = {
   id: true,
   companyId: true,
+  routingCompanyId: true,
   name: true,
   username: true,
   usernameNormalized: true,
@@ -26,6 +27,7 @@ export const userRecordSelect = {
   profilePictureMime: true,
   isAdministrator: true,
   documentAccessMode: true,
+  clientCategory: true,
   jobTitle: true,
   maritalStatus: true,
   militaryDocumentStatus: true,
@@ -52,6 +54,7 @@ export function mapUserRecord(row: PrismaUserRecord): UserRecord {
     user: User.restore({
       id: row.id,
       companyId: row.companyId,
+      routingCompanyId: row.routingCompanyId,
       name: row.name,
       username: row.username,
       usernameNormalized: row.usernameNormalized,
@@ -66,7 +69,13 @@ export function mapUserRecord(row: PrismaUserRecord): UserRecord {
       documentAccessMode:
         row.documentAccessMode === 'DOCUMENT_PORTAL'
           ? 'document-portal'
-          : 'standard',
+          : row.documentAccessMode === 'CLIENT'
+            ? 'client'
+            : 'standard',
+      clientCategory: row.clientCategory
+        ? (row.clientCategory.toLowerCase().replaceAll('_', '-') as
+            'legal-entity' | 'individual')
+        : null,
       jobTitle: row.jobTitle,
       maritalStatus: row.maritalStatus as MaritalStatus | null,
       militaryDocumentStatus:

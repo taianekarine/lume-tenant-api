@@ -174,6 +174,26 @@ upload, visualizar permite consulta/download e gerenciar permite conversão.
 Novos formatos devem reutilizar `DataExchangeUseCase`,
 `DataExchangeRepository` e `DataExchangeConverter`.
 
+### Roteirização orientada por contrato
+
+O tenant continua sendo a Milenium. Os clientes atendidos são `RoutingCompany`,
+podem usar CPF ou CNPJ e podem possuir usuários cliente PF ou PJ isolados por
+`routingCompanyId`. Funcionários internos autorizados também podem operar mais
+de um cliente; o cliente é selecionado na aplicação e não repetido na planilha.
+
+`RoutingContract` é a raiz da operação e concentra centros de custo, unidade,
+vigência, tipo, turnos, horários, veículos, capacidade, KM e periodicidade. A
+API não expõe criação manual de rota: ela gera sugestões a partir do contrato e
+dos colaboradores elegíveis, registra revisão e aprovação versionadas e publica
+somente a versão aprovada.
+
+Pontos fixos recebem código próprio, podem ser globais ou exclusivos de um
+cliente e são usados como origem/destino do contrato e embarque do colaborador.
+O modelo oficial usa colunas legíveis e a importação aceita XLSX, CSV ou TSV.
+Linhas sem CEP ficam pendentes para correção assistida pelo ViaCEP. Rotas aprovadas oferecem
+PDF/XLSX operacional e XLSX/CSV para Google My Maps. Centro de custo permanece
+no contrato e no XLSX operacional, mas não integra os formatos do My Maps.
+
 ### Prisma Studio
 
 Com o PostgreSQL local em execução:

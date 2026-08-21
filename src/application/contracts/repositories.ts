@@ -6,6 +6,7 @@ import type { Company } from '../../domain/entities/company';
 import type { User } from '../../domain/entities/user';
 import type { UserAccountStatus } from '../../domain/entities/user';
 import type { DocumentAccessMode } from '../../domain/entities/user';
+import type { UserClientCategory } from '../../domain/entities/user';
 import type {
   MaritalStatus,
   MilitaryDocumentStatus,
@@ -38,6 +39,7 @@ export interface UserListQuery {
   page: number;
   pageSize: number;
   search?: string;
+  routingCompanyId?: string;
   department?: UserDepartment;
   permission?: PermissionCode;
   status?: UserAccountStatus;
@@ -51,12 +53,14 @@ export interface UserListResult {
 }
 
 export interface UpdateUserPersistenceInput {
+  routingCompanyId?: string | null;
   name?: string;
   email?: string;
   emailNormalized?: string;
   cpfNormalized?: string | null;
   isAdministrator?: boolean;
   documentAccessMode?: DocumentAccessMode;
+  clientCategory?: UserClientCategory | null;
   jobTitle?: string | null;
   maritalStatus?: MaritalStatus | null;
   militaryDocumentStatus?: MilitaryDocumentStatus;

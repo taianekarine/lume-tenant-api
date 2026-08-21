@@ -6,7 +6,8 @@ import type {
 } from '../access/access.constants';
 
 export type UserAccountStatus = 'active' | 'inactive' | 'suspended';
-export type DocumentAccessMode = 'standard' | 'document-portal';
+export type DocumentAccessMode = 'standard' | 'document-portal' | 'client';
+export type UserClientCategory = 'legal-entity' | 'individual';
 export type MaritalStatus =
   | 'single'
   | 'married'
@@ -30,6 +31,7 @@ export function isValidUsername(value: string): boolean {
 export interface UserProps {
   id: string;
   companyId: string;
+  routingCompanyId: string | null;
   name: string;
   username: string;
   usernameNormalized: string;
@@ -42,6 +44,7 @@ export interface UserProps {
   profilePictureMime: string | null;
   isAdministrator: boolean;
   documentAccessMode: DocumentAccessMode;
+  clientCategory: UserClientCategory | null;
   jobTitle: string | null;
   maritalStatus: MaritalStatus | null;
   militaryDocumentStatus: MilitaryDocumentStatus;
@@ -65,6 +68,7 @@ export class User {
     input: Omit<
       UserProps,
       | 'id'
+      | 'routingCompanyId'
       | 'isActive'
       | 'tokenVersion'
       | 'lastLoginAt'
@@ -73,6 +77,7 @@ export class User {
       | 'profilePictureMime'
       | 'isAdministrator'
       | 'documentAccessMode'
+      | 'clientCategory'
       | 'jobTitle'
       | 'maritalStatus'
       | 'militaryDocumentStatus'
@@ -87,11 +92,13 @@ export class User {
       mustChangePassword?: boolean;
       isAdministrator?: boolean;
       documentAccessMode?: DocumentAccessMode;
+      clientCategory?: UserClientCategory | null;
       jobTitle?: string | null;
       maritalStatus?: MaritalStatus | null;
       militaryDocumentStatus?: MilitaryDocumentStatus;
       dependents?: UserDependent[];
       permissionCodes?: PermissionCode[];
+      routingCompanyId?: string | null;
     },
   ): User {
     if (!isValidUsername(input.usernameNormalized)) {
@@ -104,6 +111,7 @@ export class User {
     return new User({
       ...input,
       id: randomUUID(),
+      routingCompanyId: input.routingCompanyId ?? null,
       isActive: true,
       tokenVersion: 1,
       mustChangePassword: input.mustChangePassword ?? false,
@@ -111,6 +119,7 @@ export class User {
       profilePictureMime: null,
       isAdministrator: input.isAdministrator ?? false,
       documentAccessMode: input.documentAccessMode ?? 'standard',
+      clientCategory: input.clientCategory ?? null,
       jobTitle: input.jobTitle ?? null,
       maritalStatus: input.maritalStatus ?? null,
       militaryDocumentStatus:
@@ -130,21 +139,27 @@ export class User {
     props: Omit<
       UserProps,
       | 'documentAccessMode'
+      | 'clientCategory'
       | 'jobTitle'
       | 'maritalStatus'
       | 'militaryDocumentStatus'
       | 'dependents'
+      | 'routingCompanyId'
     > & {
       documentAccessMode?: DocumentAccessMode;
+      clientCategory?: UserClientCategory | null;
       jobTitle?: string | null;
       maritalStatus?: MaritalStatus | null;
       militaryDocumentStatus?: MilitaryDocumentStatus;
       dependents?: UserDependent[];
+      routingCompanyId?: string | null;
     },
   ): User {
     return new User({
       ...props,
+      routingCompanyId: props.routingCompanyId ?? null,
       documentAccessMode: props.documentAccessMode ?? 'standard',
+      clientCategory: props.clientCategory ?? null,
       jobTitle: props.jobTitle ?? null,
       maritalStatus: props.maritalStatus ?? null,
       militaryDocumentStatus:

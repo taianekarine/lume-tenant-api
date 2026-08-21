@@ -291,6 +291,46 @@ describe('EvolutionMediaContentService', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it('infere o tipo de uma mídia histórica armazenada quando a mensagem veio como desconhecida', async () => {
+    const content = Buffer.from('imagem-importada-do-backup');
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    const storage = {
+      ...mediaStorage(),
+      read: vi.fn().mockResolvedValue(content),
+    } as WhatsAppMediaStorage;
+    const service = new EvolutionMediaContentService(
+      prismaWithMessage({
+        id: messageId,
+        companyId,
+        conversationId,
+        providerMessageId: null,
+        direction: MessageDirection.OUTBOUND,
+        kind: MessageKind.UNKNOWN,
+        media: { mimeType: 'image/jpeg', fileName: 'foto-historica.jpg' },
+        mediaStorageKey: `v1/${companyId}/${conversationId}/${messageId}/${createHash('sha256').update(content).digest('hex')}`,
+        mediaMimeType: 'image/jpeg',
+        mediaSizeBytes: content.byteLength,
+        mediaOriginalName: 'foto-historica.jpg',
+        mediaSha256: createHash('sha256').update(content).digest('hex'),
+        mediaStoredAt: new Date('2026-08-20T02:10:16.415Z'),
+        proposalDocument: null,
+      }),
+      storage,
+      config(),
+    );
+
+    await expect(
+      service.getContent(companyId, conversationId, messageId),
+    ).resolves.toMatchObject({
+      content,
+      fileName: 'foto-historica.jpg',
+      mimeType: 'image/jpeg',
+      kind: 'image',
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it('informa com clareza quando uma mídia histórica já expirou', async () => {
     vi.stubGlobal(
       'fetch',

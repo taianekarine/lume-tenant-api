@@ -1669,7 +1669,7 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
     ]) {
       const response = await request(app.getHttpServer())
         .get('/api/v1/whatsapp/conversations')
-        .query({ department, state: 'sent-to-human', pageSize: 100 })
+        .query({ department, control: 'paused', pageSize: 100 })
         .set('authorization', `Bearer ${accessToken}`)
         .expect(200);
       expect(response.body.data).toHaveLength(1);
@@ -1677,6 +1677,20 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         id: queueConversationIds.get(department.toUpperCase()),
         department,
         conversationState: 'sent-to-human',
+      });
+      expect(response.body.meta).toMatchObject({
+        page: 1,
+        pageSize: 100,
+        total: 1,
+        totalPages: 1,
+      });
+      expect(response.body.summary).toMatchObject({
+        total: 1,
+        botActive: 0,
+        attendantActive: 0,
+        automationPaused: 1,
+        unreadMessages: 0,
+        unreadConversations: 0,
       });
     }
 
@@ -5173,6 +5187,107 @@ describe('WhatsApp MVP HTTP E2E com PostgreSQL', () => {
         confirmation: `ROLLBACK:${batchId}`,
       });
     } finally {
+      await rm(importRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('compara backups sobrepostos e importa somente mensagens ainda ausentes', async () => {
+    const importRoot = await mkdtemp(
+      join(tmpdir(), 'lume-whatsapp-overlapping-backups-e2e-'),
+    );
+    const appliedBatchIds: string[] = [];
+    try {
+      const service = new WhatsAppImportService(prisma, importRoot);
+      const wallClock = new Date(Date.now() - 6 * 60 * 60 * 1_000);
+      const cutoffAt = new Date(Date.now() + 60 * 60 * 1_000);
+      const externalConversationId = `overlap-${randomUUID()}`;
+      const firstMessageId = `message-${randomUUID()}`;
+      const secondMessageId = `message-${randomUUID()}`;
+      const phone = `55118${String(Date.now()).slice(-8)}`;
+      const conversation = legacyConversationRow({
+        externalId: externalConversationId,
+        phone,
+        wallClock,
+        contactName: 'Cliente de backups sobrepostos',
+      });
+      const firstPackage = await createLegacyImportPackage({
+        root: importRoot,
+        directory: 'backup-day-17',
+        conversations: [conversation],
+        messages: [
+          legacyMessageRow(externalConversationId, firstMessageId, wallClock),
+        ],
+      });
+      const firstBatchId = randomUUID();
+      await service.apply({
+        companyId: tenantId,
+        channelId,
+        actorUsername: 'admin.e2e',
+        batchName: `overlap-first-${firstBatchId}`,
+        batchId: firstBatchId,
+        packagePath: firstPackage,
+        cutoffAt,
+        confirmation: `APPLY:${firstBatchId}`,
+      });
+      appliedBatchIds.push(firstBatchId);
+
+      const laterPackage = await createLegacyImportPackage({
+        root: importRoot,
+        directory: 'backup-day-18',
+        conversations: [conversation],
+        messages: [
+          legacyMessageRow(externalConversationId, firstMessageId, wallClock),
+          legacyMessageRow(
+            externalConversationId,
+            secondMessageId,
+            new Date(wallClock.getTime() + 1_000),
+          ),
+        ],
+      });
+      const laterBatchId = randomUUID();
+      const laterInput = {
+        companyId: tenantId,
+        channelId,
+        actorUsername: 'admin.e2e',
+        batchName: `overlap-later-${laterBatchId}`,
+        batchId: laterBatchId,
+        packagePath: laterPackage,
+        cutoffAt,
+        confirmation: `APPLY:${laterBatchId}`,
+      };
+
+      await expect(service.validate(laterInput)).resolves.toMatchObject({
+        valid: true,
+        counts: { messagesDuplicate: 1, messagesToCreate: 1 },
+      });
+      await expect(service.apply(laterInput)).resolves.toMatchObject({
+        counts: { messagesDuplicate: 1, messagesToCreate: 1 },
+      });
+      appliedBatchIds.unshift(laterBatchId);
+
+      const repeatedBatchId = randomUUID();
+      await expect(
+        service.validate({
+          ...laterInput,
+          batchId: repeatedBatchId,
+          batchName: `overlap-repeated-${repeatedBatchId}`,
+          confirmation: `APPLY:${repeatedBatchId}`,
+        }),
+      ).resolves.toMatchObject({
+        valid: true,
+        counts: { messagesDuplicate: 2, messagesToCreate: 0 },
+      });
+    } finally {
+      for (const batchId of appliedBatchIds) {
+        await new WhatsAppImportService(prisma, importRoot)
+          .rollback({
+            companyId: tenantId,
+            batchId,
+            actorUsername: 'admin.e2e',
+            confirmation: `ROLLBACK:${batchId}`,
+          })
+          .catch(() => undefined);
+      }
       await rm(importRoot, { recursive: true, force: true });
     }
   }, 60_000);

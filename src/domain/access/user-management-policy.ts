@@ -3,10 +3,15 @@ export interface UserManagementIdentity {
   readonly id: string;
   readonly isAdministrator: boolean;
   readonly departments: readonly string[];
+  readonly permissionCodes?: readonly string[];
 }
 
 export type UserManagementRole =
-  'administrator' | 'information-technology' | 'people-operations' | 'none';
+  | 'administrator'
+  | 'information-technology'
+  | 'people-operations'
+  | 'delegated'
+  | 'none';
 
 export function resolveUserManagementRole(
   actor: UserManagementIdentity,
@@ -21,6 +26,15 @@ export function resolveUserManagementRole(
     )
   ) {
     return 'people-operations';
+  }
+  if (
+    actor.permissionCodes?.some((permission) =>
+      ['users:view', 'users:create', 'users:update', 'users:manage'].includes(
+        permission,
+      ),
+    )
+  ) {
+    return 'delegated';
   }
   return 'none';
 }
@@ -43,7 +57,7 @@ export function assertCanAccessUserTarget(
 ): UserManagementRole {
   const role = assertCanAccessUserCatalog(actor);
   if (
-    role === 'information-technology' &&
+    ['information-technology', 'delegated'].includes(role) &&
     (target.id === actor.id || target.isAdministrator)
   ) {
     throw forbidden(

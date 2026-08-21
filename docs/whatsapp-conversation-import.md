@@ -46,6 +46,94 @@ conversas é idempotente: as mensagens já confirmadas são reconhecidas por seu
 identificadores determinísticos, não invalidam o restante do lote e não são
 duplicadas.
 
+## Backup Android completo (`msgstore.db.crypt15`)
+
+O modo **Backup Android completo** recebe um único banco e importa em lote as
+conversas individuais. A chave deve possuir 64 caracteres hexadecimais, é usada
+somente para derivar a chave AES-GCM da requisição e nunca é escrita no
+manifesto, banco de dados, log ou Git.
+
+O arquivo criptografado é enviado em blocos retomáveis de 16 MiB. Cada bloco é
+confirmado pelo servidor e selecionar novamente o mesmo arquivo continua do
+último byte armazenado, sem repetir o conteúdo. A chave crypt15 não acompanha
+os blocos: ela é enviada somente na confirmação final, depois que 100% do
+arquivo já está no volume privado. O tamanho do bloco pode ser ajustado por
+`WHATSAPP_ANDROID_BACKUP_UPLOAD_CHUNK_BYTES`.
+
+Antes da confirmação, a API autentica o arquivo, descompacta com limite de
+bytes, executa `PRAGMA quick_check` e apresenta totais de conversas, mensagens,
+mídias pendentes e itens excluídos. A situação final e o departamento são
+escolhidos explicitamente. A aplicação ocorre em segundo plano, em blocos
+determinísticos, e pode ser retomada sem duplicar mensagens. A identidade de
+cada bloco também considera o conjunto real de mensagens: uma retomada parcial
+reaproveita blocos idênticos e cria uma nova identidade quando o conteúdo
+restante mudou, evitando colisões com tentativas anteriores.
+
+A comparação incremental usa prioritariamente o `key_id` estável do WhatsApp,
+delimitado pelo telefone normalizado porque esse identificador pode se repetir
+entre contatos diferentes;
+o identificador interno do chat não participa da identidade porque pode mudar
+entre backups do mesmo aparelho. A prévia separa mensagens já existentes,
+novas e divergentes. Repetir o mesmo backup produz zero mensagens novas; um
+backup posterior que contém todo o histórico anterior aplica somente as
+mensagens ausentes. O mesmo `key_id` com conteúdo diferente é apresentado como
+divergência e bloqueia a aplicação para revisão.
+
+Por padrão, cada bloco contém até 10.000 mensagens e quatro conversas
+independentes são aplicadas em paralelo. Os valores podem ser ajustados por
+`WHATSAPP_ANDROID_IMPORT_CHUNK_MESSAGES` e
+`WHATSAPP_IMPORT_APPLY_CONCURRENCY` (máximo 8), conforme a capacidade do banco
+de dados da instalação.
+
+O banco guarda referências de mídia, mas não fotos, áudios, vídeos e documentos
+reproduzíveis. Depois de validar o `msgstore`, a tela exige um ZIP contendo
+`WhatsApp/Media` ou `WhatsApp Business/Media` antes de liberar **Aplicar**. O
+navegador envia o arquivo em blocos retomáveis de 16 MiB; uma interrupção pode
+ser retomada selecionando o mesmo arquivo. A aplicação grava as mensagens e
+inicia a vinculação das mídias no mesmo fluxo, mantendo o progresso disponível
+na tela. A etapa posterior continua disponível para recuperação ou ZIPs
+adicionais, sem duplicar o histórico.
+
+A API lê o diretório do ZIP como stream e considera imagens, figurinhas, áudios,
+vídeos, PDFs, documentos Office, arquivos compactados e demais binários citados
+no banco. A associação usa caminho e SHA-256: um mesmo arquivo pode pertencer a
+várias mensagens, e referências sem nome ou caminho ainda podem ser resolvidas
+pelo hash armazenado pelo WhatsApp. O ZIP não é carregado inteiro na memória.
+
+Os limites padrão desse fluxo são 8 GiB por ZIP, 250.000 entradas e 16 GiB
+descompactados. Eles podem ser ajustados por
+`WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_BYTES`,
+`WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_ENTRIES` e
+`WHATSAPP_ANDROID_MEDIA_ARCHIVE_MAX_UNCOMPRESSED_BYTES`. O tamanho do bloco é
+configurado por `WHATSAPP_ANDROID_MEDIA_UPLOAD_CHUNK_BYTES`. O volume
+`lume_tenant_whatsapp_imports` precisa ter espaço para o ZIP durante o envio e o
+processamento; a cópia temporária é removida quando a vinculação termina.
+
+Telefones móveis brasileiros antigos sem o nono dígito são normalizados para
+a mesma identidade usada pela agenda. Assim, nomes importados por CSV também
+aparecem nas conversas históricas que ainda tenham sido gravadas com a forma
+antiga do número.
+
+`Backups.zip` não é um arquivo de mídias: ele contém bancos auxiliares
+criptografados do Android. Para dezenas de milhares de arquivos, também é
+possível copiar a pasta `Media` para um volume privado da VPS com `rsync` e
+executar, dentro do diretório da Tenant API:
+
+```bash
+npm run whatsapp:android-media:attach:prod -- \
+  --company-id <UUID_DO_TENANT> \
+  --batch-id <UUID_DO_LOTE_DA_TELA> \
+  --media-root /caminho/privado/WhatsApp\ Business/Media \
+  --confirm ATTACH:<UUID_DO_LOTE_DA_TELA>
+```
+
+O comando considera as mensagens Android do mesmo canal, inclusive pendências
+de importações anteriores. Ele ignora links simbólicos, limita o tamanho
+individual, usa caminho relativo e somente recorre ao nome do arquivo quando
+ele é único. Cada binário recebe SHA-256 e uma chave privada por
+tenant/conversa/mensagem. Reexecutar o mesmo comando ignora mídias já
+armazenadas e tenta novamente apenas as pendentes.
+
 ## Diretório privado
 
 O valor padrão é:

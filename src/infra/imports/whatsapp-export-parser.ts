@@ -22,6 +22,7 @@ export type WhatsAppExportMessageKind =
   | 'audio'
   | 'video'
   | 'sticker'
+  | 'location'
   | 'contact'
   | 'unknown';
 
@@ -31,10 +32,13 @@ export interface WhatsAppExportAttachment {
   kind: Exclude<WhatsAppExportMessageKind, 'text'>;
   mimeType: string;
   sizeBytes: number | null;
+  reference?: string;
 }
 
 export interface WhatsAppExportMessage {
   index: number;
+  externalMessageId?: string;
+  outbound?: boolean;
   senderName: string | null;
   occurredAt: Date;
   wallClockAt: Date;
@@ -46,6 +50,8 @@ export interface WhatsAppExportMessage {
 
 export interface ParsedWhatsAppExport {
   archiveId: string;
+  sourceSystem?: string;
+  externalConversationId?: string;
   archiveName: string;
   archiveSha256: string;
   chatFileName: string;

@@ -60,6 +60,7 @@ import type {
 } from '../../../domain/whatsapp/whatsapp.constants';
 import { UNSUPPORTED_MESSAGE_KIND_REPLY_TEXT } from '../../../domain/whatsapp/whatsapp.constants';
 import { sanitizeLogText } from '../../../shared/utils/sensitive-data';
+import { formatWhatsAppPhone } from '../../../shared/utils/normalization';
 import {
   ConversationState,
   DeliveryStatus,
@@ -83,6 +84,7 @@ const LEGACY_AUTOMATION_RECONCILIATION_REQUIRED =
   'LEGACY_AUTOMATION_RECONCILIATION_REQUIRED' as const;
 
 const departmentToPrisma: Readonly<Record<Department, DepartmentCode>> = {
+  'client-company': DepartmentCode.CLIENT_COMPANY,
   'human-resources': DepartmentCode.HUMAN_RESOURCES,
   'personnel-department': DepartmentCode.PERSONNEL_DEPARTMENT,
   commercial: DepartmentCode.COMMERCIAL,
@@ -98,6 +100,7 @@ const departmentToPrisma: Readonly<Record<Department, DepartmentCode>> = {
 };
 
 const departmentFromPrisma: Readonly<Record<DepartmentCode, Department>> = {
+  CLIENT_COMPANY: 'client-company',
   HUMAN_RESOURCES: 'human-resources',
   PERSONNEL_DEPARTMENT: 'personnel-department',
   COMMERCIAL: 'commercial',
@@ -657,7 +660,7 @@ function presentConversation(row: ConversationWithRelations) {
     channel: row.channel,
     contact: {
       id: row.contact.id,
-      phone: row.contact.phoneNormalized,
+      phone: row.contact.phoneDisplay,
       displayName: row.contact.displayName,
       profilePictureUrl: row.contact.profilePictureUrl,
     },
@@ -810,7 +813,8 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         create: {
           companyId,
           phoneNormalized,
-          displayName: phoneNormalized,
+          phoneDisplay: formatWhatsAppPhone(phoneNormalized),
+          displayName: formatWhatsAppPhone(phoneNormalized),
         },
         update: {},
         select: { id: true },
@@ -918,18 +922,27 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
           create: {
             companyId: input.channel.companyId,
             phoneNormalized: input.phoneNormalized,
+            phoneDisplay: formatWhatsAppPhone(input.phoneNormalized),
             displayName: input.displayName,
             profilePictureUrl: input.profilePictureUrl,
           },
           update: {
-            ...(input.direction === 'inbound' && input.displayName
-              ? { displayName: input.displayName }
-              : {}),
             ...(input.profilePictureUrl
               ? { profilePictureUrl: input.profilePictureUrl }
               : {}),
           },
         });
+
+        if (input.direction === 'inbound' && input.displayName) {
+          await transaction.whatsAppContact.updateMany({
+            where: {
+              id: contact.id,
+              companyId: input.channel.companyId,
+              isSaved: false,
+            },
+            data: { displayName: input.displayName },
+          });
+        }
 
         // Serializa o primeiro contato por tenant/canal/contato. O índice
         // parcial da migration continua sendo a última linha de defesa.
@@ -6026,6 +6039,18 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         ? departmentToPrisma[query.department]
         : undefined;
     const state = query.state ? stateToPrisma[query.state] : undefined;
+    const controlStates = query.control
+      ? query.control === 'bot'
+        ? [ConversationState.BOT_ACTIVE]
+        : query.control === 'human'
+          ? [ConversationState.HUMAN_ACTIVE]
+          : query.control === 'paused'
+            ? [
+                ConversationState.WAITING_FOR_CUSTOMER,
+                ConversationState.SENT_TO_HUMAN,
+              ]
+            : [ConversationState.CLOSED]
+      : undefined;
     const requestStatus = query.requestStatus
       ? requestToPrisma[query.requestStatus]
       : undefined;
@@ -6034,19 +6059,37 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
       companyId,
       ...(department ? { department } : {}),
       ...(state ? { conversationState: state } : {}),
+      ...(controlStates ? { conversationState: { in: controlStates } } : {}),
       ...(requestStatus ? { requestStatus } : {}),
       ...(search
         ? {
-            contact: {
-              OR: [
-                { displayName: { contains: search, mode: 'insensitive' } },
-                { phoneNormalized: { contains: search } },
-              ],
-            },
+            OR: [
+              {
+                contact: {
+                  displayName: { contains: search, mode: 'insensitive' },
+                },
+              },
+              { contact: { phoneNormalized: { contains: search } } },
+              {
+                lastMessagePreview: {
+                  contains: search,
+                  mode: 'insensitive',
+                },
+              },
+            ],
           }
         : {}),
     };
-    const [rows, total] = await this.prisma.$transaction([
+    const [
+      rows,
+      total,
+      botActive,
+      attendantActive,
+      waitingForCustomer,
+      sentToHuman,
+      unreadTotals,
+      unreadConversations,
+    ] = await Promise.all([
       this.prisma.whatsAppConversation.findMany({
         where,
         include: conversationInclude,
@@ -6055,6 +6098,42 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         take: query.pageSize,
       }),
       this.prisma.whatsAppConversation.count({ where }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [where, { conversationState: ConversationState.BOT_ACTIVE }],
+        },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [where, { conversationState: ConversationState.HUMAN_ACTIVE }],
+        },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [
+            where,
+            { conversationState: ConversationState.WAITING_FOR_CUSTOMER },
+          ],
+        },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [where, { conversationState: ConversationState.SENT_TO_HUMAN }],
+        },
+      }),
+      this.prisma.whatsAppConversation.aggregate({
+        where,
+        _sum: { unreadCount: true },
+      }),
+      this.prisma.whatsAppConversation.count({
+        where: {
+          AND: [
+            where,
+            { conversationState: { not: ConversationState.CLOSED } },
+            { unreadCount: { gt: 0 } },
+          ],
+        },
+      }),
     ]);
     return {
       data: rows.map(presentConversation),
@@ -6063,6 +6142,14 @@ export class PrismaWhatsAppRepository extends WhatsAppRepository {
         pageSize: query.pageSize,
         total,
         totalPages: Math.ceil(total / query.pageSize),
+      },
+      summary: {
+        total,
+        botActive,
+        attendantActive,
+        automationPaused: waitingForCustomer + sentToHuman,
+        unreadMessages: unreadTotals._sum.unreadCount ?? 0,
+        unreadConversations,
       },
     };
   }

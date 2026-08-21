@@ -486,6 +486,14 @@ export class ConversationListQueryDto {
   state?: (typeof CONVERSATION_STATES)[number];
 
   @ApiPropertyOptional({
+    enum: ['bot', 'human', 'paused', 'closed'],
+    description: 'Forma de condução exibida no painel de atendimento.',
+  })
+  @IsOptional()
+  @IsIn(['bot', 'human', 'paused', 'closed'])
+  control?: 'bot' | 'human' | 'paused' | 'closed';
+
+  @ApiPropertyOptional({
     enum: REQUEST_STATUSES,
     description:
       'Status do processo comercial. Quando informado, a fila é obrigatoriamente Comercial.',

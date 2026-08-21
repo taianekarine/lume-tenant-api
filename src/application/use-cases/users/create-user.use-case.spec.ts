@@ -12,6 +12,7 @@ import { User } from '../../../domain/entities/user';
 import { BootstrapTenantUseCase } from '../tenant/bootstrap-tenant.use-case';
 import { CreateUserUseCase } from './create-user.use-case';
 import { GetUserUseCase } from './get-user.use-case';
+import { RoutingRepository } from '../../contracts/routing.repository';
 
 describe('tenant-scoped user use cases', () => {
   let store: InMemoryStore;
@@ -230,6 +231,87 @@ describe('tenant-scoped user use cases', () => {
       'commercial:manage',
       'commercial:view',
     ]);
+  });
+
+  it('creates Cliente PJ scoped to an active served company', async () => {
+    const routingCompanyId = '00000000-0000-4000-8000-000000000088';
+    const routing = {
+      findCompany: async () => ({ id: routingCompanyId, status: 'active' }),
+    } as unknown as RoutingRepository;
+    const useCase = new CreateUserUseCase(
+      users,
+      new FakePasswordHasher(),
+      undefined,
+      routing,
+    );
+
+    const created = await useCase.execute({
+      companyId: store.companies[0].id,
+      routingCompanyId,
+      name: 'Cliente PJ',
+      username: 'cliente.pj',
+      email: 'cliente.pj@empresa.test',
+      password: 'OutraSenha@2026',
+      documentAccessMode: 'client',
+      clientCategory: 'legal-entity',
+      departments: ['client-company'],
+      permissionCodes: ['passengers:import', 'routes:view'],
+    });
+
+    expect(created).toMatchObject({
+      type: 'client',
+      documentAccessMode: 'client',
+      clientCategory: 'legal-entity',
+      routingCompanyId,
+      departments: ['client-company'],
+    });
+  });
+
+  it('creates Cliente PF scoped to its client record', async () => {
+    const routingCompanyId = '00000000-0000-4000-8000-000000000089';
+    const routing = {
+      findCompany: async () => ({ id: routingCompanyId, status: 'active' }),
+    } as unknown as RoutingRepository;
+    const useCase = new CreateUserUseCase(
+      users,
+      new FakePasswordHasher(),
+      undefined,
+      routing,
+    );
+    const created = await useCase.execute({
+      companyId: store.companies[0].id,
+      routingCompanyId,
+      name: 'Cliente PF',
+      username: 'cliente.pf',
+      email: 'cliente.pf@empresa.test',
+      password: 'OutraSenha@2026',
+      documentAccessMode: 'client',
+      clientCategory: 'individual',
+      departments: ['client-company'],
+      permissionCodes: ['routes:view'],
+    });
+
+    expect(created).toMatchObject({
+      type: 'client',
+      clientCategory: 'individual',
+      routingCompanyId,
+    });
+  });
+
+  it('rejects Cliente PF without a client link', async () => {
+    await expect(
+      createUser.execute({
+        companyId: store.companies[0].id,
+        name: 'Cliente PF invalido',
+        username: 'cliente.pf.invalido',
+        email: 'cliente.pf.invalido@empresa.test',
+        password: 'OutraSenha@2026',
+        documentAccessMode: 'client',
+        clientCategory: 'individual',
+        departments: ['client-company'],
+        permissionCodes: [],
+      }),
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
   });
 
   it('prevents TI from creating administrators or granting license permissions', async () => {
