@@ -1,21 +1,20 @@
 import {
-  AppError,
   conflict,
   forbidden,
   notFound,
   validationError,
 } from '../../../core/errors/app-error';
 import {
-  ROUTING_COMPANY_STATUSES,
+  ROUTING_CLIENT_STATUSES,
   createRoutingCompany,
-  normalizeRoutingClientTaxId,
+  normalizeRoutingCompanyInput,
+  type RoutingClientType,
+  type RoutingCompanyInput,
   type RoutingCompanyProps,
-  type RoutingCompanyStatus,
+  type RoutingClientStatus,
 } from '../../../domain/routing/routing-company';
 import { RoutingRepository } from '../../contracts/routing.repository';
 import type { AuthenticatedPrincipal } from '../../presenters/user.presenter';
-import { PasswordHasher } from '../../contracts/cryptography';
-import { UsersRepository } from '../../contracts/repositories';
 
 function presentCompany(company: RoutingCompanyProps) {
   return {
@@ -27,27 +26,50 @@ function presentCompany(company: RoutingCompanyProps) {
 }
 
 export class RoutingCompaniesUseCase {
-  constructor(
-    private readonly routing: RoutingRepository,
-    private readonly users: UsersRepository,
-    private readonly passwordHasher: PasswordHasher,
-  ) {}
+  constructor(private readonly routing: RoutingRepository) {}
+
+  private async assertUnique(
+    companyId: string,
+    values: {
+      cpf?: string | null;
+      cnpj?: string | null;
+      avicExternalId?: string | null;
+    },
+    exceptId?: string,
+  ) {
+    const checks = [
+      ['cpf', values.cpf, 'Já existe um cliente cadastrado com este CPF.'],
+      ['cnpj', values.cnpj, 'Já existe um cliente cadastrado com este CNPJ.'],
+      [
+        'avicExternalId',
+        values.avicExternalId,
+        'Já existe um cliente com este Código AVIC.',
+      ],
+    ] as const;
+    for (const [field, value, message] of checks) {
+      if (
+        value &&
+        (await this.routing.findCompanyByUniqueValue(
+          companyId,
+          field,
+          value,
+          exceptId,
+        ))
+      )
+        throw conflict(message);
+    }
+  }
 
   async create(
     current: AuthenticatedPrincipal,
-    input: {
-      commandId: string;
-      taxId: string;
-      legalName: string;
-      tradeName?: string;
-      costCenter?: string;
-    },
+    input: RoutingCompanyInput & { commandId: string },
   ) {
-    if (current.routingCompanyId) {
+    if (current.routingCompanyId)
       throw forbidden(
-        'Usuarios de clientes nao podem cadastrar outra empresa.',
+        'Usuários de clientes não podem cadastrar outro cliente.',
       );
-    }
+    const normalized = normalizeRoutingCompanyInput(input);
+    await this.assertUnique(current.companyId, normalized);
     const company = createRoutingCompany({
       ...input,
       companyId: current.companyId,
@@ -64,7 +86,9 @@ export class RoutingCompaniesUseCase {
       page: number;
       pageSize: number;
       search?: string;
-      status?: RoutingCompanyStatus;
+      status?: RoutingClientStatus;
+      clientType?: RoutingClientType;
+      sort?: 'name' | 'status' | 'avic';
     },
   ) {
     if (current.routingCompanyId) {
@@ -72,22 +96,9 @@ export class RoutingCompaniesUseCase {
         current.companyId,
         current.routingCompanyId,
       );
-      if (!company) return { items: [], total: 0 };
-      const search = query.search?.trim().toLocaleLowerCase('pt-BR');
-      const matchesSearch =
-        !search ||
-        [
-          company.legalName,
-          company.tradeName,
-          company.taxId,
-          company.costCenter,
-        ]
-          .filter(Boolean)
-          .some((value) => value!.toLocaleLowerCase('pt-BR').includes(search));
-      const matchesStatus = !query.status || query.status === company.status;
       return {
-        items: matchesSearch && matchesStatus ? [presentCompany(company)] : [],
-        total: matchesSearch && matchesStatus ? 1 : 0,
+        items: company ? [presentCompany(company)] : [],
+        total: company ? 1 : 0,
       };
     }
     const result = await this.routing.listCompanies(current.companyId, query);
@@ -98,122 +109,130 @@ export class RoutingCompaniesUseCase {
     if (
       current.routingCompanyId &&
       current.routingCompanyId !== routingCompanyId
-    ) {
-      throw forbidden('A empresa informada nao pertence ao seu acesso.');
-    }
+    )
+      throw forbidden('O cliente informado não pertence ao seu acesso.');
     const company = await this.routing.findCompany(
       current.companyId,
       routingCompanyId,
     );
-    if (!company) throw notFound('Empresa cliente');
+    if (!company) throw notFound('Cliente');
     return presentCompany(company);
   }
 
   async update(
     current: AuthenticatedPrincipal,
     routingCompanyId: string,
-    input: {
-      commandId: string;
-      expectedVersion: number;
-      taxId?: string;
-      legalName?: string;
-      tradeName?: string | null;
-      costCenter?: string | null;
-      status?: RoutingCompanyStatus;
-    },
+    input: RoutingCompanyInput & { commandId: string; expectedVersion: number },
   ) {
-    if (
-      current.routingCompanyId &&
-      current.routingCompanyId !== routingCompanyId
-    ) {
-      throw forbidden('A empresa informada nao pertence ao seu acesso.');
-    }
-    if (input.legalName !== undefined && !input.legalName.trim()) {
-      throw validationError('Informe a razao social.');
-    }
-    if (
-      input.status !== undefined &&
-      !ROUTING_COMPANY_STATUSES.includes(input.status)
-    ) {
-      throw validationError('Informe um status valido para a empresa cliente.');
-    }
-    const currentCompany = await this.routing.findCompany(
-      current.companyId,
-      routingCompanyId,
-    );
-    if (!currentCompany) throw notFound('Empresa cliente');
+    await this.get(current, routingCompanyId);
+    if (!ROUTING_CLIENT_STATUSES.includes(input.status ?? 'active'))
+      throw validationError('Informe uma situação válida para o cliente.');
+    const normalized = normalizeRoutingCompanyInput(input);
+    await this.assertUnique(current.companyId, normalized, routingCompanyId);
+    const displayName =
+      normalized.clientType === 'pf'
+        ? normalized.individualName ||
+          normalized.individualWhatsapp ||
+          'Cliente pessoa física'
+        : normalized.legalName!;
+    const activeTaxId =
+      normalized.clientType === 'pf' ? normalized.cpf : normalized.cnpj;
     const updated = await this.routing.updateCompany(
       current.companyId,
       routingCompanyId,
       {
-        ...input,
-        actorUserId: current.id,
+        ...normalized,
         taxId:
-          input.taxId === undefined
-            ? undefined
-            : normalizeRoutingClientTaxId(input.taxId),
-        legalName: input.legalName?.trim(),
-        tradeName:
-          input.tradeName === undefined
-            ? undefined
-            : input.tradeName?.trim() || null,
-        costCenter:
-          input.costCenter === undefined
-            ? undefined
-            : input.costCenter?.trim() || null,
+          activeTaxId ?? `pf${routingCompanyId.replace(/-/g, '').slice(0, 12)}`,
+        legalName: normalized.legalName ?? displayName,
+        actorUserId: current.id,
+        commandId: input.commandId,
+        expectedVersion: input.expectedVersion,
       },
     );
-    if (!updated) {
+    if (!updated)
       throw conflict(
-        'A empresa cliente foi alterada por outro usuario. Recarregue os dados e tente novamente.',
+        'O cliente foi alterado por outro usuário. Recarregue os dados e tente novamente.',
       );
-    }
     return presentCompany(updated);
-  }
-
-  async delete(
-    current: AuthenticatedPrincipal,
-    routingCompanyId: string,
-    input: { commandId: string; password: string },
-  ) {
-    if (current.routingCompanyId) {
-      throw forbidden('Usuarios cliente nao podem excluir o proprio cliente.');
-    }
-    const actor = await this.users.findById(current.companyId, current.id);
-    if (!actor) throw notFound('Usuario');
-    const matches = await this.passwordHasher.compare(
-      input.password,
-      actor.user.props.passwordHash,
-    );
-    if (!matches) {
-      throw new AppError(
-        'INVALID_CREDENTIALS',
-        'A senha atual informada esta incorreta.',
-      );
-    }
-    void input.commandId;
-    const result = await this.routing.deleteCompany(
-      current.companyId,
-      routingCompanyId,
-    );
-    if (result === 'not-found') throw notFound('Cliente');
-    if (result === 'in-use') {
-      throw conflict(
-        'Este cliente possui usuarios, contratos, colaboradores, rotas ou pontos exclusivos. Desative-o para preservar o historico.',
-      );
-    }
-    return { deleted: true as const };
   }
 
   async history(current: AuthenticatedPrincipal, routingCompanyId: string) {
     await this.get(current, routingCompanyId);
-    const entries = await this.routing.listCompanyHistory(
-      current.companyId,
-      routingCompanyId,
-    );
-    return entries.map((entry) => ({
-      ...entry,
-      createdAt: entry.createdAt.toISOString(),
+    return (
+      await this.routing.listCompanyHistory(current.companyId, routingCompanyId)
+    ).map((entry) => ({ ...entry, createdAt: entry.createdAt.toISOString() }));
+  }
+
+  async comments(current: AuthenticatedPrincipal, routingCompanyId: string) {
+    await this.get(current, routingCompanyId);
+    return (
+      await this.routing.listCompanyComments(
+        current.companyId,
+        routingCompanyId,
+      )
+    ).map((item) => ({
+      ...item,
+      createdAt: item.createdAt.toISOString(),
+      updatedAt: item.updatedAt.toISOString(),
     }));
+  }
+
+  async addComment(
+    current: AuthenticatedPrincipal,
+    routingCompanyId: string,
+    input: { commandId: string; comment: string },
+  ) {
+    await this.get(current, routingCompanyId);
+    const comment = input.comment.trim();
+    if (!comment) throw validationError('Informe o comentário.');
+    return this.routing.createCompanyComment({
+      companyId: current.companyId,
+      routingCompanyId,
+      actorUserId: current.id,
+      commandId: input.commandId,
+      comment,
+    });
+  }
+
+  async updateComment(
+    current: AuthenticatedPrincipal,
+    routingCompanyId: string,
+    commentId: string,
+    input: { commandId: string; comment: string },
+  ) {
+    await this.get(current, routingCompanyId);
+    const comment = input.comment.trim();
+    if (!comment) throw validationError('Informe o comentário.');
+    const updated = await this.routing.updateCompanyComment({
+      companyId: current.companyId,
+      routingCompanyId,
+      commentId,
+      actorUserId: current.id,
+      commandId: input.commandId,
+      comment,
+    });
+    if (!updated) throw notFound('Comentário');
+    return updated;
+  }
+
+  async removeComment(
+    current: AuthenticatedPrincipal,
+    routingCompanyId: string,
+    commentId: string,
+    commandId: string,
+  ) {
+    await this.get(current, routingCompanyId);
+    if (
+      !(await this.routing.deleteCompanyComment({
+        companyId: current.companyId,
+        routingCompanyId,
+        commentId,
+        actorUserId: current.id,
+        commandId,
+      }))
+    )
+      throw notFound('Comentário');
+    return { removed: true as const };
   }
 }

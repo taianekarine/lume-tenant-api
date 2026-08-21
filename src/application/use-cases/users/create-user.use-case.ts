@@ -130,6 +130,14 @@ export class CreateUserUseCase {
         'Somente outro administrador pode criar uma conta administradora.',
       );
     }
+    if (
+      input.permissionCodes.includes('clients:history') &&
+      !actorIsAdministrator
+    ) {
+      throw forbidden(
+        'Somente administradores podem conceder a permissão de visualizar o histórico de clientes.',
+      );
+    }
 
     const documentAccessMode = input.documentAccessMode ?? 'standard';
     const departments = isAdministrator

@@ -128,6 +128,7 @@ export const PERMISSION_ACTIONS = [
   'export',
   'import',
   'publish',
+  'history',
 ] as const;
 
 export type PermissionResource = (typeof PERMISSION_RESOURCES)[number];
@@ -154,7 +155,7 @@ export const PERMISSION_ACTIONS_BY_RESOURCE = {
     'approve',
     'export',
   ],
-  clients: ['view', 'create', 'update', 'delete', 'manage'],
+  clients: ['view', 'create', 'update', 'manage', 'history'],
   'ai-agents': ['view', 'create', 'update', 'delete', 'manage', 'use'],
   'whatsapp-conversations': ['view', 'manage'],
   manuals: ['view', 'create', 'update', 'delete', 'manage'],

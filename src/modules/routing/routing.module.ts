@@ -19,8 +19,6 @@ import { RouteExportService } from '../../infra/routing/route-export.service';
 import { FixedPointRepository } from '../../application/contracts/fixed-point.repository';
 import { FixedPointsUseCase } from '../../application/use-cases/routing/fixed-points.use-case';
 import { RoutingFixedPointsController } from './routing-fixed-points.controller';
-import { PasswordHasher } from '../../application/contracts/cryptography';
-import { UsersRepository } from '../../application/contracts/repositories';
 import { DataExchangeModule } from '../data-exchange/data-exchange.module';
 import { PostalCodeLookupService } from '../../infra/routing/postal-code-lookup.service';
 
@@ -36,12 +34,9 @@ import { PostalCodeLookupService } from '../../infra/routing/postal-code-lookup.
   providers: [
     {
       provide: RoutingCompaniesUseCase,
-      useFactory: (
-        routing: RoutingRepository,
-        users: UsersRepository,
-        passwordHasher: PasswordHasher,
-      ) => new RoutingCompaniesUseCase(routing, users, passwordHasher),
-      inject: [RoutingRepository, UsersRepository, PasswordHasher],
+      useFactory: (routing: RoutingRepository) =>
+        new RoutingCompaniesUseCase(routing),
+      inject: [RoutingRepository],
     },
     {
       provide: RoutingContractsUseCase,

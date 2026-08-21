@@ -21,6 +21,11 @@ enum RoutingCompanyStatus {
   SUSPENDED @map("suspended")
 }
 
+enum RoutingClientType {
+  PF @map("pf")
+  PJ @map("pj")
+}
+
 enum RoutingFixedPointStatus {
   ACTIVE   @map("active")
   INACTIVE @map("inactive")
@@ -396,6 +401,7 @@ model Company {
   apiRequestMetrics             ApiRequestMetric[]
   routingCompanies              RoutingCompany[]
   routingCompanyHistoryEntries RoutingCompanyHistory[]
+  routingCompanyComments       RoutingCompanyComment[]
   passengers                    Passenger[]
   passengerHistoryEntries      PassengerHistory[]
   passengerIssues              PassengerIssue[]
@@ -456,6 +462,8 @@ model User {
   routingCompany                RoutingCompany?                  @relation("RoutingCompanyUsers", fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: NoAction)
   createdRoutingCompanies       RoutingCompany[]                 @relation("RoutingCompanyCreator")
   routingCompanyHistoryEntries RoutingCompanyHistory[]          @relation("RoutingCompanyHistoryActor")
+  createdRoutingCompanyComments RoutingCompanyComment[]          @relation("RoutingCompanyCommentCreator")
+  updatedRoutingCompanyComments RoutingCompanyComment[]          @relation("RoutingCompanyCommentUpdater")
   createdPassengers            Passenger[]                       @relation("PassengerCreator")
   passengerHistoryEntries      PassengerHistory[]                @relation("PassengerHistoryActor")
   passengerImportBatches       PassengerImportBatch[]            @relation("PassengerImportActor")
@@ -506,6 +514,16 @@ model RoutingCompany {
   legalName        String               @map("legal_name") @db.VarChar(160)
   tradeName        String?              @map("trade_name") @db.VarChar(120)
   costCenter       String?              @map("cost_center") @db.VarChar(120)
+  clientType       RoutingClientType    @default(PJ) @map("client_type")
+  individualName  String?              @map("individual_name") @db.VarChar(160)
+  cpf              String?              @db.VarChar(11)
+  individualEmail String?              @map("individual_email") @db.VarChar(254)
+  individualWhatsapp String?           @map("individual_whatsapp") @db.VarChar(20)
+  individualPhones Json                @default("[]") @map("individual_phones") @db.JsonB
+  cnpj             String?              @db.VarChar(14)
+  legalEmail       String?              @map("legal_email") @db.VarChar(254)
+  legalWhatsapp    String?              @map("legal_whatsapp") @db.VarChar(20)
+  legalPhones      Json                 @default("[]") @map("legal_phones") @db.JsonB
   status           RoutingCompanyStatus @default(ACTIVE)
   avicExternalId   String?              @map("avic_external_id") @db.VarChar(160)
   avicLastSyncedAt DateTime?            @map("avic_last_synced_at") @db.Timestamptz(3)
@@ -518,6 +536,7 @@ model RoutingCompany {
   createdBy User?   @relation("RoutingCompanyCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
   users     User[]  @relation("RoutingCompanyUsers")
   history   RoutingCompanyHistory[]
+  comments  RoutingCompanyComment[]
   passengers Passenger[]
   importRecords PassengerImportRecord[]
   routes RoutingRoute[]
@@ -526,8 +545,31 @@ model RoutingCompany {
 
   @@unique([id, companyId])
   @@unique([companyId, taxId])
+  @@unique([companyId, cpf])
+  @@unique([companyId, cnpj])
+  @@unique([companyId, avicExternalId])
   @@index([companyId, status, legalName])
   @@map("routing_companies")
+}
+
+model RoutingCompanyComment {
+  id               String   @id @default(uuid()) @db.Uuid
+  companyId        String   @map("company_id") @db.Uuid
+  routingCompanyId String   @map("routing_company_id") @db.Uuid
+  comment          String   @db.Text
+  createdByUserId  String   @map("created_by_user_id") @db.Uuid
+  updatedByUserId  String   @map("updated_by_user_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  company        Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  routingCompany RoutingCompany @relation(fields: [routingCompanyId, companyId], references: [id, companyId], onDelete: Cascade)
+  createdBy      User           @relation("RoutingCompanyCommentCreator", fields: [createdByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+  updatedBy      User           @relation("RoutingCompanyCommentUpdater", fields: [updatedByUserId, companyId], references: [id, companyId], onDelete: NoAction)
+
+  @@unique([id, companyId])
+  @@index([companyId, routingCompanyId, createdAt])
+  @@map("routing_company_comments")
 }
 
 model RoutingFixedPoint {

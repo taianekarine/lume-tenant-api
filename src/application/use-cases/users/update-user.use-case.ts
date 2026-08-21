@@ -96,6 +96,16 @@ export class UpdateUserUseCase {
         'Somente administradores podem conceder acesso à licença.',
       );
     }
+    if (
+      input.permissionCodes !== undefined &&
+      !actor?.user.props.isAdministrator &&
+      (input.permissionCodes.includes('clients:history') ||
+        target.user.props.permissionCodes.includes('clients:history'))
+    ) {
+      throw forbidden(
+        'Somente administradores podem conceder ou remover a permissão de visualizar o histórico de clientes.',
+      );
+    }
 
     const emailNormalized = input.email
       ? normalizeEmail(input.email)

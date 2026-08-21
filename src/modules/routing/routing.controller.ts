@@ -17,20 +17,20 @@ import { CurrentUser } from '../../shared/http/decorators/current-user.decorator
 import { RequireAnyPermission } from '../../shared/http/decorators/require-permissions.decorator';
 import {
   CreateRoutingCompanyDto,
-  DeleteRoutingCompanyDto,
   ListRoutingCompaniesQueryDto,
+  RoutingCompanyCommentDto,
   UpdateRoutingCompanyDto,
 } from './dto/routing-company.dto';
 
-@ApiTags('RoteirizaÃ§Ã£o')
+@ApiTags('Clientes')
 @ApiBearerAuth()
-@Controller('routing')
+@Controller('clients')
 export class RoutingController {
   constructor(private readonly companies: RoutingCompaniesUseCase) {}
 
-  @Post('companies')
-  @RequireAnyPermission('routing-companies:create')
-  @ApiCreatedResponse({ description: 'Empresa cliente cadastrada.' })
+  @Post()
+  @RequireAnyPermission('clients:create')
+  @ApiCreatedResponse({ description: 'Cliente cadastrado.' })
   createCompany(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Body() body: CreateRoutingCompanyDto,
@@ -38,8 +38,8 @@ export class RoutingController {
     return this.companies.create(current, body);
   }
 
-  @Get('companies')
-  @RequireAnyPermission('routing-companies:view')
+  @Get()
+  @RequireAnyPermission('clients:view')
   listCompanies(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Query() query: ListRoutingCompaniesQueryDto,
@@ -47,8 +47,8 @@ export class RoutingController {
     return this.companies.list(current, query);
   }
 
-  @Get('companies/:routingCompanyId')
-  @RequireAnyPermission('routing-companies:view')
+  @Get(':routingCompanyId')
+  @RequireAnyPermission('clients:view')
   getCompany(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
@@ -57,8 +57,8 @@ export class RoutingController {
     return this.companies.get(current, routingCompanyId);
   }
 
-  @Patch('companies/:routingCompanyId')
-  @RequireAnyPermission('routing-companies:update')
+  @Patch(':routingCompanyId')
+  @RequireAnyPermission('clients:update')
   updateCompany(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
@@ -68,24 +68,68 @@ export class RoutingController {
     return this.companies.update(current, routingCompanyId, body);
   }
 
-  @Delete('companies/:routingCompanyId')
-  @RequireAnyPermission('routing-companies:manage')
-  deleteCompany(
-    @CurrentUser() current: AuthenticatedPrincipal,
-    @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
-    routingCompanyId: string,
-    @Body() body: DeleteRoutingCompanyDto,
-  ) {
-    return this.companies.delete(current, routingCompanyId, body);
-  }
-
-  @Get('companies/:routingCompanyId/history')
-  @RequireAnyPermission('routing-companies:view')
+  @Get(':routingCompanyId/history')
+  @RequireAnyPermission('clients:history')
   companyHistory(
     @CurrentUser() current: AuthenticatedPrincipal,
     @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
     routingCompanyId: string,
   ) {
     return this.companies.history(current, routingCompanyId);
+  }
+
+  @Get(':routingCompanyId/comments')
+  @RequireAnyPermission('clients:view')
+  companyComments(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
+    routingCompanyId: string,
+  ) {
+    return this.companies.comments(current, routingCompanyId);
+  }
+
+  @Post(':routingCompanyId/comments')
+  @RequireAnyPermission('clients:update')
+  addCompanyComment(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
+    routingCompanyId: string,
+    @Body() body: RoutingCompanyCommentDto,
+  ) {
+    return this.companies.addComment(current, routingCompanyId, body);
+  }
+
+  @Patch(':routingCompanyId/comments/:commentId')
+  @RequireAnyPermission('clients:update')
+  updateCompanyComment(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
+    routingCompanyId: string,
+    @Param('commentId', new ParseUUIDPipe({ version: '4' })) commentId: string,
+    @Body() body: RoutingCompanyCommentDto,
+  ) {
+    return this.companies.updateComment(
+      current,
+      routingCompanyId,
+      commentId,
+      body,
+    );
+  }
+
+  @Delete(':routingCompanyId/comments/:commentId')
+  @RequireAnyPermission('clients:update')
+  removeCompanyComment(
+    @CurrentUser() current: AuthenticatedPrincipal,
+    @Param('routingCompanyId', new ParseUUIDPipe({ version: '4' }))
+    routingCompanyId: string,
+    @Param('commentId', new ParseUUIDPipe({ version: '4' })) commentId: string,
+    @Query('commandId', new ParseUUIDPipe({ version: '4' })) commandId: string,
+  ) {
+    return this.companies.removeComment(
+      current,
+      routingCompanyId,
+      commentId,
+      commandId,
+    );
   }
 }
